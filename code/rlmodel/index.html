@@ -1,0 +1,84 @@
+<html>
+<head>
+<style>
+
+table {
+    font-family: arial, sans-serif;
+    border-collapse: collapse;
+    width: 100%;
+}
+
+.tableFixHead          { overflow: auto; height: 100%; }
+.tableFixHead thead th { position: sticky; top: 0; }
+
+/* Just common table stuff. Really. */
+th, td { padding: 8px 16px; }
+th     { background:#eee; }
+
+img {
+    display: block;
+    margin-left: auto;
+    margin-right: auto;
+    width: 20vw;
+    height: 20vw;
+    border: solid 10px transparent;
+}
+
+img:hover {
+    border-color: #0000;
+    -webkit-transform:scale(1.8); /* or some other value */
+    transform:scale(1.8);
+    /* Align the scaling such that never crosses the top or bottom vw */
+    margin-top: 10vw;
+    margin-bottom: 10vw;
+
+}
+
+td, th {
+    border: 1px solid #ffffff;
+    text-align: left;
+    padding: 8px;
+    align-items: center;
+    }
+
+tr:nth-child(even) {
+    background-color: #ffffff;
+    }
+</style>
+</head>
+<body>
+<h2>Figures</h2>
+<div class="tableFixHead">
+    <table>
+        <thead>
+            <th>Bias Fn/DriftFn</th>
+            <th style="text-align: center;">Classic DDM</th>
+            <th style="text-align: center;">Noise*RewardRate</th>
+        </thead>
+        <tbody>
+            <tr>
+                <td>No Bias(z=0)></td>
+                <td><img src="_noiseNormal_biasNone_driftClassic_maxdur_3s.svg"
+                    alt="Classic DDM + No Bias(z=0)"></td>
+                <td><img src="_noiseNormal_biasNone_noiseGainRewardRate_maxdur_3s.svg"
+                    alt="Noise*RewardRate + No Bias(z=0)"></td>
+            </tr>
+            <tr>
+                <td>Init-Q</td>
+                <td><img src="_noiseNormal_biasQVal_driftClassic_maxdur_3s.svg" 
+                    alt="Classic DDM + Init-Q"></td>
+                <td><img src="_noiseNormal_biasQVal_noiseGainRewardRate_maxdur_3s.svg"
+                    alt="Noise*RewardRate + Init-Q"></td>
+            </tr>
+            <tr>
+                <td>Decaying-Q</td>
+                <td><img src="_noiseNormal_biasNone_decayQ_nondectime_Q_True_maxdur_3s.svg" 
+                    alt="Classic DDM + Decaying-Q"></td>
+                <td><img src="_noiseNormal_biasNone_noiseGainDecayingQ_nondectime_Q_True_maxdur_3s.svg" 
+                    alt="Noise*RewardRate + Decaying-Q"></td>
+            </tr>
+        </tbody>
+    </table>
+</div>
+</body>
+</html>

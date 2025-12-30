@@ -1,0 +1,2 @@
+python model_runner.py --drift "Classic" --bias "None_" --noise "Normal(0, 1)"
+python model_runner.py --drift "Classic" --bias "Q-Val" --noise "Normal(0, 1)"
