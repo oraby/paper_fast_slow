@@ -18,7 +18,7 @@ mechanisms of fast versus slow decision-making**.
 
 - The [`DDM_RL-Model`](code/rlmodel/) package README provides additional details
   on model design and implementation choices.
-- The [`Code/README.md`](code/) file describes the data organization and
+- The [`code/README.md`](code/) file describes the data organization and
   expected directory structure.
 - Some two-photon imaging datasets are too large to be included directly in the
   repository. Running  [`code/data_downloader.ipynb`](code/data_downloader.ipynb)
