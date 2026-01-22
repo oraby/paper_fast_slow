@@ -68,7 +68,7 @@ dataframes.
 | |**__________ Other Trial Properties __________**  | |
 | quantile_idx  | Sampling-time classification (`Fast`, `Typical`, or `Slow`) for the current trial, given trial difficulty | `int`, `1`=Fast, `2`=Typical, `3`=Slow |
 | Stay  | Whether the subject repeated the previous choice (stay vs. switch) | `float`, `1`=stay, `0`=switch, `nan`=not applicable |
-| StayBaseline  | Correct decision tendency given the previous choice, as assigned by the task generator | `float`, `1`=stay, `0`=switch, `nan`=not applicable |
+| StayBaseline  | Whether current trial's correct decision, as assigned by the task generator, is a stay (i.e. repeated choice) given the subject's previous choice | `float`, `1`=stay, `0`=switch, `nan`=not applicable |
 | PrevOutcomeCount  | Number of consecutive correct or incorrect trials preceding the current trial. The counter resets when outcome switches | `int`, positive for correct streaks and negative for incorrect streaks |
 | RewardRate  | Ratio of correct trials over the previous five trials. *Computed within the notebooks* | `float`, range `[0, 1]` |
 
