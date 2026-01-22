@@ -24,7 +24,7 @@ def _noiseNormal(size : tuple[int, int],
     return noise_arr
 
 def _noiseQval(size : tuple[int, int],
-               dt : float, 
+               dt : float,
                Q_val : npt.NDArray,
                Q_VAL_DECAY_RATE : float,
                Q_VAL_COEF : float):

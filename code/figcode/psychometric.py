@@ -228,9 +228,9 @@ def _slowFastPsychSubject(df, title, is_human_subject, combine_sides=False,
     # print("q1 len:", len(q1_df), "Total len:", len(df))
     fast_subj = _fitPsych(_getGroups(q1_df, combine_sides, is_human_subject),
                                      many_subjects=many_subjects,
-                                     ax=ax, color="red", ls=ls, 
+                                     ax=ax, color="red", ls=ls,
                                      label=makeTitleStr("Fast", q1_df),
-                                     combine_sides=combine_sides, nfits=nfits, 
+                                     combine_sides=combine_sides, nfits=nfits,
                                      plot_points=plot_points,
                                      subject_plot_points=subject_plot_points,
                                      ncpus=ncpus)[3]
@@ -238,9 +238,9 @@ def _slowFastPsychSubject(df, title, is_human_subject, combine_sides=False,
         q2_df = df[df.quantile_idx == 2]
         typ_subj = _fitPsych(_getGroups(q2_df, combine_sides, is_human_subject),
                                         many_subjects=many_subjects,
-                                        ax=ax, color="orange", 
+                                        ax=ax, color="orange",
                                         label=makeTitleStr("Typical", q2_df),
-                                        ls=ls, combine_sides=combine_sides, 
+                                        ls=ls, combine_sides=combine_sides,
                                         plot_points=plot_points,
                                         subject_plot_points=subject_plot_points,
                                         nfits=nfits, ncpus=ncpus)[3]
@@ -470,10 +470,13 @@ def _fitPsych(dv_df_bins, ax, *, many_subjects, combine_sides=False, nfits=None,
     _range = np.arange(0 if combine_sides else -1, 1, 0.02)
     y_fit = fitFn(_range) * 100
     # print(f"y_fit: {y_fit}")
-    ax.plot(_range, y_fit, **kargs)
+    kargs = kargs.copy()
+    ls = kargs.get("linestyle") or kargs.get("ls")
+    label = kargs.pop("label", None)
+    label_line, label_pts =  (None, label) if  ls == "none" and plot_points else \
+                             (label, None)
+    ax.plot(_range, y_fit, label=label_line, **kargs)
     if plot_points:
-        kargs = kargs.copy()
-        kargs.pop("label")
         if "color" in kargs:
             c = kargs["color"]
         elif "c" in kargs:
@@ -487,7 +490,7 @@ def _fitPsych(dv_df_bins, ax, *, many_subjects, combine_sides=False, nfits=None,
         stim_ratio_sem = np.array(stim_ratio_sem) * 100
         # print(f"Stimulus: {stims}\nCorrect: {stim_ratio_correct}\nSEM: {stim_ratio_sem}")
         ax.errorbar(stims, stim_ratio_correct, yerr=stim_ratio_sem, fmt='o',
-                    ms=8, elinewidth=2, **kargs)
+                    label=label_pts, ms=8, elinewidth=2, **kargs)
         if subject_plot_points:
             if many_subjects:
                 for stim in stims:

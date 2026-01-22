@@ -1,20 +1,20 @@
-# from .logic import makeOneRun
-from .logiclle import makeOneRun
+from .logic import makeOneRun
 from .runlogger import RunLogger
 from .util import PsychometricPlot
-# from .logiclle import makeOneRun
-from ....paper_fast_slow.code.behavior.bias import calcBias
-from ....paper_fast_slow.code.behavior.rewardrate import calcAvgRewardRate
-from ....paper_fast_slow.code.figcode.psychometric import (
+from ...behavior.bias import calcBias
+from ...behavior.rewardrate import calcAvgRewardRate
+from ...common import clr
+from ...figcode.psychometric import (
                        _psychAxes, _slowFastPsychSubject, _fitPsych, _getGroups,
                        getGroupsDVstr)
-from ....paper_fast_slow.code.figcode.stbydifficulty import _rtVsDifficulty
-from ....paper_fast_slow.code.pipeline.pipeline import Chain
-from ....paper_fast_slow.code.pipeline.behavior import CountContPrevOutcome
-from ....paper_fast_slow.code.figcode.prevoutcomecurquantile import (
+from ...figcode.stbydifficulty import _rtVsDifficulty
+from ...pipeline.pipeline import Chain
+from ...pipeline.behavior import CountContPrevOutcome
+from ...figcode.prevoutcomecurquantile import (
                          _plotPrevOutcomeCurQuantile, stimulusTimeByPrevOutcome)
 from itertools import chain
 import matplotlib.pyplot as plt
+from matplotlib.container import BarContainer
 from matplotlib.ticker import AutoLocator
 import numpy as np
 import pandas as pd
@@ -43,7 +43,8 @@ def runAndPlot(df, fig, axs, include_Q, include_RewardRate, biasFn, driftFn,
                biasFn_df_cols=[], biasFn_kwargs={},
                driftFn_df_cols=[], driftFn_kwargs={},
                noiseFn_df_cols=[], noiseFn_kwargs={},
-               is_loss_no_dir=False, cached_subject_df=None):
+               is_loss_no_dir=False, cached_subject_df=None,
+               verbose=True):
     # print("Updating plots")
 
     # Save just the last run
@@ -89,29 +90,24 @@ def runAndPlot(df, fig, axs, include_Q, include_RewardRate, biasFn, driftFn,
                         BOUND=BOUND, dt=dt, t_dur=t_dur, is_loss_no_dir=is_loss_no_dir, return_df=True)
     loss, df = ret
     df = df[keep_cols].copy()
-    print("Loss:", loss)
-    print(f"Running simulation time: {time.time() - time_now:.2f}"); time_now = time.time()
+    if verbose:
+        print("Loss:", loss)
+        print(f"Running simulation time: {time.time() - time_now:.2f}"); time_now = time.time()
     # display(df.head(10))
     # display(df[df.valid].tail(10))
     df = calcAvgRewardRate(df, choice_cols=["ChoiceCorrect", "SimChoiceCorrect"],
                            rr_postfixs=["", "Sim"], groupby_cols=["SessId"])
 
     df = _assignPrevTrial(df)
-    print(f"Assigning previous trial time: {time.time() - time_now:.2f}"); time_now = time.time()
+    if verbose:
+        print(f"Assigning previous trial time: {time.time() - time_now:.2f}"); time_now = time.time()
     df = df[df.valid]
-    print("Number of valid trials:", len(df))
+    if verbose:
+        print("Number of valid trials:", len(df))
     if axs is None:
         return loss, df
 
-    if cached_subject_df is not None:
-        # Check for missing rows
-        #missing_rows = cached_subject_df[~cached_subject_df.index.isin(df.index)]
-        # diff = cached_subject_df.calcStimulusTime - df.calcStimulusTime
-        # diff = diff[diff.notnull()]
-        # assert all(diff == 0), f"Missing rows: {diff}"
-        pass
-    # display(df.head(10))
-    # df = df.groupby("SessId").apply(_assignPrevTrial)
+
     subject = df.Name.iloc[0]
     fig.suptitle(f"{subject} - Loss: {loss:,.2f}")
 
@@ -121,7 +117,8 @@ def runAndPlot(df, fig, axs, include_Q, include_RewardRate, biasFn, driftFn,
     plotPlots(df, axs, include_Q, include_RewardRate, plot_bias_dir, psych_plot,
                 BOUND, t_dur, dt, is_small_fig_mode, dvs_filter=dvs_filter,
                 biasFn_kwargs=biasFn_kwargs)
-    print(f"Plotting time: {time.time() - time_now:.2f}"); time_now = time.time()
+    if verbose:
+        print(f"Plotting time: {time.time() - time_now:.2f}"); time_now = time.time()
     return loss, df
 
 def plotPlots(df, axs, include_Q, include_RewardRate,
@@ -132,33 +129,22 @@ def plotPlots(df, axs, include_Q, include_RewardRate,
         df = df[df.DV.isin(dvs_filter)]
 
     if not is_small_fig_mode:
-        TEMP = False
-        if not TEMP:
-            (ax_hist_corr_up, ax_hist_corr_down,
-            ax_hist_dir_up, ax_hist_dir_down,
-            ax_rt_easy, ax_rt_medium, ax_rt_hard,
-            ax_rt_diff, ax_rt_slow_diff, ax_rt_fast_diff,
-            ax_psych, ax_prev_out_cur_q, ax_reward_rate, ax_motor_bias,
-            ax_bias, ax_qval, ax_prev_outs_rt, *axs_win_lose_update
-            ) = axs.flatten()
-            if SINGLE_WIN_LOSE_UPDATE:
-                ax_win_lose_update = axs_win_lose_update[0]
-            else:
-                (ax_win_lose_update_q1, ax_win_lose_update_q2,
-                 ax_win_lose_update_q3) = axs_win_lose_update
+        (ax_hist_corr_up, ax_hist_corr_down,
+         ax_hist_dir_up, ax_hist_dir_down,
+         ax_rt_easy, ax_rt_medium, ax_rt_hard,
+         ax_psych, ax_prev_out_cur_q, ax_reward_rate, ax_motor_bias,
+         ax_bias, ax_qval, ax_prev_outs_rt, *axs_win_lose_update
+        ) = axs.flatten()
+        if SINGLE_WIN_LOSE_UPDATE:
+            ax_win_lose_update = axs_win_lose_update[0]
         else:
-            (ax_hist_corr_up, ax_hist_corr_down,
-            ax_hist_dir_up, ax_hist_dir_down,
-            ax_rt_easy, ax_rt_medium, ax_rt_hard,
-            ax_rt_diff,
-            ax_psych, ax_prev_out_cur_q, ax_reward_rate, ax_motor_bias,
-            ax_bias, ax_qval, ax_prev_outs_rt, #ax_win_lose_update
-            ) = axs.flatten()
+            (ax_win_lose_update_q1, ax_win_lose_update_q2,
+                ax_win_lose_update_q3) = axs_win_lose_update
+
     else:
         (ax_hist_corr_up, ax_hist_corr_down,
-         ax_rt_diff,  ax_psych, ax_reward_rate, ax_qval) = axs.flatten()
+         ax_psych, ax_reward_rate, ax_qval) = axs.flatten()
         # Needed to pass to the functions below
-        ax_rt_fast_diff, ax_rt_slow_diff = None, None
         ax_hist_dir_up, ax_hist_dir_down = None, None
         ax_rt_easy, ax_rt_medium, ax_rt_hard = None, None, None
         ax_bias = None
@@ -170,10 +156,17 @@ def plotPlots(df, axs, include_Q, include_RewardRate,
             if len(line.get_xdata()) == 2:
                 continue
             line.remove()
-
         # Remove all bars
         for bar in ax.patches:
             bar.remove()
+        # Also remove BarContainers to prevent lingering legend handles
+        for cont in list(ax.containers):
+            if isinstance(cont, BarContainer):
+                ax.containers.remove(cont)
+        # Remove any existing legend so it doesn't retain old entries
+        leg = ax.get_legend()
+        if leg is not None:
+            leg.remove()
 
     # Error bars are not remove with bar.remove() above
     ax_psych.clear()
@@ -184,34 +177,24 @@ def plotPlots(df, axs, include_Q, include_RewardRate,
         ax_prev_outs_rt.clear()
         ax_prev_outs_rt.set_title("Prev Outcomes RT")
         ax_motor_bias.clear()
-        if not TEMP:
-            ax_rt_fast_diff.clear() # Clear whether we are plotting or not
-            ax_rt_slow_diff.clear()
-            ax_rt_fast_diff.set_title(f"RT vs Difficulty (Fast)")
-            ax_rt_slow_diff.set_title(f"RT vs Difficulty (Slow)")
-            if SINGLE_WIN_LOSE_UPDATE:
-                ax_win_lose_update.clear()
-            else:
-                ax_win_lose_update_q1.clear()
-                ax_win_lose_update_q2.clear()
-                ax_win_lose_update_q3.clear()
+
+        if SINGLE_WIN_LOSE_UPDATE:
+            ax_win_lose_update.clear()
         else:
-            ax_rt_fast_diff = None
-            ax_rt_slow_diff = None
+            ax_win_lose_update_q1.clear()
+            ax_win_lose_update_q2.clear()
+            ax_win_lose_update_q3.clear()
+
     print(f"Clearing time: {time.time() - time_now:.2f}"); time_now = time.time()
 
 
-    _plotPsychs(df, ax_psych, ax_rt_fast_diff, ax_rt_slow_diff, psych_plot,
-                is_small_fig_mode=is_small_fig_mode)
+    _plotPsychs(df, ax_psych, psych_plot)
     print(f"Psychometric: {time.time() - time_now:.2f}"); time_now = time.time()
 
     _plotHists(df, ax_hist_corr_up, ax_hist_corr_down, ax_hist_dir_up, ax_hist_dir_down,
                ax_rt_easy, ax_rt_medium, ax_rt_hard, t_dur, dt,
                is_small_fig_mode=is_small_fig_mode)
     print(f"Hists: {time.time() - time_now:.2f}"); time_now = time.time()
-
-    _plotRTvsDiff(df, ax_rt_diff, is_small_fig_mode=is_small_fig_mode)
-    print(f"RT vs Diff: {time.time() - time_now:.2f}"); time_now = time.time()
 
     _plotDists(df, ax_qval, ax_reward_rate, ax_bias, plot_bias_dir,
                include_Q, include_RewardRate, BOUND, biasFn_kwargs,
@@ -224,11 +207,10 @@ def plotPlots(df, axs, include_Q, include_RewardRate,
         _plotPrevOutcomeQuantile(df, ax_prev_out_cur_q)
         # print(f"Prev Outcome Cur Quantile: {time.time() - time_now:.2f}"); time_now = time.time()
         _plotPrevOutcomeCount(df, ax_prev_outs_rt)
-        if not TEMP:
-            if SINGLE_WIN_LOSE_UPDATE:
-                _plotStaySwitch(df, ax_win_lose_update)
-            else:
-                _plotStaySwitchQ(df, ax_win_lose_update_q1,
+        if SINGLE_WIN_LOSE_UPDATE:
+            _plotStaySwitch(df, ax_win_lose_update)
+        else:
+            _plotStaySwitchQ(df, ax_win_lose_update_q1,
                                  ax_win_lose_update_q2,
                                  ax_win_lose_update_q3)
 
@@ -274,8 +256,8 @@ def _createFigFull(fig=None):
     # else:
     #     fig.clear()
     top_row_subfigs, bottom_row_subfigs = fig.subfigures(2, 1)#wspace=.007, hspace=.1)
-    (hist_corr_fig, hist_dir_fig, rt_vs_diff_slow_fast_fig, psych_fig,
-     prev_cur_q_fig) = top_row_subfigs.subfigures(1, 5)
+    (hist_corr_fig, hist_dir_fig, psych_fig,
+     prev_cur_q_fig) = top_row_subfigs.subfigures(1, 4)
 
     hist_corr_fig.suptitle("RT Hist (correct/incorrect)")
     hist_corr_axs = hist_corr_fig.subplots(2, 1, sharex=True, gridspec_kw={"hspace":0})
@@ -295,44 +277,26 @@ def _createFigFull(fig=None):
     hist_dir_axs[0].set_title("RT Left", alpha=0)
     hist_dir_axs[1].set_title("RT Right", alpha=0)
 
-    TEMP = False
-    if not TEMP:
-        # rt_vs_df_fast_ax, rt_vs_df_slow_ax = rt_vs_diff_slow_fast_fig.subplots(2, 1)
-        # rt_vs_diff_slow_fast_fig.suptitle("RT vs Difficulty Slow/Fast")
-        # rt_vs_diff_slow_fast_fig.subplots_adjust(hspace=0.5)
-        # rt_vs_df_fast_ax.set_title("Fast")
-        # rt_vs_df_slow_ax.set_title("Slow")
-        # rt_vs_df_slow_ax.sharex(rt_vs_df_fast_ax)
-        # # rt_vs_df_slow_ax.sharey(rt_vs_df_fast_ax)
-        rt_vs_df_fast_ax = rt_vs_diff_slow_fast_fig.subplots()
-        rt_vs_df_fast_ax.set_title("RT vs Difficulty Slow/Fast")
-        rt_vs_df_fast_ax.set_ylabel("Fast")
-        rt_vs_df_slow_ax = rt_vs_df_fast_ax.twinx()
-        rt_vs_df_slow_ax.set_ylabel("Slow")
-
-
     psych_ax = psych_fig.subplots()
     psych_ax.set_title("Psychometric")
     _psychAxes(ax=psych_ax)
 
-    if not TEMP:
-        if SINGLE_WIN_LOSE_UPDATE:
-            prev_cur_q_fig.suptitle("Prev Outcome Cur Quantile")
-            prev_out_cur_q_ax, win_lose_update_ax = prev_cur_q_fig.subplots(2, 1)
-            prev_cur_q_fig.subplots_adjust(hspace=0.5)
-            win_lose_update_ax.set_title("Win/Lose Stay Update")
-        else:
-            prev_out_cur_q_fig, win_lose_update_fig = prev_cur_q_fig.subfigures(2, 1)
-            prev_out_cur_q_ax = prev_out_cur_q_fig.subplots()
-            # win_lose_update_fig.suptitle("Win/Lose Stay Update")
-            win_lose_update_q_axs = win_lose_update_fig.subplots(1, 3)
-        prev_out_cur_q_ax.set_title("Prev Outcome Cur Quantile")
+    if SINGLE_WIN_LOSE_UPDATE:
+        prev_cur_q_fig.suptitle("Prev Outcome Cur Quantile")
+        prev_out_cur_q_ax, win_lose_update_ax = prev_cur_q_fig.subplots(2, 1)
+        prev_cur_q_fig.subplots_adjust(hspace=0.5)
+        win_lose_update_ax.set_title("Win/Lose Stay Update")
     else:
-        prev_out_cur_q_ax = prev_cur_q_fig.subplots()
+        prev_out_cur_q_fig, win_lose_update_fig = prev_cur_q_fig.subfigures(2, 1)
+        prev_out_cur_q_ax = prev_out_cur_q_fig.subplots()
+        # win_lose_update_fig.suptitle("Win/Lose Stay Update")
+        win_lose_update_q_axs = win_lose_update_fig.subplots(1, 3)
+    prev_out_cur_q_ax.set_title("Prev Outcome Cur Quantile")
 
 
-    (rt_diff_fig, rate_vs_diff_fig, reward_rate_fig,
-     bias_qval_fig, prev_outs_rt_fig) = bottom_row_subfigs.subfigures(1, 5)
+
+    (rt_diff_fig, reward_rate_fig, bias_qval_fig,
+     prev_outs_rt_fig) = bottom_row_subfigs.subfigures(1, 4)
     rt_diff_axs = rt_diff_fig.subplots(3, 1)
     rt_diff_fig.suptitle("RT Difficulties")
     rt_diff_axs[0].set_title("Easy", fontsize="x-small")
@@ -343,10 +307,6 @@ def _createFigFull(fig=None):
     rt_diff_axs[2].set_xlabel("Time (s)")
     rt_diff_axs[0].get_xaxis().set_visible(False)
     rt_diff_axs[1].get_xaxis().set_visible(False)
-
-
-    rt_vs_diff_ax = rate_vs_diff_fig.subplots()
-    rt_vs_diff_ax.set_title("RT vs Difficulty")
 
     reward_rate_ax, motor_bias_ax  = reward_rate_fig.subplots(2, 1)
     reward_rate_ax.set_title("Reward Rate Dist.")
@@ -361,11 +321,10 @@ def _createFigFull(fig=None):
     prev_outs_rt_ax = prev_outs_rt_fig.subplots()
 
     axs = np.asarray(list(hist_corr_axs) + list(hist_dir_axs) + list(rt_diff_axs) +
-                     [rt_vs_diff_ax] + ([rt_vs_df_slow_ax, rt_vs_df_fast_ax] if not TEMP else []) +
-                     [psych_ax, prev_out_cur_q_ax, reward_rate_ax, motor_bias_ax,
-                      bias_ax,  qval_ax, prev_outs_rt_ax] +
+                     [psych_ax, prev_out_cur_q_ax, reward_rate_ax,
+                      motor_bias_ax, bias_ax, qval_ax, prev_outs_rt_ax] +
                       ([win_lose_update_ax] if SINGLE_WIN_LOSE_UPDATE else
-                       list(win_lose_update_q_axs)) if not TEMP else [])
+                       list(win_lose_update_q_axs)))
     for ax in axs.flatten():
         ax.spines[["top", "right", "left", "bottom"]].set_visible(False)
     return fig, axs
@@ -387,34 +346,41 @@ def _plotSimRT(df, t_dur, bins, dt):
         y = np.asarray([0]*len(x))
     return x, y
 
-def _plotHist(df, ax_up, ax_down, real_col, sim_col, t_dur, dt):
+def _plotHist(df, ax_up, ax_down, real_col, sim_col, t_dur, dt, legend=False):
     # total = len(df)
     bins = np.arange(0, t_dur + dt, dt)
     hist_max = 0
     bin_width = bins[1] - bins[0]
     bar_kwargs = dict(x=bins[:-1], width=bin_width,  alpha=0.5, align='edge')
 
+    legend_once = True and legend
     for ax, dir_df in zip((ax_up, ax_down), [df[df[real_col] == 1],
                                              df[df[real_col] == 0]]):
         hist, _ = np.histogram(dir_df.calcStimulusTime, bins=bins)
         # Force bars instead of patches
         # ax.stairs(hist, bins, fill=True, color='gray', alpha=0.5)
-        ax.bar(height=hist, color='gray', bottom=0, **bar_kwargs)
+        ax.bar(height=hist, color='gray', bottom=0, **bar_kwargs,
+               label='Real' if legend_once else None)
+        legend_once = False
         hist_max = max(hist_max, hist.max())
 
     # print(df.SimRT)
     # display(subject_df2.head(60))
+    legend_once = True and legend
     for ax, dir_df in zip((ax_up, ax_down), (df[df[sim_col] == 1],
                                              df[df[sim_col] == 0])):
         x, y = _plotSimRT(dir_df, t_dur, bins, dt)
-        ax.plot(x, y, color='k')
+        ax.plot(x, y, color='k', label='Model' if legend_once else None)
+        legend_once = False
         hist_max = max(hist_max, y.max())
 
     ax_up.set_ylim(0, hist_max)
     ax_down.set_ylim(hist_max, 0)
+    if legend:
+        ax_up.legend(loc='upper right', fontsize='x-small')
     # return hist_max
 
-def _plotHistCorrIncorr(df, ax : plt.Axes, t_dur, dt):
+def _plotHistCorrIncorr(df, ax : plt.Axes, t_dur, dt, legend=False):
     dt = .05
     bins = np.arange(0, t_dur + dt, dt)
     hist_max = 0
@@ -427,17 +393,21 @@ def _plotHistCorrIncorr(df, ax : plt.Axes, t_dur, dt):
     # Stairs forces patches, but we want bars so we will do it manually
     bin_width = bins[1] - bins[0]
     bar_kwargs = dict(x=bins[:-1], width=bin_width,  alpha=0.5, align='edge')
-    ax.bar(height=hist_corr, color='g', bottom=0, **bar_kwargs)
-    ax.bar(height=hist_incorr, color='r', bottom=hist_corr, **bar_kwargs)
+    ax.bar(height=hist_corr, color='g', bottom=0, **bar_kwargs,
+           label='Real Correct' if legend else None)
+    ax.bar(height=hist_incorr, color='r', bottom=hist_corr, **bar_kwargs,
+           label='Real Incorrect' if legend else None)
 
 
     x_corr, y_corr = _plotSimRT(df[df.SimChoiceCorrect == 1], t_dur, bins, dt)
     x_incorr, y_incorr = _plotSimRT(df[df.SimChoiceCorrect == 0], t_dur, bins, dt)
-    ax.plot(x_corr, y_corr, color='g')
-    ax.plot(x_incorr, y_corr+y_incorr, color='r')
+    ax.plot(x_corr, y_corr, color='g', label='Model Correct' if legend else None)
+    ax.plot(x_incorr, y_corr+y_incorr, color='r', label='Model Incorrect' if legend else None)
     hist_max = max(hist_corr.max() + hist_incorr.max(),
                    y_corr.max() + y_incorr.max())
     ax.set_ylim(0, hist_max)
+    if legend:
+        ax.legend(loc='upper right', fontsize='x-small')
 
 def _assignPrevTrial(df):
     df_tmp = df.copy()
@@ -504,45 +474,7 @@ def _dvQuantileFn(df, col, as_df=False):
     return fast, typical, slow
 
 
-def _myRTVsDifficulty(quantile_dict, ax, ls, col_rt, col_corr, dscrp,
-                      with_sem):
-    for (outcome_val, clr) in ((1, 'g'), (0, 'r')):
-        xs, ys, yerrs = [], [], []
-        if isinstance(quantile_dict, dict):
-            looper = quantile_dict.items()
-        else:
-            df = quantile_dict
-            DVstr_unique = df.DVstr.unique()
-            assert all([diff in DVstr_unique for diff in ["Easy", "Med", "Hard"]])
-            # Re-order the loop
-            looper = (("Easy", df[df.DVstr == "Easy"]),
-                      ("Med", df[df.DVstr == "Med"]),
-                      ("Hard", df[df.DVstr == "Hard"]))
-        total_len = 0
-        for dv_str, df_li in looper:
-            if not isinstance(df_li, pd.DataFrame):
-                assert isinstance(df_li, list)
-                dv_df = pd.concat(df_li)
-            else:
-                dv_df = df_li
-            dv_mean = dv_df.DVabs.mean()
-            outcome_df = dv_df[dv_df[col_corr] == outcome_val]
-            xs.append(dv_mean)
-            ys.append(#outcome_df[col_rt].mean()
-                      outcome_df[col_rt].median()
-                      )
-            yerrs.append(outcome_df[col_rt].sem())
-            total_len += len(outcome_df)
-
-        outcome_str = "Correct" if outcome_val == 1 else "Incorrect"
-        if with_sem:
-            ax.errorbar(xs, ys, yerr=yerrs, ls=ls, color=clr, marker='o',
-                        label=f"{dscrp} {outcome_str} (n={total_len:,})")
-        else:
-            ax.plot(xs, ys, ls=ls, color=clr,
-                    label=f"{dscrp} {outcome_str} (n={total_len:,})")
-
-def _plotPrevOutcomeQuantile(df, ax):
+def _plotPrevOutcomeQuantile(df, ax, annotate_fast_slow=False):
     df_real = df[df.calcStimulusTime.notnull()]
     fast_real, typical_real, slow_real = _dvQuantileFn(df_real, "calcStimulusTime",
                                                        as_df=True)
@@ -552,7 +484,7 @@ def _plotPrevOutcomeQuantile(df, ax):
                                 col_prev_choice_correct="PrevChoiceCorrect",
                                 sess_split_cols=["SessId"],
                                 width_scale=.3, plot_q2=plot_q2,
-                                show_legend=False)
+                                show_legend=False, plot_avg_line=False)
 
     df_sim = df[df.SimRT.notnull()]
     fast_sim, typical_sim, slow_sim = _dvQuantileFn(df_sim, "SimRT", as_df=True)
@@ -561,7 +493,16 @@ def _plotPrevOutcomeQuantile(df, ax):
                                 col_prev_choice_correct="SimPrevChoiceCorrect",
                                 sess_split_cols=["SessId"],
                                 width_scale=.3, x_offset=.4, hatch="///",
-                                plot_q2=plot_q2, show_legend=False)
+                                plot_q2=plot_q2, show_legend=False,
+                                plot_avg_line=False)
+    if annotate_fast_slow:
+        legends, labels = ax.get_legend_handles_labels()
+    else:
+        legends, labels = [], []
+    labels += ["Real Data", "Model"]
+    legends += [plt.Rectangle((0,0), 1, 1, fc="gray", ),
+                plt.Rectangle((0,0), 1, 1, fc="gray", hatch='///')]
+    ax.legend(legends, labels, loc="upper right", fontsize="x-small")
 
 def _plotPrevOutcomeCount(df, ax):
     common_kwargs = dict(ax=ax, is_normalized=False, is_time=True,
@@ -601,12 +542,9 @@ def _plotMotorBias(df, ax):
     fast_sim, typical_sim, slow_sim = _dvQuantileFn(df, "SimRT", as_df=True)
 
     ax.axvline(0, color='gray', ls="--", alpha=0.5)
-    for df_real, df_sim, color in zip((#df,
-                                       fast_real, slow_real),
-                                      (#df,
-                                       fast_sim, slow_sim),
-                                      (#'k',
-                                       'r', 'purple')):
+    for df_real, df_sim, color in zip((fast_real, slow_real),
+                                      (fast_sim, slow_sim),
+                                      ('r', '#e3e302')):
         bias_real = calcBias(df_real, "ChoiceLeft", groupby_cols=grooup_cols)
         bias_sim = calcBias(df_sim, "SimChoiceLeft", groupby_cols=grooup_cols)
         if df.Name.nunique() == 1:
@@ -619,17 +557,17 @@ def _plotMotorBias(df, ax):
         ax.scatter(bias_real, y, color=color, marker='o', label="Real", s=10,
                    edgecolors='none')
         y = np.arange(len(bias_sim))
-        ax.scatter(bias_sim, y, color=color, marker='x', label="Sim", s=10,
-                   edgecolors='none')
-        # ax.errorbar(bias_real, y, xerr=stats.sem(bias_real),
-        #             color=color, marker='o', ls="none", label="Real")
-        # ax.errorbar(bias_sim, y, xerr=stats.sem(bias_sim),
-        #             color=color, marker='x', ls="none", label="Sim")
-    ax.set_xlim(-.5, .5)
-    ax.set_ylim(-1, len(bias_real))
+        ax.scatter(bias_sim, y, color=color, marker='x', label="Model", s=10,
+                   )
+        for sub_y in y:
+            ax.axhline(sub_y, color='gray', ls="--", alpha=0.2)
+    # ax.set_xlim(-.5, .5)
+    # ax.set_ylim(-1, len(bias_real))
     ax.set_yticks([])
-    ax.set_xlabel("Bias")
+    ax.set_xlabel("Motor Bias")
     ax.set_ylabel("Subject" if df.Name.nunique() > 1 else "Session")
+    ax.legend(fontsize="x-small", loc="upper left", bbox_to_anchor=(0, 1.2),
+              ncols=4, borderaxespad=0)
 
 
 def _plotStaySwitch(df, ax, df_sim=None, plot_x_label=True, plot_y_label=True):
@@ -716,8 +654,7 @@ def calcWinLoseUpdates(df, col_prefix):
     return win_stay_update, lose_stay_update
 
 
-def _plotPsychs(df, ax_psych, ax_rt_fast_diff, ax_rt_slow_diff, psych_plot,
-                is_small_fig_mode):
+def _plotPsychs(df, ax_psych, psych_plot : PsychometricPlot):
     if psych_plot == PsychometricPlot.All:
         # plotPsych(df, title="Real", ax=ax_psych, combine_sides=False,
         #           by_subject=False, by_session=False, default_color='gray')
@@ -767,51 +704,11 @@ def _plotPsychs(df, ax_psych, ax_rt_fast_diff, ax_rt_slow_diff, psych_plot,
                   plot_points=True, label="Real Fast", linestyle="none",
                   #correct_col="ChoiceCorrect", left_col="ChoiceLeft",
                   )
-        _fitPsych(_myGetGroupsDVstr(slow_real), **psych_kwargs, color='purple',
+        _fitPsych(_myGetGroupsDVstr(slow_real), **psych_kwargs, color='#e3e302',
                   plot_points=True, label="Real Fast", linestyle="none",
                   #correct_col="ChoiceCorrect", left_col="ChoiceLeft",
                   )
-        if not is_small_fig_mode:
-            real_kwargs = dict(ls="none",  col_rt="calcStimulusTime",
-                               col_corr="ChoiceCorrect", dscrp="Real",
-                               with_sem=True)
-            if ax_rt_fast_diff is not None:
-                many_animals = False # df.Name.nunique() > 1
-                fast_real, typical_real, slow_real = _dvQuantileFn(df, "calcStimulusTime",
-                                                                   as_df=True)
-                _rtVsDifficulty(fast_real, f"Fast Real", ax=ax_rt_fast_diff, ls="none",
-                                many_animals=many_animals, sep_corr_incorr=False,
-                                clr="r", col_rt="calcStimulusTime", col_corr="ChoiceCorrect",
-                                marker='o',
-                                x_offset=-0.02, linfit=False, plot_legend=False)
-                _rtVsDifficulty(slow_real, f"Slow Real", ax=ax_rt_slow_diff, ls="none",
-                                many_animals=many_animals, sep_corr_incorr=False,
-                                clr="purple", col_rt="calcStimulusTime", col_corr="ChoiceCorrect",
-                                marker='o',
-                                x_offset=0.02, linfit=False,
-                                plot_legend=False)
-                # _myRTVsDifficulty(fast_real, ax_rt_fast_diff, **real_kwargs)
-                # _myRTVsDifficulty(slow_real, ax_rt_slow_diff, **real_kwargs)
-                ax_rt_fast_diff.set_title("")
-                ax_rt_slow_diff.set_title("")
-                biggest_rng = 0
-                ylims = []
-                for ax in [ax_rt_fast_diff, ax_rt_slow_diff]:
-                    ylim = ax.get_ylim()
-                    ylims.append(ylim)
-                    biggest_rng = max(biggest_rng, abs(ylim[1] - ylim[0]))
-        # df = assignQuantiles(df)
-        # print(f"Assign Quantiles time: {time.time() - time_now:.2f}"); time_now = time.time()
-        # _slowFastPsychSubject(**psych_kwargs, df=df, ls="none", plot_points=True,
-        #                       groupFn=getGroupsDVstr)
-        # print(f"Real Slow/Fast Psychometric: {time.time() - time_now:.2f}"); time_now = time.time()
-        # _rtVsDifficulty(df=df[df.quantile_idx == 1], animal_name="", ax=ax_rt_fast_diff, many_animals=False, ls="--")
-        # _rtVsDifficulty(df=df[df.quantile_idx == 3], animal_name="", ax=ax_rt_slow_diff, many_animals=False, ls="--")
 
-        # sim_quantiles_df = df.copy()
-        # sim_quantiles_df["ChoiceCorrect"] = sim_quantiles_df.SimChoiceCorrect
-        # sim_quantiles_df["ChoiceLeft"] = sim_quantiles_df.SimChoiceLeft
-        # sim_quantiles_df["calcStimulusTime"] = sim_quantiles_df.SimRT
         print(f"Copy df time: {time.time() - time_now:.2f}"); time_now = time.time()
 
         fast_sim, typical_sim, slow_sim = _dvQuantileFn(df, "SimRT")
@@ -819,63 +716,18 @@ def _plotPsychs(df, ax_psych, ax_rt_fast_diff, ax_rt_slow_diff, psych_plot,
                   plot_points=False, label="Sim Fast", linestyle="-",
                    correct_col="SimChoiceCorrect", left_col="SimChoiceLeft",
                   )
-        _fitPsych(_myGetGroupsDVstr(slow_sim), **psych_kwargs, color='purple',
+        _fitPsych(_myGetGroupsDVstr(slow_sim), **psych_kwargs, color='#e3e302',
                   plot_points=False, label="Sim Slow", linestyle="-",
                   correct_col="SimChoiceCorrect", left_col="SimChoiceLeft",
                   )
-        if not is_small_fig_mode:
-            sim_kwargs = dict(ls="-", col_rt="SimRT",
-                              col_corr="SimChoiceCorrect", dscrp="Model",
-                              with_sem=False)
-            if ax_rt_fast_diff is not None:
-                fast_sim, typical_sim, slow_sim = _dvQuantileFn(df, "SimRT",
-                                                                as_df=True)
-                _rtVsDifficulty(fast_sim, f"Fast Model", ax=ax_rt_fast_diff,
-                            many_animals=many_animals, sep_corr_incorr=False,
-                            clr="r", col_rt="SimRT", col_corr="SimChoiceCorrect",
-                            ls="-", x_offset=-0.02, linfit=False,
-                            plot_legend=False)
-                _rtVsDifficulty(slow_sim, f"Slow Model", ax=ax_rt_slow_diff,
-                                many_animals=many_animals, sep_corr_incorr=False,
-                                clr="purple", col_rt="SimRT", col_corr="SimChoiceCorrect",
-                                ls="-", x_offset=0.02, linfit=False,
-                                plot_legend=False)
-                # _myRTVsDifficulty(fast_sim, ax=ax_rt_fast_diff, **sim_kwargs)
-                # _myRTVsDifficulty(slow_sim, ax=ax_rt_slow_diff, **sim_kwargs)
         if combine_sides:
             ax_psych.set_xlim(0, 1)
             ax_psych.set_ylim(40, 100)
-        # sim_quantiles_df = assignQuantiles(sim_quantiles_df, ncpus=1)
-        # print(f"Assign Quantiles time: {time.time() - time_now:.2f}"); time_now = time.time()
-        # _slowFastPsychSubject(**psych_kwargs, df=sim_quantiles_df, ls="-", plot_points=False,
-        #                       groupFn=getGroupsDVstr)
-        # print(f"Sim Slow/Fast Psychometric: {time.time() - time_now:.2f}"); time_now = time.time()
-        # ax_psych.legend(loc="upper left", fontsize="xx-small")
-        legend = ax_psych.get_legend()
-        if legend is not None:
-            legend.remove()
 
-        # _rtVsDifficulty(df=sim_quantiles_df[sim_quantiles_df.quantile_idx == 1], animal_name="", ax=ax_rt_fast_diff, many_animals=False, ls="-",
-        #                 col_rt="SimRT", col_corr="SimChoiceCorrect") # Redudant as the values are the same
-        # _rtVsDifficulty(df=sim_quantiles_df[sim_quantiles_df.quantile_idx == 3], animal_name="", ax=ax_rt_slow_diff, many_animals=False, ls="-",
-        #                 col_rt="SimRT", col_corr="SimChoiceCorrect")
-        print(f"RT vs Difficulty Fast/Slow: {time.time() - time_now:.2f}"); time_now = time.time()
-        if not is_small_fig_mode and ax_rt_fast_diff is not None:
-            # ax_rt_fast_diff.legend(loc="upper right", fontsize="xx-small")
-            # ax_rt_slow_diff.legend(loc="upper right", fontsize="xx-small")
-            # ax_rt_fast_diff.set_title(f"Fast")
-            # ax_rt_slow_diff.set_title(f"Slow")
-            # ax_rt_fast_diff.get_xaxis().set_visible(False) # Use only the Slow's x-axis
-            # Make both axes span the same range
-            for idx, ax in enumerate((ax_rt_fast_diff, ax_rt_slow_diff)):
-                [ax.spines[_dir].set_visible(False)
-                for _dir in ["left", "right"]]
-                # ylim = ax.get_ylim()
-                ylim = ylims[idx]
-                len_extend = biggest_rng - abs(ylim[1] - ylim[0])
-                # if len_extend:
-                ax.set_ylim((ylim[0] - len_extend/2, ylim[1] + len_extend/2))
-            pass
+        # legend = ax_psych.get_legend()
+        # if legend is not None:
+        #     legend.remove()
+        ax_psych.legend(fontsize="x-small", loc="upper left")
     else:
         if psych_plot != PsychometricPlot._None:
             raise NotImplementedError("Not implemented " + str(psych_plot))
@@ -885,34 +737,20 @@ def _plotPsychs(df, ax_psych, ax_rt_fast_diff, ax_rt_slow_diff, psych_plot,
             legend.remove()
 
 
-
 def _plotHists(df, ax_hist_corr_up, ax_hist_corr_down, ax_hist_dir_up, ax_hist_dir_down,
                ax_rt_easy, ax_rt_medium, ax_rt_hard, t_dur, dt, is_small_fig_mode):
     time_now = time.time()
-    _plotHist(df, ax_hist_corr_up, ax_hist_corr_down, "ChoiceCorrect", "SimChoiceCorrect", t_dur, dt)
+    _plotHist(df, ax_hist_corr_up, ax_hist_corr_down, "ChoiceCorrect", "SimChoiceCorrect",
+              t_dur, dt, legend=True)
     # print(f"Correct/Incorrect: {time.time() - time_now:.2f}"); time_now = time.time()
     if not is_small_fig_mode:
-        _plotHist(df, ax_hist_dir_up,  ax_hist_dir_down,  "ChoiceLeft",    "SimChoiceLeft", t_dur, dt)
+        _plotHist(df, ax_hist_dir_up,  ax_hist_dir_down,  "ChoiceLeft",    "SimChoiceLeft",
+                  t_dur, dt)
         # print(f"Direction: {time.time() - time_now:.2f}"); time_now = time.time()
-        _plotHistCorrIncorr(df[df.DVstr == "Easy"], ax_rt_easy, t_dur, dt)
+        _plotHistCorrIncorr(df[df.DVstr == "Easy"], ax_rt_easy, t_dur, dt, legend=True)
         _plotHistCorrIncorr(df[df.DVstr == "Med"], ax_rt_medium, t_dur, dt)
         _plotHistCorrIncorr(df[df.DVstr == "Hard"], ax_rt_hard, t_dur, dt)
         # print(f"Easy/Med/Hard: {time.time() - time_now:.2f}"); time_now = time.time()
-
-
-def _plotRTvsDiff(df, ax_rt_diff, is_small_fig_mode):
-    ax_rt_diff.clear()
-    # _rtVsDifficulty(df=df, animal_name="", ax=ax_rt_diff, many_animals=False, ls="--")
-    # _rtVsDifficulty(df=df, animal_name="", ax=ax_rt_diff, many_animals=False, ls="-",
-    #                 col_rt="SimRT", col_corr="SimChoiceCorrect")
-    _myRTVsDifficulty(df, ax_rt_diff, ls="none", col_rt="calcStimulusTime", col_corr="ChoiceCorrect", dscrp="Real", with_sem=True)
-    _myRTVsDifficulty(df, ax_rt_diff, ls="-",  col_rt="SimRT", col_corr="SimChoiceCorrect", dscrp="Model", with_sem=False)
-
-    ax_rt_diff.legend(loc="upper right",
-                      fontsize="xx-small" if not is_small_fig_mode else 5)
-    ax_rt_diff.set_title(f"RT vs Difficulty")
-    ax_rt_diff.set_xlabel("Difficulty (DV)")
-    ax_rt_diff.set_ylabel("RT (s)")
 
 def _plotDists(df, ax_qval, ax_reward_rate, ax_bias, plot_bias_dir,
                include_Q, include_RewardRate, bound, biasFn_kwargs,

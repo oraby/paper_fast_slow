@@ -1,9 +1,7 @@
 from .bias import BIAS_FN_DICT
 from .drift import DRIFT_FN_DICT
 from .noise import NOISE_FN_DICT
-#from .logic import makeOneRun
-from .logiclle import makeOneRun
-# from ._readparams import readParams
+from .logic import makeOneRun
 from .util import initDF, driftFnColsAndKwargs, biasFnColsAndKwargs, noiseFnColsAndKwargs
 import numpy as np
 import pandas as pd
@@ -27,23 +25,23 @@ def _makeOneRunWrapper(x, x_params_names, fixed_params_names, fixed_params_vals,
                        noiseFn_x_idxs, noiseFn_fix_idxs,
                        ):
     assert len(x_params_names) == len(x)
-    logicFn_kwargs = {k: v for k, v in zip(x_params_names[logicFn_x_idxs], 
+    logicFn_kwargs = {k: v for k, v in zip(x_params_names[logicFn_x_idxs],
                                             x[logicFn_x_idxs])}
     logicFn_kwargs.update({k: v for k, v in zip(fixed_params_names[logicFn_fix_idxs],
                                                 fixed_params_vals[logicFn_fix_idxs])})
-    driftFn_kwargs = {k: v for k, v in zip(x_params_names[driftFn_x_idxs], 
+    driftFn_kwargs = {k: v for k, v in zip(x_params_names[driftFn_x_idxs],
                                             x[driftFn_x_idxs])}
     driftFn_kwargs.update({k: v for k, v in zip(fixed_params_names[driftFn_fix_idxs],
                                                 fixed_params_vals[driftFn_fix_idxs])})
-    noiseFn_kwargs = {k: v for k, v in zip(x_params_names[noiseFn_x_idxs], 
+    noiseFn_kwargs = {k: v for k, v in zip(x_params_names[noiseFn_x_idxs],
                                             x[noiseFn_x_idxs])}
     noiseFn_kwargs.update({k: v for k, v in zip(fixed_params_names[noiseFn_fix_idxs],
                                                 fixed_params_vals[noiseFn_fix_idxs])})
-    biasFn_kwargs  = {k: v for k, v in zip(x_params_names[biasFn_x_idxs], 
+    biasFn_kwargs  = {k: v for k, v in zip(x_params_names[biasFn_x_idxs],
                                             x[biasFn_x_idxs])}
     biasFn_kwargs.update({k: v for k, v in zip(fixed_params_names[biasFn_fix_idxs],
                                                fixed_params_vals[biasFn_fix_idxs])})
-    
+
     include_Q = logicFn_kwargs["include_Q"]
     include_RewardRate = logicFn_kwargs["include_RewardRate"]
     if not include_Q:
@@ -115,7 +113,7 @@ def _processSubject(subject_df, fixed_params_names, fixed_params_vals,
 
     fixed_params_vals[0] = subject_df
     if dry_run:
-        loss = _makeOneRunWrapper(x=np.array(fit_params_init), 
+        loss = _makeOneRunWrapper(x=np.array(fit_params_init),
                                   x_params_names=fit_params_names,
                                   fixed_params_names=fixed_params_names,
                                   fixed_params_vals=fixed_params_vals,
@@ -129,7 +127,7 @@ def _processSubject(subject_df, fixed_params_names, fixed_params_vals,
                                   noiseFn_fix_idxs=noiseFn_fix_idxs,
                                   )
         return loss
-    
+
     res = differential_evolution(_makeOneRunWrapper,
                                  bounds=fit_params_bounds,
                                  args=(fit_params_names,
@@ -172,7 +170,7 @@ def _processSubject(subject_df, fixed_params_names, fixed_params_vals,
 def _evolveFPSubject(evolveFP : pathlib.Path, subject):
     # Add the subject before .pkl and save in the evolv_res_dump/ folder
     fp_str = str(evolveFP)
-    save_dir = "evolvs_res_dump/"
+    save_dir = "../../data/RLModel/"
     assert f"{save_dir}" in fp_str
     evolve_subj_FP = fp_str.replace(f"{save_dir}", f"{save_dir}/subject/")
     evolve_subj_FP = evolve_subj_FP.replace(".pkl", f"{subject}.pkl")
@@ -181,7 +179,7 @@ def _evolveFPSubject(evolveFP : pathlib.Path, subject):
 
 def evolveFP(drift_fn_str, bias_fn_str, noise_fn_str, t_dur, dt, is_loss_no_dir):
     loss_no_dir_str = "" if not is_loss_no_dir else "_loss_no_dir"
-    main_str = (f"evolvs_res_dump/{drift_fn_str}_bias{bias_fn_str}_{noise_fn_str}"
+    main_str = (f"../../data/RLModel/{drift_fn_str}_bias{bias_fn_str}_{noise_fn_str}"
                 f"{loss_no_dir_str}_{t_dur}s_dt{dt}.pkl")
     return pathlib.Path(main_str)
 
@@ -192,18 +190,18 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
     global _pool
     # print("fixed params names:", scipy_params["fixed_params_names"])
     # Strip down our df to the minimum in case it gets copied to the parallel processes
-    
+
     biasFn_df_cols, biasFn_kwargs_li = biasFnColsAndKwargs(biasFn)
     driftFn_df_cols, driftFn_kwargs_li = driftFnColsAndKwargs(driftFn)
     noiseFn_df_cols, noiseFn_kwargs_li = noiseFnColsAndKwargs(noiseFn)
-    
+
     print("bias_df_cols:", biasFn_df_cols)
     print("bias_kwars_li:", biasFn_kwargs_li)
     print("drft_df_cols:", driftFn_df_cols)
     print("drift_kwars_li:", driftFn_kwargs_li)
     print("noise_df_cols:", noiseFn_df_cols)
     print("noise_kwars_li:", noiseFn_kwargs_li)
-    
+
 
     include_Q = "Q_val" in biasFn_df_cols or "Q_val" in driftFn_df_cols or "Q_val" in noiseFn_df_cols
     include_RewardRate = "RewardRate" in driftFn_df_cols or "RewardRate" in noiseFn_df_cols or "RewardRate" in biasFn_df_cols
@@ -219,7 +217,7 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
                         noiseFn_df_cols=noiseFn_df_cols,
                         noiseFn_kwargs=noiseFn_kwargs_li,
     )
-    
+
 
     fixed_params_names = [k for k in fixed_params.keys()]
     fixed_params_vals = [v for v in fixed_params.values()]
@@ -240,7 +238,7 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
     #     print(fix_param_name, "=", fix_param_val)
 
     # Remove Params we are going to pass manually
-    manually_passed_params = ["driftFn_kwargs", "noiseFn_kwargs", 
+    manually_passed_params = ["driftFn_kwargs", "noiseFn_kwargs",
                               "biasFn_kwargs", "is_loss_no_dir"]
     extra_ignored_count = 0
     if not include_Q:
@@ -261,10 +259,10 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
     # always present in the function signature even if not used.
     _makeOneRun_fit_params = [_param for _param in makeOneRun_params_names
                               if _param not in fixed_params_names]
-    
+
     fit_params_li = {assertInBoundsAndDefaults(x)
                     for li in (_makeOneRun_fit_params,
-                               driftFn_kwargs_li, noiseFn_kwargs_li, 
+                               driftFn_kwargs_li, noiseFn_kwargs_li,
                                biasFn_kwargs_li)
                     for x in li}
     fit_params_li = list(fit_params_li)
@@ -273,17 +271,17 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
     fit_params_names, fit_params_bounds, fit_params_init = map(np.asarray, (
         fit_params_names, fit_params_bounds, fit_params_init))
 
-    
+
     print("Fit Params Names:", fit_params_names)
     # print("Fit Params init:", fit_params_init)
     # print("FIt Params bounds:", fit_params_bounds)
-    
+
 
     def indxsOfParams(names, params):
         params = {p.upper() for p in params}
         # print("Params:", params)
         # print("Names:", {name.upper() for name in names})
-        return np.array([i for i, name in enumerate(names) 
+        return np.array([i for i, name in enumerate(names)
                          if name.upper() in params], dtype=int)
 
     logicFn_fit_idxs = indxsOfParams(fit_params_names, makeOneRun_params_names)
@@ -305,7 +303,7 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
             if len(fix_idxs):
                 print(f"{name} fix_idxs:", fix_idxs, "==", fixed_params_names[fix_idxs])
             else:
-                print(f"{name} fix_idxs: None")            
+                print(f"{name} fix_idxs: None")
         _print_idxs("LogicFn", logicFn_fit_idxs, logicFn_fix_idxs)
         _print_idxs("DriftFn", driftFn_fit_idxs, driftFn_fix_idxs)
         _print_idxs("NoiseFn", noiseFn_fit_idxs, noiseFn_fix_idxs)
@@ -323,19 +321,19 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
     # ALPHA and BETA has default values so they dont show up if not used
     unused_fix_idxs += [np.nan] * extra_ignored_count # Just to keep the same length
     len_manual_params = len(manually_passed_params)
-    # TODO: Remove the manual params from the unused_fix_idxs so we get a 
+    # TODO: Remove the manual params from the unused_fix_idxs so we get a
     # filtered list of unused params
     print("Unused fix idxs:", len(unused_fix_idxs))
     print("len_manual_params:", len_manual_params)
     assert len(unused_fix_idxs) - len_manual_params == 0, (
       f"Unused (look TODO) fixed params: {fixed_params_names[unused_fix_idxs]}")
-    used_fit_idxs = (set(logicFn_fit_idxs) | set(driftFn_fit_idxs) | 
+    used_fit_idxs = (set(logicFn_fit_idxs) | set(driftFn_fit_idxs) |
                      set(noiseFn_fit_idxs) | set(biasFn_fit_idxs))
     unused_fit_idxs = list(set(range(len(fit_params_names))) - used_fit_idxs)
     assert not len(unused_fit_idxs), (
                       f"Unused fit params: {fit_params_names[unused_fit_idxs]}")
-        
-    
+
+
 
 
     df = initDF(df, include_Q, include_RewardRate)
@@ -361,11 +359,11 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
         assert "BETA" not in fit_params_names
 
     all_subjects = df.Name.unique()
-    remaining_subjects = [subject for subject in all_subjects 
+    remaining_subjects = [subject for subject in all_subjects
                           if subject not in evolvs_res]
-    print("Skipping:", [subject for subject in all_subjects 
+    print("Skipping:", [subject for subject in all_subjects
                        if subject not in remaining_subjects])
-    
+
     reverse_DriftLookup = {v:k for k,v in DRIFT_FN_DICT.items()}
     reverse_BiasLookup = {v:k for k,v in BIAS_FN_DICT.items()}
     reverse_NoiseLookup = {v:k for k,v in NOISE_FN_DICT.items()}
@@ -378,8 +376,8 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
     evolve_dump_FP = evolveFP(driftFn_str, biasFn_str, noiseFn_str, t_dur, dt,
                               is_loss_no_dir)
 
-    RUN_PARALLEL_PARALLEL = False
-    if RUN_PARALLEL_PARALLEL:
+    IS_PARALLEL_EXECUTION_ENABLED = False
+    if IS_PARALLEL_EXECUTION_ENABLED:
         workers = num_cpus / 2
         workers = max(workers, 1)
     else:
@@ -395,7 +393,7 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
             _running_locally = True
 
 
-    partialProcess = partial(_processSubject, 
+    partialProcess = partial(_processSubject,
                              fixed_params_names=fixed_params_names,
                              fixed_params_vals=fixed_params_vals,
                              fit_params_names=fit_params_names,
@@ -410,11 +408,15 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
                              dt=dt, t_dur=t_dur, workers=workers,
                              evolve_dump_FP=evolve_dump_FP,
                              dry_run=dry_run)
-    if not RUN_PARALLEL_PARALLEL:
+    if not IS_PARALLEL_EXECUTION_ENABLED:
         for subject in remaining_subjects:
             subject_df = df[df.Name == subject]
             if not _running_locally:
-                dump_FP = f"df_dump/{subject}_{driftFn_str}_{noiseFn_str}_{biasFn_str}.pkl"
+                dump_FP = pathlib.Path("../../data/RLModel/df_dump/"
+                                       f"{subject}_{driftFn_str}"
+                                       f"_{noiseFn_str}_{biasFn_str}.pkl")
+                if not dump_FP.parent.exists():
+                    dump_FP.parent.mkdir(exist_ok=True)
                 print("Dumping:", dump_FP)
                 subject_df.to_pickle(dump_FP)
                 subject_df = dump_FP
@@ -428,7 +430,7 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
                 break
     else:
         with NestablePool(3) as p:
-            for dict_res in p.imap_unordered(partialProcess, 
+            for dict_res in p.imap_unordered(partialProcess,
                                              [df[df.Name == subject] for subject in remaining_subjects]):
                 subject_df = dict_res["subject_df"]
                 subject = subject_df.Name.iloc[0]
@@ -439,5 +441,5 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
                 print("Subject:", subject, "done")
                 if dry_run:
                     break
-        
+
     return evolvs_res

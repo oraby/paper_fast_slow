@@ -44,7 +44,7 @@ def _biasQVal(size : int,
               BIAS_COEF : float,
               Q_val: npt.NDArray,
               Q_VAL_OFFSET: float,
-              ): 
+              ):
     assert len(Q_val) == size
     Q_val_offsetted = np.clip(Q_val + Q_VAL_OFFSET, -1, 1)
     return Q_val_offsetted * BIAS_COEF

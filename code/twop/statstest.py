@@ -10,7 +10,7 @@ class StatsTest:
 
     def resultDict(self):
       return self._results_dict
-    
+
   @staticmethod
   def mannwhitneyu(left_data, right_data):
     if isinstance(left_data, str) and left_data == "name":
@@ -86,7 +86,7 @@ class _AUC:
         self.xs.append(prob_x)
         self.ys.append(prob_y)
     return trapz_area
-  
+
   def plot(self, ax=None):
     assert self._track_xs_ys
     if ax is None:

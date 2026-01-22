@@ -39,21 +39,28 @@ def _plotPrevOutcomeCurQuantile(df, q1_df, q2_df, q3_df,
                                 col_prev_choice_correct, ax,
                                 sess_split_cols=["Name", "Date", "SessionNum"],
                                 width_scale=1, x_offset=0, hatch=None,
-                                plot_q2=False, show_legend=True):
+                                plot_q2=False, show_legend=True,
+                                plot_avg_line=True):
     WIDTH = .8 # Default ax.bar() width
     mean = df.groupby(_Q_GRP_BY_COLS)[col_prev_choice_correct].mean()
     # display(mean.mean())
-    ax.axhline(100*mean.mean(), color="gray", linestyle="--",
-               label=f"Subject Perf Mean {mean.mean():.2f}% ±{mean.sem():.2f}%")
+    if plot_avg_line:
+        ax.axhline(100*mean.mean(), color="gray", linestyle="--",
+                   label=f"Subject Perf Mean {mean.mean():.2f}% ±{mean.sem():.2f}%")
 
+    num_subjects = len(df.Name.unique())
 
     x_labels = []
     subj_fast_slow = {"Name": [], "Fast": [], "Typical": [], "Slow": []}
-    for subj, subj_df in df.groupby(_Q_GRP_BY_COLS):
+    # Avoid pandas warning on groupby of single colum
+    loop_on = _Q_GRP_BY_COLS
+    if len(loop_on) == 1:
+        loop_on = loop_on[0]
+    for subj, subj_df in df.groupby(loop_on):
         subj_fast_slow["Name"].append(subj)
-        subj_q1_mean = q1_df[q1_df.Name == subj].PrevChoiceCorrect.mean()
-        subj_q2_mean = q2_df[q2_df.Name == subj].PrevChoiceCorrect.mean()
-        subj_q3_mean = q3_df[q3_df.Name == subj].PrevChoiceCorrect.mean()
+        subj_q1_mean = q1_df.loc[q1_df.Name == subj, col_prev_choice_correct].mean()
+        subj_q2_mean = q2_df.loc[q2_df.Name == subj, col_prev_choice_correct].mean()
+        subj_q3_mean = q3_df.loc[q3_df.Name == subj, col_prev_choice_correct].mean()
         subj_q1_mean *= 100
         subj_q2_mean *= 100
         subj_q3_mean *= 100
@@ -76,13 +83,18 @@ def _plotPrevOutcomeCurQuantile(df, q1_df, q2_df, q3_df,
     fast_trials_count = len(q1_df)
     typical_trials_count = len(q2_df)
     slow_trials_count = len(q3_df)
+    fast_sem_str = f"±{fast_sem:.2f}% " if num_subjects > 1 else ""
+    slow_sem_str = f"±{slow_sem:.2f}% " if num_subjects > 1 else ""
+    typical_sem_str = f"±{typical_sem:.2f}% " if num_subjects > 1 else ""
+
     if not plot_q2:
-        x = x_offset + np.array([1, 2]) 
+        x = x_offset + np.array([1, 2])
         ax.bar(x, [fast_mean, slow_mean], yerr=[fast_sem, slow_sem],
               color=["r", "yellow"],
-              label=[f"Fast {fast_mean:.2f}% ±{fast_sem:.2f}% - {fast_trials_count:,} Trials",
-                    f"Slow {slow_mean:.2f}% ±{slow_sem:.2f}% - {slow_trials_count:,} Trials"],
-              width=WIDTH*width_scale)
+              label=[f"Fast {fast_mean:.2f}% {fast_sem_str}- {fast_trials_count:,} Trials",
+                    f"Slow {slow_mean:.2f}% {slow_sem_str}- {slow_trials_count:,} Trials"],
+              width=WIDTH*width_scale,
+              hatch=hatch)
         x_labels = ["Fast", "Slow"]
         test_res = stats.ttest_rel(fast_slow_df.Fast, fast_slow_df.Slow)
         sgf_str = "***" if test_res.pvalue < 0.001 else (
@@ -93,34 +105,40 @@ def _plotPrevOutcomeCurQuantile(df, q1_df, q2_df, q3_df,
         max_y = max(fast_slow_df.Fast.max(), fast_slow_df.Slow.max())
         ax.annotate(sgf_str, xy=(1.5, max_y),
                     ha="center", va="bottom")
+        min_y = min(fast_slow_df.Fast.min(), fast_slow_df.Slow.min())
     else:
         x = x_offset + np.array([1, 2, 3])
         ax.bar(x,
                [fast_mean, typical_mean, slow_mean],
                yerr=[fast_sem, typical_sem, slow_sem],
                color=["r", "orange", "yellow"],
-               label=[f"Fast {fast_mean:.2f}% ±{fast_sem:.2f}% - {fast_trials_count:,} Trials",
-                      f"Typical {typical_mean:.2f}% ±{typical_sem:.2f}% - {typical_trials_count:,} Trials",
-                      f"Slow {slow_mean:.2f}% ±{slow_sem:.2f}% - {slow_trials_count:,} Trials"],
-               width=WIDTH*width_scale)
+               label=[f"Fast {fast_mean:.2f}% {fast_sem_str}- {fast_trials_count:,} Trials",
+                      f"Typical {typical_mean:.2f}% {typical_sem_str}- {typical_trials_count:,} Trials",
+                      f"Slow {slow_mean:.2f}% {slow_sem_str}- {slow_trials_count:,} Trials"],
+               width=WIDTH*width_scale,
+               hatch=hatch)
         x_labels = ["Fast", "Typical", "Slow"]
+        min_y = min(fast_slow_df.Fast.min(),
+                    fast_slow_df.Typical.min(),
+                    fast_slow_df.Slow.min())
 
+    ax.set_ylim(bottom=min(50, min_y - 5), top=100)
     if hatch is not None:
         return
     ax.set_xticks(np.arange(1, len(x_labels) + 1))
     ax.set_xticklabels(x_labels)
-    ax.set_ylim(bottom=50, top=100)
     ax.set_xlim(0, len(x_labels) + 1)
     ax.set_ylabel("Prev. Trial Correct (%)")
     if show_legend:
         ax.legend(loc="upper right",
                   #fontsize="xx-small"
                   )
-    ax.set_title("Strategy by prev. trial outcome (Err bar: Subject)")
-    num_subjects = len(df.Name.unique())
+    # ax.set_title("Strategy by prev. trial outcome (Err bar: Subject)")
     num_sessions = len(df[sess_split_cols].drop_duplicates())
-    ax.set_title("Fast/Slow distribution by prev. trial outcome\n"
-                 f"(n={num_subjects} subjects - {num_sessions} Sessions - Err bar: Subject SEM)\n")
+    subj_str = f"\n(n={num_subjects} subjects - " if num_subjects > 1 else " ("
+    err_brar_str = " - Err bar: Subject SEM" if num_subjects > 1 else ""
+    ax.set_title("Fast/Slow distribution by prev. trial outcome"
+                 f"{subj_str}{num_sessions} Sessions{err_brar_str})")
     [ax.spines[_dir].set_visible(False) for _dir in ["top", "right"]]
 
 
@@ -212,6 +230,7 @@ def stimulusTimeByPrevOutcome(df, col, is_time, is_normalized, save_figs,
         plotted_ys.append(st_mean)
         count += 1
 
+    x_ticks = np.array(x_ticks)
     for idx, (subject, subject_df) in enumerate(df.groupby(GROUPBY_COL)):
         st = subject_df.groupby(f"{col_prefix}PrevOutcomeCount")[col]
         st_mean = st.mean()
@@ -219,7 +238,8 @@ def stimulusTimeByPrevOutcome(df, col, is_time, is_normalized, save_figs,
         if len(x_ticks) != len(st_mean): # This can happen when plotting all
             print(f"Subject: {subject} has {len(st_mean)} prev. outcomes")
             continue
-        ax.plot(x_ticks, st_mean, color=f'C{idx}', alpha=0.1, marker='o')
+        ax.plot(x_ticks + x_offset, st_mean, color=f'C{idx}', alpha=0.1,
+                marker='o')
 
     ax.set_xticks(x_ticks)
     ax.set_xticklabels(x_ticks_labels)

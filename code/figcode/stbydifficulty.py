@@ -36,7 +36,7 @@ def stByDifficulty(df, subjs_dscrp="All Mice", plot_single_subjects=True,
                         save_figs=save_figs)
         # break
 
-def stDistOnly(df, plot_combined_subjects=True, plot_single_subjects=True, 
+def stDistOnly(df, plot_combined_subjects=True, plot_single_subjects=True,
                descrp="Mice", save_prefix="", save_figs=False,
                as_kde=False):
     df = df[df.calcStimulusTime.notnull()]
@@ -65,10 +65,10 @@ def stDistOnly(df, plot_combined_subjects=True, plot_single_subjects=True,
             _handleDifficultyDf(dv, dv_df, ax_dv,  clr, CDF=False,
                                 many_animals=many_animals, plot_median=False)
             # ax_dv.legend()
-            [ax_dv.spines[_dir].set_visible(False) 
+            [ax_dv.spines[_dir].set_visible(False)
              for _dir in ["top", "right", "left"]]
-        
-        
+
+
         # ax.legend(loc="upper right")
         if save_figs:
             kde_str = "kde_"  if as_kde else ""
@@ -87,7 +87,7 @@ def stDistOnly(df, plot_combined_subjects=True, plot_single_subjects=True,
         _processSubjectST(subject_df, subject_name, many_animals=False)
 
 
-def loopstVsDiffOnly(df, title, plot_combined_subjects=True, 
+def loopstVsDiffOnly(df, title, plot_combined_subjects=True,
                      plot_single_subjects=False,  save_prefix="",
                      save_figs=False):
     print("TODO: Rename this function and the function below to: "
@@ -135,7 +135,7 @@ def loopstVsDiffOnly(df, title, plot_combined_subjects=True,
         _processSubject(subject_df, subject_name, many_animals=False,
                         sep_corr_incorr=True)
 
-def stVsDiffOnly(df, plot_combined_subjects=True, 
+def stVsDiffOnly(df, plot_combined_subjects=True,
                  plot_single_subjects=True, y_fast_min=None,
                  y_slow_min=None, save_prefix="", save_figs=False,
                  all_dscrp="All Mice"):
@@ -206,13 +206,13 @@ def stVsDiffOnly(df, plot_combined_subjects=True,
                 # if is_fast:
                 # else:
                 #     ylim = ylim[0] , ylim[0] + biggest_rng
-                
+
             ax.set_ylim(ylim)
             multiple_locator = 0.1 if biggest_rng < 2 else 0.5
             if (is_fast and y_fast_min is not None) or \
                (not is_fast and y_slow_min is not None):
-                ticks = np.arange(ylim[0], ylim[0] + biggest_rng, 
-                                  multiple_locator)    
+                ticks = np.arange(ylim[0], ylim[0] + biggest_rng,
+                                  multiple_locator)
                 ax.yaxis.set_ticks(ticks)
             else:
                 ax.yaxis.set_major_locator(plticker.MultipleLocator(multiple_locator))
@@ -354,9 +354,11 @@ def _rtVsDifficulty(df, animal_name, ax, many_animals, sep_corr_incorr=True,
                     clr=None, legend_loc=None, x_offset=0, linfit=False,
                     ls="-", marker=None, plot_legend=True, legend_fontsize=None,
                     col_rt="calcStimulusTime", col_corr="ChoiceCorrect",
-                    plot_incorr=True):
-    col_rt = (col_rt if not many_animals else
-             "transformedCalcStimulusTime")
+                    plot_incorr=True, annotate=True):
+    if many_animals:
+        assert col_rt == "calcStimulusTime", ("Didn't check code for RT other "
+                                      f"than 'calcStimulusTime', got: {col_rt}")
+        col_rt = "transformedCalcStimulusTime"
     df = df[df[col_rt].notnull()]
     if sep_corr_incorr:
         clr_corr = 'g' if clr is None else clr
@@ -400,7 +402,8 @@ def _rtVsDifficulty(df, animal_name, ax, many_animals, sep_corr_incorr=True,
                 label_ = f"{y_mean:.2f}±{y_sem:.2f} SEM\n" + \
                          f"n={len(st):,} Sessions, {len(dv_df):,} Trials"
             # Annotate below
-            ax.annotate(label_, (count + 0.01, y_mean - 0.01), color=c)
+            if annotate:
+                ax.annotate(label_, (count + 0.01, y_mean - 0.01), color=c)
             y_data.append(y_mean)
             y_data_sem.append(y_sem)
             # st = dv_df[col_rt]
@@ -421,15 +424,17 @@ def _rtVsDifficulty(df, animal_name, ax, many_animals, sep_corr_incorr=True,
             slope = -reg_res.slope
             # Annotate on top of the first value
             slope_angle = np.rad2deg(np.arctan(slope))
-            ax.annotate(f"Slope={slope:.2f} - θ={slope_angle:.2f}°",
-                        (x_data[0] + 0.1, y_data[0] + 0.02),
-                        color=c)#'k' if c == "yellow" else c),
+            if annotate:
+                ax.annotate(f"Slope={slope:.2f} - θ={slope_angle:.2f}°",
+                            (x_data[0] + 0.1, y_data[0] + 0.02),
+                            color=c)#'k' if c == "yellow" else c),
 
     ax.set_xticks([1, 2, 3])
     ax.set_xticklabels(["Hard", "Med", "Easy"])
-    ax.set_xlabel("Difficulty")
-    ax.set_ylabel("Stimulus Time " +
-                  ("(Normalized)" if many_animals else "(s)"))
+    if annotate:
+        ax.set_xlabel("Difficulty")
+        ax.set_ylabel("Stimulus Time " +
+                    ("(Normalized)" if many_animals else "(s)"))
     ax.set_title(f"{animal_name} (n={len(df):,} trials)")
     if plot_legend:
         foctsize_dict = {} if legend_fontsize is None else \

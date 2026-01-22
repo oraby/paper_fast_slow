@@ -1,6 +1,5 @@
-# Copied from paper.code.behavior
 from .logic import makeOneRun
-from ....paper_fast_slow.code.behavior.util.splitdata import splitStimulusTimeByQuantile
+from ...behavior.util.splitdata import splitStimulusTimeByQuantile
 import pandas as pd
 import numpy as np
 import numpy.typing as npt
@@ -18,8 +17,8 @@ def decayingQ(size, Q_val, Q_val_decay_rate, Q_val_coef, dt):
     # Decay the Q-val by the decay rate at each time step
     # Create an array of indices
     indices = np.arange(size)
-    EXPPNENTIAL_DECAY = True
-    if not EXPPNENTIAL_DECAY:
+    EXPONENTIAL_DECAY = True
+    if not EXPONENTIAL_DECAY:
         # Calculate the decay for each step
         decay = Q_val_decay_rate[:, np.newaxis] *  indices * dt
     else:
@@ -86,7 +85,7 @@ def extractParams(driftFn, biasFn):
                 ("Q_VAL_DECAY_RATE" in params)
 
     return params, include_RewardRate, include_Q
-    
+
 
 def driftFnColsAndKwargs(driftFn):
     COMMON_ARGS = ['STARTING_POINT', 'NONDECTIME', 'DRIFT_COEF', 'DVS',
@@ -144,6 +143,6 @@ def _fnColsAndKargs(fn, COMMON_ARGS):
 
 def partialWithNames(fn, **kwargs):
     fn = partial(fn, **kwargs)
-    fn.__name__ = fn.func.__name__ + "_".join(f"_{key}_{val}" 
+    fn.__name__ = fn.func.__name__ + "_".join(f"_{key}_{val}"
                                               for key, val in kwargs.items())
     return fn

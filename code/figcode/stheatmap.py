@@ -12,7 +12,7 @@ from typing import Literal
 
 def stHeatmap(df : pd.DataFrame,
               mean_or_median : Literal["mean", "median", "mode"],
-              dscrp : str, df_query="",  
+              dscrp : str, df_query="",
               plot_combined_subjects=True,
               plot_single_subjects=True,
               save_prefix="", save_fig=False):
@@ -31,7 +31,7 @@ def stHeatmap(df : pd.DataFrame,
                                         save_fig=save_fig,
                                         save_prefix=save_prefix)
         plt.show()
-        
+
     if not plot_single_subjects:
         return
     for subject_name, subject_df in df_org.groupby("Name"):
@@ -110,7 +110,7 @@ def _gropuDataByPriorAndCurrentSubject(df : pd.DataFrame,
         save_fp.parent.mkdir(exist_ok=True)
         fig1.savefig(save_fp, dpi=300, bbox_inches='tight')
 
-    
+
     if is_many_subjects:
         fig2, ax_violin = plt.subplots(1, figsize=(20, 8))
         _violinPlot(df.copy(), ax_violin)
@@ -320,7 +320,7 @@ def _stHist(df, title, save_fig, save_prefix=None):
     PLOT_HIST = False
     if not PLOT_HIST:
         return bins
-    
+
     hist_bins_counts = [np.histogram(data, bins=bins)[0] for data in
                         [prev_rewarded_st, prev_not_rewarded_st]]
     # Normalize sum to 1
@@ -481,7 +481,7 @@ def _violinPlot(df, ax):
     #     if "display" in globals():
     #         display(similar_df)
     #     print("All similar?:", similar_df.all().all())
-    
+
     # Print every value pair first
     print("\t", end="")
     for i, (_, row) in enumerate(corr_res.iterrows()):

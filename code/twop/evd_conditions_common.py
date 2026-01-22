@@ -534,7 +534,7 @@ def generateEarlyLate(df, num_reaction_time_groups, time_before_sampling,
     extend_at_beginning=True, cut_from_beginning=True,
     offset_epochs_ranges_starting_epoch="Movement to Lateral Port",
     by_animal=is_by_animal)
-  
+
   print("Averaging start of sampling trials together using:", used_filters)
   savePrefix = partial(behaviorcommon.savePrefixTmplt,
     fig_short_name="traces/trace_sampling_",

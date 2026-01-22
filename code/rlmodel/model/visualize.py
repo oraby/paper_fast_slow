@@ -3,7 +3,7 @@ from .drift import DRIFT_FN_DICT
 from .noise import NOISE_FN_DICT
 from .bias import BIAS_FN_DICT
 from .plotter import runAndPlot, createFig
-from .util import (initDF, assignQuantiles, driftFnColsAndKwargs, 
+from .util import (initDF, assignQuantiles, driftFnColsAndKwargs,
                    biasFnColsAndKwargs, noiseFnColsAndKwargs, PsychometricPlot)
 from .initvals import InitVals
 # from ._readparams import readParams
@@ -56,17 +56,13 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
         elif label == "Drift Fn":
             options_str = list(DRIFT_FN_DICT.keys())
             values =      list(DRIFT_FN_DICT.values())
-            default_val_idx = options_str.index("NoiseGain-RewardRate Decay Q")
+            default_val_idx = options_str.index("NoiseGain-RewardRate")
             # print("options_str:", options_str)
             # print("values:", values)
         elif label == "Bias Fn":
-            # BIASN_FN_FIXED, BIAS_FN_MEAN_SIGMA, BIAS_FN_QVAL = \
-            #        "Fixed",       "Mean+Sigma",    "Q-Value"
-            # options_str = [BIASN_FN_FIXED, BIAS_FN_MEAN_SIGMA, BIAS_FN_QVAL]
-            # values =      [_biasFixed,     _biasMean,          _biasQVal]
             options_str = list(BIAS_FN_DICT.keys())
             values =      list(BIAS_FN_DICT.values())
-            default_val_idx = options_str.index("Q-Val")
+            default_val_idx = options_str.index("Q-Val (Offset)")
         elif label == "Psychometric":
             options_str = ["None", "All", "Slow/Fast"]
             values = [PsychometricPlot._None, PsychometricPlot.All, PsychometricPlot.SlowFast]
@@ -165,7 +161,7 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
         # print("0")
         if ((last_subject != cur_subject) or (last_driftFn != all_widgets["Drift Fn"].value) or
             (last_biasFn != all_widgets["Bias Fn"].value)) and subjects_defaults is not None:
-        # if True: 
+        # if True:
             # [t_dur, noiseFn, biasFn, driftFm, subject]
             # print("1")
             cur_t_dur_dict = subjects_defaults.get(t_dur, {})
@@ -266,7 +262,7 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
                 noiseFn_kwargs[widget.description] = widget.value
             if widget.description in updatePlots_kwargs_li:
                 updatePlots_kwargs[widget.description] = widget.value
-        
+
         plot_bias_dir = "CorrIncorr" in biasFn.__name__
 
         last_loss, _ = runAndPlot(df, biasFn=biasFn, driftFn=driftFm, noiseFn=noiseFn,
@@ -342,7 +338,7 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
                                 print("Skipping already existing:", save_fp)
                                 continue
                             all_widgets["Subject"].value = name
-                            _makeSaveFigTitle(fig, name, last_loss, driftFn, 
+                            _makeSaveFigTitle(fig, name, last_loss, driftFn,
                                               biasFn)
                             print("Saving:", save_fp)
                             save_fp.parent.mkdir(exist_ok=True)

@@ -109,7 +109,7 @@ def _add_sig_bracket(ax, x1, x2, y, text, h=None):
     # Dynamic bracket height based on plot range
     if h is None:
         h = (ymax - ymin) * 0.02 if ymax > ymin else 0.05
-    
+
     ax.plot([x1, x1, x2, x2],
             [y, y + h, y + h, y],
             color="black", linewidth=1)
@@ -218,7 +218,7 @@ def _plotReactionBars(df_cntrl, df_opto,
     # -------------------- STATS: Within-Region (Correct vs Incorrect) -------------------- #
     within_p_corr = {}
     within_t = {}
-    
+
     # Raw p-values for within comparisons
     p_raw_within = {}
     keys_within = []
@@ -233,7 +233,7 @@ def _plotReactionBars(df_cntrl, df_opto,
         mask = ~np.isnan(vals_corr) & ~np.isnan(vals_incorr)
         if mask.sum() < 2:
             continue
-        
+
         t, p = stats.ttest_rel(vals_corr[mask], vals_incorr[mask])
         within_t[region] = t
         p_raw_within[region] = p
@@ -251,7 +251,7 @@ def _plotReactionBars(df_cntrl, df_opto,
 
 
     # -------------------- STATS: Across-Region (RM ANOVA + Pairwise) -------------------- #
-    
+
     # Helper for Cross-Region analysis
     def _analyze_cross_region(outcome_label: str):
         """
@@ -259,7 +259,7 @@ def _plotReactionBars(df_cntrl, df_opto,
         Returns a dict of significant pairwise comparisons: {(RegionA, RegionB): p_holm}
         """
         subset_df = subj_region_df[subj_region_df["PrevOutcome"] == outcome_label].copy()
-        
+
         # Check sufficiency
         if subset_df["Region"].nunique() < 2 or subset_df["Subject"].nunique() < 2:
             print(f"\nNot enough data for {outcome_label} cross-region stats.")
@@ -278,21 +278,21 @@ def _plotReactionBars(df_cntrl, df_opto,
         p_raw_cross = {}
         t_cross = {}
         pairs = []
-        
+
         reg_list = region_names
         for i in range(len(reg_list)):
             for j in range(i + 1, len(reg_list)):
                 r1, r2 = reg_list[i], reg_list[j]
-                
+
                 # Get data for both regions aligned by subject
                 df1 = subset_df[subset_df.Region == r1].set_index("Subject")["RT"]
                 df2 = subset_df[subset_df.Region == r2].set_index("Subject")["RT"]
-                
+
                 # Intersection
                 common = df1.index.intersection(df2.index)
                 if len(common) < 2:
                     continue
-                
+
                 t, p = stats.ttest_rel(df1.loc[common], df2.loc[common])
                 p_raw_cross[(r1, r2)] = p
                 t_cross[(r1, r2)] = t
@@ -303,12 +303,12 @@ def _plotReactionBars(df_cntrl, df_opto,
         if pairs:
             pvals = [p_raw_cross[pair] for pair in pairs]
             _, pvals_corr, _, _ = multipletests(pvals, method="holm")
-            
+
             print(f"--- Pairwise {outcome_label} (Holm) ---")
             for pair, p_c in zip(pairs, pvals_corr):
                 print(f"{pair[0]} vs {pair[1]}: t={t_cross[pair]:.2f}, p_holm={p_c:.4f}")
                 sig_pairs_map[pair] = p_c
-        
+
         return sig_pairs_map
 
     # Run Cross-Region Stats
@@ -356,9 +356,9 @@ def _plotReactionBars(df_cntrl, df_opto,
     # Map regions to x-coordinates
     xs_loop = xs[::2] if not plot_as_difference else xs
     region_x_map = {} # Store x coords for brackets later
-    
+
     y_stack_tracker = 0 # To track height for brackets
-    
+
     # Draw Bars and Within-Region Stars
     for x0, region, clr in zip(xs_loop, region_names, clrs):
         col_corr = f"{region}_prev_correct"
@@ -378,9 +378,9 @@ def _plotReactionBars(df_cntrl, df_opto,
 
             ax.bar(x0, mean_diff, yerr=err_diff,
                    width=0.4, color=clr, edgecolor="black")
-            
+
             region_x_map[region] = {"diff": x0}
-            
+
             # Update max height tracker
             current_top = mean_diff + err_diff
             if current_top > y_stack_tracker:
@@ -396,7 +396,7 @@ def _plotReactionBars(df_cntrl, df_opto,
             # Mode: Plot raw Correct and Incorrect bars side-by-side
             mask_corr = ~np.isnan(vals_corr)
             mask_incorr = ~np.isnan(vals_incorr)
-            
+
             mean_corr = vals_corr[mask_corr].mean() if mask_corr.sum() > 0 else np.nan
             mean_incorr = vals_incorr[mask_incorr].mean() if mask_incorr.sum() > 0 else np.nan
             err_corr = stats.sem(vals_corr[mask_corr]) if mask_corr.sum() > 1 else 0.0
@@ -425,17 +425,17 @@ def _plotReactionBars(df_cntrl, df_opto,
 
     # -------------------- Draw Cross-Region Brackets -------------------- #
     # We draw brackets if p_holm < 0.05
-    
+
     def _draw_cross_brackets(sig_map, key_suffix):
         nonlocal y_stack_tracker
         # Sort pairs by distance to draw smaller brackets first (aesthetic)
         sorted_pairs = sorted(sig_map.keys(), key=lambda p: abs(region_names.index(p[0]) - region_names.index(p[1])))
-        
+
         for r1, r2 in sorted_pairs:
             p_val = sig_map[(r1, r2)]
             star = _sigstar(p_val)
             if not star: continue
-            
+
             # Determine x coordinates
             if plot_as_difference:
                 x_a = region_x_map[r1]["diff"]
@@ -443,7 +443,7 @@ def _plotReactionBars(df_cntrl, df_opto,
             else:
                 x_a = region_x_map[r1][key_suffix]
                 x_b = region_x_map[r2][key_suffix]
-            
+
             y_stack_tracker = _add_sig_bracket(ax, x_a, x_b, y_stack_tracker, star)
 
     if plot_as_difference:
@@ -454,9 +454,9 @@ def _plotReactionBars(df_cntrl, df_opto,
         # Assuming we treat the Difference metric as the variable of interest for cross-region in this mode:
         # Let's perform a quick check for Difference cross-region stats if in diff mode.
         pass # Not explicitly requested for Difference Mode logic, sticking to user's "Correct/Incorrect" request.
-             # If plotting Diff, visuals for "Correct vs Correct" are ambiguous. 
-             # I will skip cross-region brackets in "Difference" mode to avoid confusion, 
-             # OR implies we should run stats on the Difference. 
+             # If plotting Diff, visuals for "Correct vs Correct" are ambiguous.
+             # I will skip cross-region brackets in "Difference" mode to avoid confusion,
+             # OR implies we should run stats on the Difference.
              # Given the prompt, I will assume standard plot mode is the primary target for these brackets.
     else:
         # Draw Correct vs Correct brackets

@@ -4,12 +4,15 @@ import pandas as pd
 from pathlib import Path
 from scipy import stats
 import scikit_posthocs as sp
+from typing import Union
 
-def _calcSessAvgRewardRate(sess_df, choice_col, rr_postfix=""):
+def _calcSessAvgRewardRate(sess_df, choice_col, num_past_trials_li,
+                           rr_postfix=""):
     choice_correct_no_nan = sess_df[choice_col].fillna(0)
     sess_df = sess_df.copy()
     rr_cols = []
-    for num_past_trials in range(2, 11):
+
+    for num_past_trials in num_past_trials_li:
         rr_col = f"RewardRate{rr_postfix}{num_past_trials}"
         sess_df[rr_col] = choice_correct_no_nan.rolling(num_past_trials).mean().shift(1)
         rr_cols.append(rr_col)
@@ -17,6 +20,7 @@ def _calcSessAvgRewardRate(sess_df, choice_col, rr_postfix=""):
     return sess_df
 
 def calcAvgRewardRate(df, choice_cols=["ChoiceCorrect"], rr_postfixs=[""],
+                      num_past_trials_li=[5],
                       groupby_cols=["Name", "Date", "SessionNum"]):
     df = df.copy()
     df_li = []
@@ -30,7 +34,9 @@ def calcAvgRewardRate(df, choice_cols=["ChoiceCorrect"], rr_postfixs=[""],
     groupby_cols_iter = groupby_cols[0] if len(groupby_cols) == 1 else groupby_cols
     for sess, sess_df in df.groupby(groupby_cols_iter):
         for choice_col, rr_postfix in zip(choice_cols, rr_postfixs):
-            sess_df = _calcSessAvgRewardRate(sess_df, choice_col, rr_postfix)
+            sess_df = _calcSessAvgRewardRate(sess_df, choice_col=choice_col,
+                                             num_past_trials_li=num_past_trials_li,
+                                             rr_postfix=rr_postfix)
         df_li.append(sess_df)
     res_df = pd.concat(df_li)
     res_df = res_df.sort_values(groupby_cols + ["TrialNumber"])
@@ -39,10 +45,14 @@ def calcAvgRewardRate(df, choice_cols=["ChoiceCorrect"], rr_postfixs=[""],
 
 
 
-def plotSubjectRewardRateRt(subject, subject_df, col_postfix, rt_col, RT_ZSCORE,
-                            num_past_trials, BY_SESS, min_trials_per_sess_rr,
-                            plot=True, save_figs=False,
-                            descrp="", save_prefix=None):
+def plotSubjectRewardRateRt(subject : str, subject_df : pd.DataFrame,
+                            col_postfix : str, rt_col : str, RT_ZSCORE : bool,
+                            num_past_trials : int, BY_SESS : bool,
+                            min_trials_per_sess_rr : int,
+                            plot : bool=True,
+                            plot_distinct_timeouts : bool=False,
+                            save_figs : bool=False, descrp : str ="",
+                            save_prefix : Union[str, None]=None):
     if save_figs:
         assert save_prefix is not None
     # print("Subject:", subject, "Num Trials:", len(subject_df))
@@ -58,19 +68,23 @@ def plotSubjectRewardRateRt(subject, subject_df, col_postfix, rt_col, RT_ZSCORE,
                 "RewardRateRTSEM": [],
                 "RewardRateCount": [],
                 "TotalNumTrials":[]}
-    kwargs = dict(subject=subject, col_postfix=col_postfix, rt_col=rt_col,
-                  RT_ZSCORE=RT_ZSCORE, num_past_trials=num_past_trials,
-                  min_trials_per_sess_rr=min_trials_per_sess_rr,
-                  BY_SESS=BY_SESS, plot=plot, save_figs=save_figs,
-                  descrp=descrp, save_prefix=save_prefix)
-
+    common_kwargs = dict(subject=subject, col_postfix=col_postfix, rt_col=rt_col,
+                         RT_ZSCORE=RT_ZSCORE, num_past_trials=num_past_trials,
+                         min_trials_per_sess_rr=min_trials_per_sess_rr,
+                         BY_SESS=BY_SESS, save_figs=save_figs,
+                         descrp=descrp, save_prefix=save_prefix)
+    distinct_kwargs = common_kwargs.copy()
+    distinct_kwargs["plot"] = plot_distinct_timeouts
     for timeout, timeout_df in subject_df.groupby("GUI_TimeOutIncorrectChoice"):
         timeout_res_dict = _plotRewardRateRT(df=timeout_df, timeout=timeout,
-                                             **kwargs)
+                                             **distinct_kwargs)
         for key, val in timeout_res_dict.items():
             res_dict[key].extend(val)
+
+    all_kwargs = common_kwargs.copy()
+    all_kwargs["plot"] = plot
     all_res_dict = _plotRewardRateRT(df=subject_df, timeout="All",
-                                     **kwargs)
+                                     **all_kwargs)
     for key, val in all_res_dict.items():
         res_dict[key].extend(val)
     res_df = pd.DataFrame(res_dict)
@@ -79,10 +93,13 @@ def plotSubjectRewardRateRt(subject, subject_df, col_postfix, rt_col, RT_ZSCORE,
     res_df["num_trials"] = len(subject_df)
     return res_df
 
-def _plotRewardRateRT(subject, df, col_postfix, rt_col, RT_ZSCORE,
-                      num_past_trials, BY_SESS,  timeout,
-                      min_trials_per_sess_rr, plot=True,
-                      save_figs=False, descrp="", save_prefix=None):
+def _plotRewardRateRT(subject : str, df : pd.DataFrame, col_postfix : str,
+                      rt_col : str, RT_ZSCORE : bool,
+                      num_past_trials : int, BY_SESS : bool,
+                      timeout : Union[float, str],
+                      min_trials_per_sess_rr : int, plot : bool=True,
+                      save_figs : bool=False, descrp : str ="",
+                      save_prefix : Union[str, None]=None):
     if save_figs:
         assert save_prefix is not None
     RewardRateCol = f"RewardRate{col_postfix}{num_past_trials}"
@@ -171,7 +188,10 @@ def loopRewardRateAnalysis(df, plot_subjects,
                            save_prefix=None, ax_all=None,
                            ax_all_used_timeout_time=None,
                            min_trials_per_sess_rr=5,
-                           min_num_trials=500):
+                           min_num_trials=500,
+                           run_stats=True,
+                           print_only_sim=False,
+                           exclude_reward_rate_bins=[]):
     if save_figs:
         assert save_prefix is not None
     if ax_all is not None:
@@ -181,9 +201,14 @@ def loopRewardRateAnalysis(df, plot_subjects,
     BY_SESS = True
     RT_ZSCORE = True
 
-    postfix_rt_col_tups = [("", "calcStimulusTime")]
+    if not print_only_sim:
+        postfix_rt_col_tups = [("", "calcStimulusTime")]
+    else:
+        postfix_rt_col_tups = []
+
     if "SimRT" in df.columns:
         postfix_rt_col_tups.append(("Sim", "SimRT"))
+
     for name, subject_df in df.groupby("Name"):
         # print("Subject DF:", subject_df)
         for col_postfix, col_rt in postfix_rt_col_tups:
@@ -198,6 +223,9 @@ def loopRewardRateAnalysis(df, plot_subjects,
                                              plot=False, descrp=descrp,
                                              save_prefix=save_prefix)
 
+            if len(exclude_reward_rate_bins):
+                res_df = res_df[~res_df["bin"].apply(
+                                  lambda b: b.left in exclude_reward_rate_bins)]
             # plotSubjectSessQuantiles(name, subject_processed_df, col_prefix,
             #                          col_rt, save_figs=save_figs)
             df_li.append(res_df)
@@ -207,26 +235,32 @@ def loopRewardRateAnalysis(df, plot_subjects,
         for subject, subject_df in res_df.groupby("Name"):
             _plotLoopResults(subject, subject_df,
                              RT_ZSCORE, REWARD_RATE_NUM_PAST_TRIALS, BY_SESS,
+                             run_stats=run_stats,
                              descrp=descrp, save_figs=save_figs,
                              save_prefix=save_prefix)
     res_df = res_df[res_df.num_trials >= min_num_trials]
+    if not len(res_df):
+        print("No subjects with more than", min_num_trials, "trials.")
+        return
     if ax_all_used_timeout_time is not None:
         res_df = res_df[res_df.GUI_TimeOutIncorrectChoice ==
                         ax_all_used_timeout_time]
     _plotLoopResults("All Subjects", res_df, RT_ZSCORE,
-                     REWARD_RATE_NUM_PAST_TRIALS, BY_SESS,
+                     REWARD_RATE_NUM_PAST_TRIALS, BY_SESS, run_stats=run_stats,
                      descrp=descrp, save_figs=save_figs,
                      plot_singles_on_all=plot_singles_on_all,
                      save_prefix=save_prefix, use_ax=ax_all)
 
 
 def _plotLoopResults(subject, res_df, RT_ZSCORE, REWARD_RATE_NUM_PAST_TRIALS,
-                     BY_SESS, save_figs=False, descrp="", save_prefix=None,
-                     use_ax=None, plot_singles_on_all=True):
+                     BY_SESS, run_stats=True, save_figs=False, descrp="",
+                     save_prefix=None, use_ax=None, plot_singles_on_all=True):
     if save_figs:
         assert save_prefix is not None
     if use_ax is not None:
-        assert res_df.GUI_TimeOutIncorrectChoice.nunique() == 1
+        assert res_df.GUI_TimeOutIncorrectChoice.nunique() == 1, (
+            "If using an axis, the res_df must contain only one timeout value,"
+            f" got: {res_df.GUI_TimeOutIncorrectChoice.unique()}")
     for timeout, timeout_both_df in res_df.groupby("GUI_TimeOutIncorrectChoice"):
         if use_ax is None:
             fig, ax = plt.subplots(1, 1, figsize=(10, 5))
@@ -266,10 +300,15 @@ def _plotLoopResults(subject, res_df, RT_ZSCORE, REWARD_RATE_NUM_PAST_TRIALS,
                 # Annotate each point with the number of subjects, mean and SEM
                 num_subj = len(bin_df)
                 num_trials = bin_df["TotalNumTrials"].sum()
-                ax.annotate(f" n={num_subj} Subj ({num_trials:,} Trials)\n"
-                            f"mean={y:.2f} ±{y_err:.2f}SEM",
-                            (x, y), textcoords="offset points", xytext=(0, 10),
-                             ha='left', va='bottom')
+                if num_subj > 1:
+                    ax.annotate(f" n={num_subj} Subj ({num_trials:,} Trials)\n"
+                                f"mean={y:.2f} ±{y_err:.2f}SEM",
+                                (x, y), textcoords="offset points", xytext=(0, 10),
+                                ha='left', va='bottom')
+                else:
+                    ax.annotate(f" mean={y:.2f} ({num_trials:,} Trials)",
+                                (x, y), textcoords="offset points", xytext=(0, 10),
+                                ha='left', va='bottom')
             # print("Col Postfix:", col_postfix, "Timeout:", timeout)
             total_num_trials = timeout_df["TotalNumTrials"].sum()
             err_bars = ax.errorbar(xs, ys, yerr=ys_err,
@@ -281,7 +320,7 @@ def _plotLoopResults(subject, res_df, RT_ZSCORE, REWARD_RATE_NUM_PAST_TRIALS,
                     ax.plot(xs, ys_single, color="gray", alpha=.2)
 
         # Check normality of each ys-group
-        if plot_singles_on_all:
+        if plot_singles_on_all and run_stats:
             all_normal = True
             for group, group_ys in groups_ys.items():
                 print("Group:", group)
