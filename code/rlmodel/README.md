@@ -14,14 +14,14 @@ underlying the models used in this work.
     - Use a minimal and consistent parameterization
         - No separate parameters for rewarded vs. non-rewarded outcomes
         - No separate learning rates for left vs. right states
-        - Non-visited Q-states, i.e. *$Q^n_L$* and *$Q^n_R$*, are not updated
+        - Non-visited Q-states, i.e. $Q^n_L$ and $Q^n_R$, are not updated
           (i.e., they do not decay toward a baseline value)
         - Assumes a linear mapping between stimulus coherence and drift rate
           (rather than a psychometric function such as an error function)
     - Use *textbook* formulations.
-        - Exception: Q-learning includes an additional parameter, *$offset$*.
-        - *$offset$* represents a subject-specific, constant motor or cognitive
-          bias. The *$offset$ is additive and independent of trial history,
+        - Exception: Q-learning includes an additional parameter, $offset$.
+        - $offset$ represents a subject-specific, constant motor or cognitive
+          bias. The $offset$ is additive and independent of trial history,
           unlike Q-value–dependent bias.
 
 **What it isn't:**
@@ -41,11 +41,11 @@ underlying the models used in this work.
     - **Exception**: To the best of our knowledge, this is the first work to
       combine both approaches within a single framework.
 - An effort to reduce the number of parameters to the absolute minimum.
-    - For example, in the combined Q- and R-learning model, *$RR^n$* could be
-      inferred from *$Q^n_L$* and *$Q^n_R$*.
+    - For example, in the combined Q- and R-learning model, $RR^n$ could be
+      inferred from $Q^n_L$ and $Q^n_R$.
         - This would complicate direct model comparison.
         - This approach may not generalize to settings with more than two
-          choices beyond *$Q_L$* and *$Q_R$*.
+          choices beyond $Q_L$ and $Q_R$.
 - An exploration of alternative DDM variants.
   - Extensions such as collapsing decision boundaries, or step-wise
     drift-rate modulation, are not considered.
