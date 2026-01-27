@@ -311,7 +311,7 @@ Results from model fitting are stored in the
 ![Schematic-like figure](/results/RLModel/Q_R_Heatmap.svg)
 
 This figure is generated using the
-[`rlmodel/model_to_behavior.ipynb`](rlmodel/model_to_behavior.ipynb) notebook.
+[`rlmodel/model_to_behavior.ipynb`](model_to_behavior.ipynb) notebook.
 
 For each difficulty (colored plane), the figure plots the expected sampling
 time, i.e. reaction time, on the z-axis as a function of the relative Q-value

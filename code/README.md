@@ -28,6 +28,10 @@ The notebooks are as follows:
       Analyses of optogenetic perturbations using wide-field imaging data.
 
 - **2-Photon Imaging**
+    - [`data_downloader.ipynb`](data_downloader.ipynb)
+      Downloads missing two-photon dataframes that are too large to be
+      included directly in the repository.
+
     - [`TwoPAnalysis.ipynb`](TwoPAnalysis.ipynb)
       Two-photon imaging analyses derived from statistical significance tests.
 
