@@ -9,16 +9,32 @@ from scipy import stats
 from sklearn.linear_model import LinearRegression
 from statsmodels.stats.anova import AnovaRM
 from statsmodels.stats.multitest import multipletests
+from enum import IntFlag, auto
 from functools import partial
 from pathlib import Path
 from typing import List, Literal
 import itertools
 
+class RTPlots(IntFlag):
+    AFTER_OPTO_END_DECISION_PERF = auto()
+    AFTER_OPTO_END_RT_BARS = auto()
+    AFTER_OPTO_END_RT_KDE = auto()
+    AFTER_OPTO_DECISION_PROB_CDF = auto()
+    BEFORE_OPTO_END_DECISION_PERF = auto()
+    BEFORE_OPTO_END_DECISION_PROB = auto()
+    BEFORE_OPTO_END_RT_KDE = auto()
+    WHOLE_SAMPLING_RT_BARS = auto()
+    WHOLE_SAMPLING_RT_KDE = auto()
+    WHOLE_SAMPLING_RT_PERF_CORR = auto()
+    AFTER_OPTO_GROUPED_DECISION_PERF = auto()
+    ALL_PLOTS = 0xFFFFFFFF
+
 def optoReactionTime(start_state, start_delay, max_dur, stimulus_time,
                      end_state, stim_type, df, min_choice_trials, subject_name,
                      z_score, plot_sem, save_prefix, save_figs=False,
-                     only_brain_regions : List[BrainRegion] = []):
-    print("Df len:", len(df))
+                     only_brain_regions : List[BrainRegion] = [],
+                     rt_plots : RTPlots = RTPlots.ALL_PLOTS):
+    # print("Df len:", len(df))
     Z_SCORE_SAVE_STR = "Z_Scored_" if z_score else ""
     WITH_SEM_SAVE_SAVE_STR = "_SEM" if plot_sem else ""
     LATE_STR = "Late " if not z_score else ""
@@ -28,6 +44,8 @@ def optoReactionTime(start_state, start_delay, max_dur, stimulus_time,
     name = _classifyOptoConfig(start_state, start_delay, max_dur, stimulus_time,
                                end_state, stim_type)
     name = f"{subject_name} - {name}"
+    if save_figs and subject_name != "All Mice":
+        save_prefix = f"{save_prefix}/{subject_name}_"
     # Remove trials where animal stayed over-styaed, it will never equal to
     # GUI_StimulusTime due to the way we calculate, we check for - .1 sec
     df = df[df.calcStimulusTime < df.GUI_StimulusTime - 0.1]
@@ -38,84 +56,103 @@ def optoReactionTime(start_state, start_delay, max_dur, stimulus_time,
     max_st = df.calcStimulusTime.max()
     max_bin = int(np.ceil(max_st*num_bins_per_sec))
 
-    _plotReactionBars(df_cntrl, df_opto, df_col="ChoiceCorrect",
-                      start_delay=start_delay, max_dur=max_dur, name=name,
-                      only_after_opto=True,
-                      save_fp=f"{save_prefix}_perf_bars.svg",
-                      save_figs=save_figs)
+    if rt_plots & RTPlots.AFTER_OPTO_END_DECISION_PERF:
+        _plotReactionBars(df_cntrl, df_opto, df_col="ChoiceCorrect",
+                          start_delay=start_delay, max_dur=max_dur, name=name,
+                          only_after_opto=True,
+                          save_fp=f"{save_prefix}_perf_bars.svg",
+                          save_figs=save_figs)
 
-    _plotReactionBars(df_cntrl, df_opto, df_col="calcStimulusTime",
-                      start_delay=start_delay, max_dur=max_dur, name=name,
-                      only_after_opto=True,
-                      save_fp=f"{save_prefix}_rt_bars.svg",
-                      save_figs=save_figs)
+    if rt_plots & RTPlots.AFTER_OPTO_END_RT_BARS:
+        _plotReactionBars(df_cntrl, df_opto, df_col="calcStimulusTime",
+                          start_delay=start_delay, max_dur=max_dur, name=name,
+                          only_after_opto=True,
+                          save_fp=f"{save_prefix}_rt_bars.svg",
+                          save_figs=save_figs)
 
-    _plotReactionBars(df_cntrl, df_opto, df_col="calcStimulusTime",
-                      start_delay=start_delay, max_dur=max_dur, name=name,
-                      only_after_opto=False,
-                      save_fp=f"{save_prefix}_rt_bars_whole_sampling.svg",
-                      save_figs=save_figs)
+    if rt_plots & RTPlots.WHOLE_SAMPLING_RT_BARS:
+        _plotReactionBars(df_cntrl, df_opto, df_col="calcStimulusTime",
+                          start_delay=start_delay, max_dur=max_dur, name=name,
+                          only_after_opto=False,
+                          save_fp=f"{save_prefix}_rt_bars_whole_sampling.svg",
+                          save_figs=save_figs)
 
     MAX_TIME = 3
     # Reaction-Time KDE: Total, only early, only late
-    _plotReactionTimeKDE(df_cntrl, df_opto, max_bin=max_bin,
-                         num_bins_per_sec=num_bins_per_sec,
-                         max_time=MAX_TIME, start_delay=start_delay,
-                         max_dur=max_dur, name=name,
-                         save_fp=f"{save_prefix}total_hist.svg",
-                         save_figs=save_figs)
+    if rt_plots & RTPlots.WHOLE_SAMPLING_RT_KDE:
+        _plotReactionTimeKDE(df_cntrl, df_opto, max_bin=max_bin,
+                             num_bins_per_sec=num_bins_per_sec,
+                             max_time=MAX_TIME, start_delay=start_delay,
+                             max_dur=max_dur, name=name,
+                             save_fp=f"{save_prefix}total_hist.svg",
+                             bw_method=0.05,
+                             normalize_y_to_1=True,
+                             save_figs=save_figs)
 
-    _plotReactionTimeKDE(df_cntrl, df_opto, max_bin=max_bin,
-                         num_bins_per_sec=num_bins_per_sec, max_time=MAX_TIME,
-                         start_delay=start_delay, max_dur=max_dur, name=name,
-                         x_lim=(0, start_delay + max_dur + .1),
-                         save_fp=f"{save_prefix}early_hist.svg",
-                         save_figs=save_figs)
+    if rt_plots & RTPlots.BEFORE_OPTO_END_RT_KDE:
+        _plotReactionTimeKDE(df_cntrl, df_opto, max_bin=max_bin,
+                             num_bins_per_sec=num_bins_per_sec,
+                             max_time=MAX_TIME, start_delay=start_delay,
+                             max_dur=max_dur, name=name,
+                             x_lim=(0, start_delay + max_dur + .1),
+                             save_fp=f"{save_prefix}early_hist.svg",
+                             save_figs=save_figs)
 
-    _plotReactionTimeKDE(df_cntrl, df_opto, max_bin=max_bin,
-                         num_bins_per_sec=num_bins_per_sec,
-                         max_time=MAX_TIME, start_delay=start_delay,
-                         max_dur=max_dur, name=name,
-                         x_lim=(start_delay + max_dur - .1, MAX_TIME),
-                         save_fp=f"{save_prefix}late_hist.svg",
-                         save_figs=save_figs)
+    if rt_plots & RTPlots.AFTER_OPTO_END_RT_KDE:
+        _plotReactionTimeKDE(df_cntrl, df_opto, max_bin=max_bin,
+                             num_bins_per_sec=num_bins_per_sec,
+                             max_time=MAX_TIME, start_delay=start_delay,
+                             max_dur=max_dur, name=name,
+                             x_lim=(start_delay + max_dur - .1, MAX_TIME),
+                             save_fp=f"{save_prefix}late_hist.svg",
+                             save_figs=save_figs)
     # ## Decision probability CDF
-    _plotDecisionProbCDF(df_cntrl, df_opto,  z_score=z_score, plot_sem=plot_sem,
-                         max_time=MAX_TIME, start_delay=start_delay,
-                         max_dur=max_dur, name=name,
-                         save_fp=(f"{save_prefix}{Z_SCORE_SAVE_STR}{LATE_STR}"
-                                  f"decision_probability"
-                                  f"{WITH_SEM_SAVE_SAVE_STR}.svg"),
-                         save_figs=save_figs)
-    _plotEarlyProb(df, _calcDecisionProb, "Decision Probability",
-                   "Percentage of Trials Performed",
-                   opto_end=start_delay + max_dur, name=name,
-                   save_fp=f"{save_prefix}early_decision_probability.svg",
-                   save_figs=save_figs)
-    _plotEarlyProb(df, _calcChoicePerformance, "Performance",
-                   "Decision Performance", opto_end=start_delay + max_dur,
-                   name=name,
-                   save_fp=f"{save_prefix}early_decision_performance.svg",
-                   save_figs=save_figs)
+    if rt_plots & RTPlots.AFTER_OPTO_DECISION_PROB_CDF:
+        _plotDecisionProbCDF(df_cntrl, df_opto,  z_score=z_score,
+                             plot_sem=plot_sem, max_time=MAX_TIME,
+                             start_delay=start_delay, max_dur=max_dur,
+                             name=name,
+                             save_fp=(f"{save_prefix}"
+                                      f"{Z_SCORE_SAVE_STR}{LATE_STR}"
+                                      f"decision_probability"
+                                      f"{WITH_SEM_SAVE_SAVE_STR}.svg"),
+                             save_figs=save_figs)
+
+    if rt_plots & RTPlots.BEFORE_OPTO_END_DECISION_PROB:
+        _plotEarlyProb(df, _calcDecisionProb, "Decision Probability",
+                       "Percentage of Trials Performed",
+                       opto_end=start_delay + max_dur, name=name,
+                       save_fp=f"{save_prefix}early_decision_probability.svg",
+                       save_figs=save_figs)
+
+    if rt_plots & RTPlots.BEFORE_OPTO_END_DECISION_PERF:
+        _plotEarlyProb(df, _calcChoicePerformance, "Performance",
+                       "Decision Performance", opto_end=start_delay + max_dur,
+                       name=name,
+                       save_fp=f"{save_prefix}early_decision_performance.svg",
+                       save_figs=save_figs)
 
     # TODO: Unify the deuplicated code between _plotDecisionPerf() and
     # _plotRTPerfCorr()
     ## Late Decision Performance
-    _plotDecisionPerf(df_cntrl, df_opto,  z_score=z_score, plot_sem=plot_sem,
-                      max_time=MAX_TIME, start_delay=start_delay,
-                      max_dur=max_dur, name=name,
-                      save_fp=(f"{save_prefix}{Z_SCORE_SAVE_STR}{LATE_STR}"
-                               f"decision_performance{WITH_SEM_SAVE_SAVE_STR}"
-                                ".svg"),
-                      save_figs=save_figs)
+    if rt_plots & RTPlots.AFTER_OPTO_GROUPED_DECISION_PERF:
+        _plotDecisionPerf(df_cntrl, df_opto,  z_score=z_score,
+                          plot_sem=plot_sem,
+                          max_time=MAX_TIME, start_delay=start_delay,
+                          max_dur=max_dur, name=name,
+                          save_fp=(f"{save_prefix}{Z_SCORE_SAVE_STR}{LATE_STR}"
+                                   "decision_performance"
+                                   f"{WITH_SEM_SAVE_SAVE_STR}.svg"),
+                          save_figs=save_figs)
     ## Correlation RT/Performance
-    _plotRTPerfCorr(df_cntrl, df_opto, z_score=z_score, plot_sem=plot_sem,
-                    max_time=MAX_TIME, start_delay=start_delay, max_dur=max_dur,
-                    name=name,
-                    save_fp=(f"{save_prefix}{Z_SCORE_SAVE_STR}{LATE_STR}"
-                             f"rt_performance_corr{WITH_SEM_SAVE_SAVE_STR}"
-                              ".svg"),
-                    save_figs=save_figs)
+    if rt_plots & RTPlots.WHOLE_SAMPLING_RT_PERF_CORR:
+        _plotRTPerfCorr(df_cntrl, df_opto, z_score=z_score, plot_sem=plot_sem,
+                        max_time=MAX_TIME, start_delay=start_delay,
+                        max_dur=max_dur, name=name,
+                        save_fp=(f"{save_prefix}{Z_SCORE_SAVE_STR}{LATE_STR}"
+                                 f"rt_performance_corr{WITH_SEM_SAVE_SAVE_STR}"
+                                 ".svg"),
+                        save_figs=save_figs)
 
     return df
 
@@ -555,7 +592,8 @@ def _plotDecisionPerf(df_cntrl, df_opto, z_score, plot_sem, max_time,
 
 def _plotReactionTimeKDE(df_cntrl, df_opto, max_bin, num_bins_per_sec, max_time,
                          start_delay, max_dur, name, save_fp, save_figs,
-                         x_lim=None):
+                         normalize_y_to_1=False,
+                         x_lim=None, bw_method=0.1):
     fig, ax = plt.subplots()
     _axMarkOptoRegion(ax, start_delay, max_dur)
     # fig.set_size_inches(analysis.SAVE_FIG_SIZE[0], analysis.SAVE_FIG_SIZE[1])
@@ -566,24 +604,17 @@ def _plotReactionTimeKDE(df_cntrl, df_opto, max_bin, num_bins_per_sec, max_time,
     for animal_name, animal_cntrl_df in df_cntrl.groupby("Name"):
         st_cntrl_col = animal_cntrl_df.calcStimulusTime
         br_std["Control"].append(st_cntrl_col.std())
-        controlKDE = _getKDEFn(st_cntrl_col)
+        controlKDE = _getKDEFn(st_cntrl_col, bw_method=bw_method)
         animals_kde[animal_name] = {"Control":controlKDE}
         animals_num_pts[animal_name] = {"Control":len(st_cntrl_col)}
         for br, br_df in df_opto[df_opto.Name == animal_name].groupby(
                                                          "GUI_OptoBrainRegion"):
             st_br_col = br_df.calcStimulusTime
             br_std[br].append(st_br_col.std())
-            optoKDE = _getKDEFn(st_br_col)
+            optoKDE = _getKDEFn(st_br_col, bw_method=bw_method)
             animals_kde[animal_name][br] = optoKDE
             animals_num_pts[animal_name][br] = len(st_br_col)
 
-    # for br, std_li in br_std.items():
-    #     br_str = str(BrainRegion(br)) if br != "Control" else br
-    #     br_std_mean = np.mean(std_li)
-    #     br_std_std = np.std(std_li)
-    #     print(f"{br_str} - Std. Mean= {br_std_mean:.3f} - "
-    #           f"Std. std: {br_std_std:.3f}")
-    #     print(f"Single values: {std_li}")
 
     br_mode_width = {br:[] for br in df_opto.GUI_OptoBrainRegion.unique()}
     br_mode_width["Control"] = []
@@ -592,12 +623,14 @@ def _plotReactionTimeKDE(df_cntrl, df_opto, max_bin, num_bins_per_sec, max_time,
     processXbinsFn = partial(processXbins, animals_kde=animals_kde,
                              br_std=br_std, animals_num_pts=animals_num_pts,
                              max_dur=max_dur)
-    _plotBins(ax, x_bins, processFn=processXbinsFn, br_mode_width=br_mode_width)
+    _plotBins(ax, x_bins, processFn=processXbinsFn, br_mode_width=br_mode_width,
+              normalize_y_to_1=normalize_y_to_1)
     ax.set_xlabel("Time (s)")
     ax.set_ylabel("Normalized Probability")
     if x_lim is None:
         x_lim = 0, max_time
     ax.set_xlim(*x_lim)
+    ax.set_ylim(bottom=0)
     ax.set_title(f"{name} - Total Reaction Time")
     ax.legend()
 
@@ -605,11 +638,14 @@ def _plotReactionTimeKDE(df_cntrl, df_opto, max_bin, num_bins_per_sec, max_time,
         fig.savefig(save_fp, dpi=300, bbox_inches='tight')
     plt.show()
 
-def _getKDEFn(df_col):
-    kde = stats.gaussian_kde(df_col, bw_method=.1)
+def _getKDEFn(df_col, bw_method=0.1):
+    kde = stats.gaussian_kde(df_col, bw_method=bw_method)
     return kde
 
-def _plotMeanSEM(ax, x, ys, color, label, plot_sem=True):
+def _plotMeanSEM(ax, x, ys, color, label, plot_sem=True,
+                 normalize_y_to_1=False):
+    if normalize_y_to_1:
+        ys = ys / np.nanmax(ys)
     y = np.nanmean(ys, axis=0)
     ax.plot(x, y, color=color, label=label)
     if plot_sem:
@@ -626,7 +662,8 @@ def _getBrainRegionColorAndLabel(br):
       postfix = " inhibition" if br != BrainRegion.Pulses else ""
       return BrainRegionClr[str(br)], f"{str(br).split('_')[0]}{postfix}"
 
-def _plotBins(ax, used_x_bins, processFn, br_mode_width, plot_sem=True):
+def _plotBins(ax, used_x_bins, processFn, br_mode_width, plot_sem=True,
+              normalize_y_to_1=False):
     regions_ys_num_pts = processFn(used_x_bins, br_mode_width=br_mode_width)
     if isinstance(regions_ys_num_pts, tuple):
         regions_ys, regions_num_pts, region_num_subjects = regions_ys_num_pts
@@ -641,7 +678,7 @@ def _plotBins(ax, used_x_bins, processFn, br_mode_width, plot_sem=True):
             label = f"{label} (n={np.sum(regions_num_pts[br]):,}, "
             label += f"{region_num_subjects[br]} subjects)"
         _plotMeanSEM(ax, used_x_bins, ys, color=color, label=label,
-                     plot_sem=plot_sem)
+                     plot_sem=plot_sem, normalize_y_to_1=normalize_y_to_1)
 
 def _processCDF(animals_src_dict):
     regions_ys = {}

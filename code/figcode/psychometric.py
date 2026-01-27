@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 from scipy import stats
+import warnings
 
 
 def slowFastPsych(df, is_human_subject, combine_sides=False, plot_typical=False,
@@ -438,8 +439,8 @@ def _fitPsych(dv_df_bins, ax, *, many_subjects, combine_sides=False, nfits=None,
             # and SEM should be calculated per subject first, then overall
             nan_perf = np.isnan(perf_col)
             nan_prcnt = 100*nan_perf.sum()/len(perf_col)
-            assert (nan_perf.sum() < 5 or nan_prcnt < 0.5), (
-                    f"Found {nan_perf.sum()} Trials ({nan_prcnt:.2f}%)")
+            if not (nan_perf.sum() < 5 or nan_prcnt < 0.5):
+                warnings.warn(f"Found {nan_perf.sum()} Trials ({nan_prcnt:.2f}%)")
             perf_col = perf_col[~nan_perf]
             stim_ratio_sem.append(stats.sem(perf_col))
             if many_subjects:

@@ -39,8 +39,6 @@ def optoFeedback(start_state, start_delay, max_dur, stimulus_time,
     df_cntrl = df[df[f"{col_prefix}OptoEnabled"] == 0]
     df_opto = df[df[f"{col_prefix}OptoEnabled"] == 1]
 
-    print("TODO: **********TODO: Use min_choice_trials")
-
     _plotReactionBars(
         df_cntrl, df_opto,
         df_col="calcStimulusTime",
@@ -100,22 +98,30 @@ def _sigstar(p: float) -> str:
         return ""
 
 
-def _add_sig_bracket(ax, x1, x2, y, text, h=None):
+def _add_sig_bracket(ax, pos1, pos2, level, text, size=None):
     """
-    Draw a significance bracket between x1 and x2 at height y
-    and return the top y (including the bracket height).
-    """
-    ymin, ymax = ax.get_ylim()
-    # Dynamic bracket height based on plot range
-    if h is None:
-        h = (ymax - ymin) * 0.02 if ymax > ymin else 0.05
+    Draw a significance bracket.
 
-    ax.plot([x1, x1, x2, x2],
-            [y, y + h, y + h, y],
+    Returns the next available clearance level (stacking position).
+    """
+    xmin, xmax = ax.get_xlim()
+    if size is None:
+        size = (xmax - xmin) * 0.02 if xmax > xmin else 0.05
+
+    # If pos1 == pos2 (degenerate), create a small visible span.
+    if pos1 == pos2:
+        delta = 0.15
+        y1 = pos1 - delta
+        y2 = pos2 + delta
+    else:
+        y1, y2 = pos1, pos2
+
+    ax.plot([level, level + size, level + size, level],
+            [y1, y1, y2, y2],
             color="black", linewidth=1)
-    ax.text((x1 + x2) / 2.0, y + h, text,
-            ha="center", va="bottom", fontsize=10)
-    return y + h * 3  # Return new clearance height
+    ax.text(level + size + 0.01, (y1 + y2) / 2.0, text,
+            ha="left", va="center", fontsize=20, color="k")
+    return level + size * 3
 
 
 # -------------------- main plotting / stats -------------------- #
@@ -249,14 +255,13 @@ def _plotReactionBars(df_cntrl, df_opto,
     for region in keys_within:
         print(f"{region}: t={within_t[region]:.2f}, p_raw={p_raw_within[region]:.4f}, p_holm={within_p_corr[region]:.4f}")
 
-
     # -------------------- STATS: Across-Region (RM ANOVA + Pairwise) -------------------- #
 
     # Helper for Cross-Region analysis
     def _analyze_cross_region(outcome_label: str):
         """
         Runs RM ANOVA and Pairwise t-tests for a specific outcome (Correct or Incorrect).
-        Returns a dict of significant pairwise comparisons: {(RegionA, RegionB): p_holm}
+        Returns a dict of pairwise comparisons: {(RegionA, RegionB): p_holm}
         """
         subset_df = subj_region_df[subj_region_df["PrevOutcome"] == outcome_label].copy()
 
@@ -315,18 +320,17 @@ def _plotReactionBars(df_cntrl, df_opto,
     cross_sig_correct = _analyze_cross_region("Correct")
     cross_sig_incorrect = _analyze_cross_region("Incorrect")
 
+    # -------------------- PLOTTING (HORIZONTAL BARH) -------------------- #
+    fig, ax = plt.subplots(1, 1, figsize=(8, 8))
 
-    # -------------------- PLOTTING -------------------- #
-    fig, ax = plt.subplots(1, 1, figsize=(10, 6))
-
-    # Define X positions
+    # Define Y positions (formerly X positions)
     if combine_control:
         if plot_as_difference:
-            xs = [1, 2, 3]
-            labels_xt = ["Control", "Opto MFC", "Opto LFC"]
+            ys = [1, 2, 3]
+            labels_yt = ["Control", "Opto MFC", "Opto LFC"]
         else:
-            xs = [1, 2, 4, 5, 7, 8]
-            labels_xt = [
+            ys = [1, 2, 3, 4, 5, 6]
+            labels_yt = [
                 "Cntrl\nPrev\nCorrect", "Cntrl\nPrev\nIncorrect",
                 "Opto\nMFC\nPrev\nCorrect", "Opto\nMFC\nPrev\nIncorrect",
                 "Opto\nLFC\nPrev\nCorrect", "Opto\nLFC\nPrev\nIncorrect",
@@ -338,11 +342,11 @@ def _plotReactionBars(df_cntrl, df_opto,
         ]
     else:
         if plot_as_difference:
-            xs = [1, 2, 3, 4]
-            labels_xt = ["Cntrl MFC", "Opto MFC", "Cntrl LFC", "Opto LFC"]
+            ys = [1, 2, 3, 4]
+            labels_yt = ["Cntrl MFC", "Opto MFC", "Cntrl LFC", "Opto LFC"]
         else:
-            xs = [1, 2, 4, 5, 7, 8, 10, 11]
-            labels_xt = [
+            ys = [1, 2, 3, 4, 5, 6, 7, 8]
+            labels_yt = [
                 "Cntrl\nMFC\nPrev\nCorrect", "Cntrl\nMFC\nPrev\nIncorrect",
                 "Opto\nMFC\nPrev\nCorrect", "Opto\nMFC\nPrev\nIncorrect",
                 "Cntrl\nLFC\nPrev\nCorrect", "Cntrl\nLFC\nPrev\nIncorrect",
@@ -353,14 +357,14 @@ def _plotReactionBars(df_cntrl, df_opto,
             "gray", BrainRegionClr[BrainRegion.ALM_Bi],
         ]
 
-    # Map regions to x-coordinates
-    xs_loop = xs[::2] if not plot_as_difference else xs
-    region_x_map = {} # Store x coords for brackets later
+    # Map regions to y-coordinates
+    ys_loop = ys[::2] if not plot_as_difference else ys
+    region_y_map = {}  # Store y coords for brackets later
 
-    y_stack_tracker = 0 # To track height for brackets
+    x_stack_tracker = 0.0  # To track rightward clearance for brackets (x direction)
 
     # Draw Bars and Within-Region Stars
-    for x0, region, clr in zip(xs_loop, region_names, clrs):
+    for y0, region, clr in zip(ys_loop, region_names, clrs):
         col_corr = f"{region}_prev_correct"
         col_incorr = f"{region}_prev_incorrect"
 
@@ -376,24 +380,26 @@ def _plotReactionBars(df_cntrl, df_opto,
             mean_diff = diffs.mean()
             err_diff = stats.sem(diffs) if mask.sum() > 1 else 0.0
 
-            ax.bar(x0, mean_diff, yerr=err_diff,
-                   width=0.4, color=clr, edgecolor="black")
+            ax.barh(y0, mean_diff, xerr=err_diff,
+                    height=0.4, color=clr, edgecolor="black")
 
-            region_x_map[region] = {"diff": x0}
+            region_y_map[region] = {"diff": y0}
 
-            # Update max height tracker
-            current_top = mean_diff + err_diff
-            if current_top > y_stack_tracker:
-                y_stack_tracker = current_top
+            # Update max rightward extent tracker (accounting for negative bars)
+            if mean_diff >= 0:
+                current_right = mean_diff + err_diff
+            else:
+                current_right = 0.0
+            if current_right > x_stack_tracker:
+                x_stack_tracker = current_right
 
-            # Within-region star (is diff different from 0 / paired t-test)
+            # Within-region star (paired t-test already computed on Corr vs Incorr)
             if region in within_p_corr:
                 star = _sigstar(within_p_corr[region])
                 if star:
-                    y_stack_tracker = _add_sig_bracket(ax, x0, x0, y_stack_tracker, star, h=0.01)
-
+                    x_stack_tracker = _add_sig_bracket(ax, y0, y0, x_stack_tracker, star)
         else:
-            # Mode: Plot raw Correct and Incorrect bars side-by-side
+            # Mode: Plot raw Correct and Incorrect bars
             mask_corr = ~np.isnan(vals_corr)
             mask_incorr = ~np.isnan(vals_incorr)
 
@@ -402,79 +408,77 @@ def _plotReactionBars(df_cntrl, df_opto,
             err_corr = stats.sem(vals_corr[mask_corr]) if mask_corr.sum() > 1 else 0.0
             err_incorr = stats.sem(vals_incorr[mask_incorr]) if mask_incorr.sum() > 1 else 0.0
 
-            x1 = x0 + 1
+            y1 = y0 + 1
 
-            ax.bar(x0, mean_corr, yerr=err_corr,
-                   width=0.4, color=clr, edgecolor="g")
-            ax.bar(x1, mean_incorr, yerr=err_incorr,
-                   width=0.4, color=clr, edgecolor="r")
+            ax.barh(y0, mean_corr, xerr=err_corr,
+                    height=0.4, color=clr, edgecolor="g")
+            ax.barh(y1, mean_incorr, xerr=err_incorr,
+                    height=0.4, color=clr, edgecolor="r")
 
-            region_x_map[region] = {"correct": x0, "incorrect": x1}
+            region_y_map[region] = {"correct": y0, "incorrect": y1}
 
-            # Update max height tracker
-            current_top = max(mean_corr + err_corr, mean_incorr + err_incorr)
-            if current_top > y_stack_tracker:
-                y_stack_tracker = current_top
+            # Update max rightward extent tracker
+            current_right = max(
+                0.0,
+                (mean_corr + err_corr) if np.isfinite(mean_corr) else 0.0,
+                (mean_incorr + err_incorr) if np.isfinite(mean_incorr) else 0.0,
+            )
+            if current_right > x_stack_tracker:
+                x_stack_tracker = current_right
 
             # Within-region bracket (Correct vs Incorrect)
             if region in within_p_corr:
                 star = _sigstar(within_p_corr[region])
                 if star:
-                    # Draw local bracket
-                    y_stack_tracker = _add_sig_bracket(ax, x0, x1, y_stack_tracker, star)
+                    x_stack_tracker = _add_sig_bracket(ax, y0, y1, x_stack_tracker, star)
 
     # -------------------- Draw Cross-Region Brackets -------------------- #
     # We draw brackets if p_holm < 0.05
 
     def _draw_cross_brackets(sig_map, key_suffix):
-        nonlocal y_stack_tracker
+        nonlocal x_stack_tracker
         # Sort pairs by distance to draw smaller brackets first (aesthetic)
-        sorted_pairs = sorted(sig_map.keys(), key=lambda p: abs(region_names.index(p[0]) - region_names.index(p[1])))
+        sorted_pairs = sorted(
+            sig_map.keys(),
+            key=lambda p: abs(region_names.index(p[0]) - region_names.index(p[1]))
+        )
 
         for r1, r2 in sorted_pairs:
             p_val = sig_map[(r1, r2)]
             star = _sigstar(p_val)
-            if not star: continue
+            if not star:
+                continue
 
-            # Determine x coordinates
+            # Determine y coordinates
             if plot_as_difference:
-                x_a = region_x_map[r1]["diff"]
-                x_b = region_x_map[r2]["diff"]
+                y_a = region_y_map[r1]["diff"]
+                y_b = region_y_map[r2]["diff"]
             else:
-                x_a = region_x_map[r1][key_suffix]
-                x_b = region_x_map[r2][key_suffix]
+                y_a = region_y_map[r1][key_suffix]
+                y_b = region_y_map[r2][key_suffix]
 
-            y_stack_tracker = _add_sig_bracket(ax, x_a, x_b, y_stack_tracker, star)
-
+            x_stack_tracker = _add_sig_bracket(ax, y_a, y_b, x_stack_tracker, star)
     if plot_as_difference:
-        # For difference plots, we usually compare the "Difference" metric across regions.
-        # However, the user asked for "Correct" and "Incorrect" ANOVA separately.
-        # If we are plotting Difference, we mathematically should run ANOVA on the difference values.
-        # But if the request is strict, we might skip drawing "Correct vs Correct" brackets on a "Difference" plot.
-        # Assuming we treat the Difference metric as the variable of interest for cross-region in this mode:
-        # Let's perform a quick check for Difference cross-region stats if in diff mode.
-        pass # Not explicitly requested for Difference Mode logic, sticking to user's "Correct/Incorrect" request.
-             # If plotting Diff, visuals for "Correct vs Correct" are ambiguous.
-             # I will skip cross-region brackets in "Difference" mode to avoid confusion,
-             # OR implies we should run stats on the Difference.
-             # Given the prompt, I will assume standard plot mode is the primary target for these brackets.
+        # Same rationale as original: cross-region brackets in "Difference" mode are ambiguous
+        # given cross-region stats are computed separately for Correct/Incorrect.
+        pass
     else:
-        # Draw Correct vs Correct brackets
         _draw_cross_brackets(cross_sig_correct, "correct")
-        # Draw Incorrect vs Incorrect brackets
         _draw_cross_brackets(cross_sig_incorrect, "incorrect")
-
 
     # -------------------- Connect subject lines -------------------- #
     for _, row in res_df.iterrows():
         if plot_as_difference:
-            ys = []
-            xs_line = []
-            for x0, region in zip(xs_loop, region_names):
-                ys.append(row[f"{region}_prev_incorrect"] - row[f"{region}_prev_correct"])
-                xs_line.append(x0)
-            if len(ys) > 0:
-                ax.plot(xs_line, ys,
+            x_vals = []
+            y_pos = []
+            for y0, region in zip(ys_loop, region_names):
+                val = row[f"{region}_prev_incorrect"] - row[f"{region}_prev_correct"]
+                if np.isnan(val):
+                    continue
+                x_vals.append(val)
+                y_pos.append(y0)
+            if len(x_vals) > 0:
+                ax.plot(x_vals, y_pos,
                         color="gray", alpha=0.3, linestyle="-",
                         marker="o", markerfacecolor="white",
                         markeredgecolor="black", zorder=5)
@@ -482,47 +486,51 @@ def _plotReactionBars(df_cntrl, df_opto,
             for region in region_names:
                 col_corr = f"{region}_prev_correct"
                 col_incorr = f"{region}_prev_incorrect"
-                if region not in region_x_map:
+                if region not in region_y_map:
                     continue
+
                 # Connect Correct -> Incorrect within region
-                x_corr = region_x_map[region]["correct"]
-                x_incorr = region_x_map[region]["incorrect"]
-                y_corr = row[col_corr]
-                y_incorr = row[col_incorr]
-                if np.isnan(y_corr) or np.isnan(y_incorr):
+                y_corr_pos = region_y_map[region]["correct"]
+                y_incorr_pos = region_y_map[region]["incorrect"]
+                x_corr = row[col_corr]
+                x_incorr = row[col_incorr]
+                if np.isnan(x_corr) or np.isnan(x_incorr):
                     continue
-                ax.plot([x_corr, x_incorr], [y_corr, y_incorr],
+
+                ax.plot([x_corr, x_incorr], [y_corr_pos, y_incorr_pos],
                         color="gray", alpha=0.3, linestyle="-",
                         marker="o", markerfacecolor="white",
                         markeredgecolor="black", zorder=5)
 
     # ---------- axis cosmetics ----------
-    ax.set_xticks(xs)
-    ax.set_xticklabels(labels_xt)
+    ax.set_yticks(ys)
+    ax.set_yticklabels(labels_yt)
 
     if df_col == "calcStimulusTime":
-        ax.set_ylabel("Sampling Time " + ("(Z-Scored)" if z_score_time else "(s)"))
+        ax.set_xlabel("Sampling Time " + ("(Z-Scored)" if z_score_time else "(s)"))
         ax.set_title(f"{name} - Sampling Time" +
                      (" (Z-Scored)" if z_score_time else ""))
     else:
-        ax.set_ylabel("Performance %")
+        ax.set_xlabel("Performance %")
         ax.set_title(f"{name} - Performance ")
-        ax.set_ylim(bottom=45)
+        ax.set_xlim(left=45)
 
     if z_score_time:
-        ax.axhline(0, color="black", linestyle="--", linewidth=1)
+        ax.axvline(0, color="black", linestyle="--", linewidth=1)
 
-    # Adjust Y lim for brackets
-    ymin, ymax = ax.get_ylim()
-    if y_stack_tracker > ymax:
-        ax.set_ylim(top=y_stack_tracker + (ymax - ymin) * 0.05)
+    # Adjust X lim for brackets (right side)
+    xmin, xmax = ax.get_xlim()
+    if x_stack_tracker > xmax:
+        ax.set_xlim(right=x_stack_tracker + (xmax - xmin) * 0.05)
 
     if not z_score_time and df_col == "calcStimulusTime":
-        bottom, top = ax.get_ylim()
-        if bottom < 0.8:
-            ax.set_ylim(bottom=0.8, top=top)
+        left, right = ax.get_xlim()
+        if left < 0.8:
+            ax.set_xlim(left=0.8, right=right)
+    # Reverse y-lim
+    ax.set_ylim(ax.get_ylim()[::-1])
 
-    ax.spines[["left", "top", "right"]].set_visible(False)
+    ax.spines[["bottom", "top", "right"]].set_visible(False)
 
     if save_figs:
         save_fp = Path(save_fp)

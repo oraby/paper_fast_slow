@@ -26,19 +26,26 @@ def loopConfig(df, applyFn, min_choice_trials,
                which : Literal["partial", "full", "all"] = "all",
                stim_type : Literal["FT", "RT", "all", "feedback"] = "all",
                process_groups_together=False,
-               single_subjects=True,
+               single_subjects=True, all_subjects=True,
                save_prefix=None, save_figs=False):
     assert which in ["partial", "full", "all" ]
     assert stim_type in ["FT", "RT", "all", "feedback"]
+    assert single_subjects or all_subjects, (
+                 "At least one of single_subjects or all_subjects must be True")
     df = df.copy()
     loop_cols = ["GUI_OptoStartState1", "GUI_OptoStartDelay", "GUI_OptoMaxTime",
                  "GUI_OptoEndState1", "GUI_StimulusTime"]
     df = df.groupby(loop_cols).filter(lambda grp_df: len(grp_df) >= 10)
 
-    ret = _processSubject(df, applyFn, min_choice_trials, "All Mice", loop_cols,
-                          which, stim_type, save_prefix=save_prefix,
-                          process_groups_together=process_groups_together,
-                          save_figs=save_figs)
+    if all_subjects:
+        ret = _processSubject(df, applyFn, min_choice_trials, "All Mice", 
+                              loop_cols,
+                              which, stim_type, save_prefix=save_prefix,
+                              process_groups_together=process_groups_together,
+                              save_figs=save_figs)
+    else:
+        ret = None
+
     if not single_subjects:
         return ret
     for animal_name, animal_df in df.groupby("Name"):
@@ -60,7 +67,7 @@ def _processSubject(df, applyFn, min_choice_trials, subject_name, loop_cols,
         assert save_prefix_path.parent.exists(), (
                                       f"Directory: {save_prefix} doesn't exist")
         save_prefix_path /= subject_name
-        save_prefix_path.mkdir(exist_ok=True, parents=True)
+        # save_prefix_path.mkdir(exist_ok=True, parents=True)
 
     feedback_start_states = [MatrixState.WaitForReward,
                              MatrixState.WaitForPunish]
@@ -86,8 +93,8 @@ def _processSubject(df, applyFn, min_choice_trials, subject_name, loop_cols,
         df_full_sampling = df_stim_delv[(df_stim_delv.GUI_OptoStartDelay == 0) &
                                         (df_stim_delv.GUI_OptoMaxTime ==
                                          df_stim_delv.GUI_StimulusTime)]
-        print("df_full_sampling:", len(df_full_sampling))
-        print("df feedback:", len(df_feedback))
+        # print("df_full_sampling:", len(df_full_sampling))
+        # print("df feedback:", len(df_feedback))
         df_partial_sampling = stim_df[~stim_df.index.isin(
                                                         df_full_sampling.index)]
         if stim_type == "feedback":
@@ -110,16 +117,16 @@ def _processSubject(df, applyFn, min_choice_trials, subject_name, loop_cols,
             MAX_DUR=-1
             for (stimulus_time, end_state), grp_df in df_full_sampling.groupby(
                                     ["GUI_StimulusTime", "GUI_OptoEndState1"]):
-                print("End State:", end_state)
-                display(grp_df[loop_cols +
-                               ["GUI_OptoEndState2"]].value_counts())
-                display(grp_df.agg(
-                    {'GUI_StimulusTime': ['count', "min", "max", "mean"],
-                      #'MinSample': ['min', 'max', 'mean',],
-                      "calcStimulusTime": ["min", "max", "mean",],
-                      "Date": ["min", "max"],
-                     }
-                ))
+                # print("End State:", end_state)
+                # display(grp_df[loop_cols +
+                #                ["GUI_OptoEndState2"]].value_counts())
+                # display(grp_df.agg(
+                #     {'GUI_StimulusTime': ['count', "min", "max", "mean"],
+                #       #'MinSample': ['min', 'max', 'mean',],
+                #       "calcStimulusTime": ["min", "max", "mean",],
+                #       "Date": ["min", "max"],
+                #      }
+                # ))
                 # assert (grp_df.GUI_StimulusTime < 5).all(), (
                 # "All FT trials should have stimulus time less than 5 seconds")
                 start_state = MatrixState.stimulus_delivery
@@ -183,7 +190,7 @@ def _classifyOptoConfig(start_state, start_delay, max_dur, stimulus_time,
             duration = "Short RT" if max_dur == 0.3 else "Med RT"
             handled = True
     else:
-        print("Start state:", start_state)
+        # print("Start state:", start_state)
         if "Sampling" in start_state and stimulus_time == 1:
             if start_delay == 0 and max_dur == -1:
                 duration = "FT Full Sampling "
@@ -264,7 +271,7 @@ def plotOptoEffect(start_state, start_delay, max_dur, stimulus_time, end_state,
     br_df_order = br_df_order + [br for br in uniq_br
                                  if br not in br_df_order]
     assert len(br_df_order) <= len(df.GUI_OptoBrainRegion.unique())
-    print("Order:", br_df_order)
+    # print("Order:", br_df_order)
     effects_size_dict_dict = {}
     max_y = 0
 
@@ -273,7 +280,7 @@ def plotOptoEffect(start_state, start_delay, max_dur, stimulus_time, end_state,
 
     df = df[df.GUI_OptoBrainRegion.isin(br_df_order)]
 
-    print("Brain Regions:", br_df_order)
+    # print("Brain Regions:", br_df_order)
     def assignOptoContrlCount(grp_df):
         grp_df = grp_df.copy()
         grp_df["OptoCount"] = (grp_df.OptoEnabled == 1).sum()
@@ -292,13 +299,13 @@ def plotOptoEffect(start_state, start_delay, max_dur, stimulus_time, end_state,
     df_disp = df.groupby(["Name", "GUI_OptoBrainRegion", "GUI_OptoStartDelay",
                           "GUI_OptoMaxTime",], group_keys=False
                          ).apply(assignOptoContrlCount)
-    display(df_disp[["Name", "GUI_OptoBrainRegion", "OptoCount",
-                        "ControlCount", "OptoAccept", "ControlAccept"]]
-                        .value_counts().sort_index())
+    # display(df_disp[["Name", "GUI_OptoBrainRegion", "OptoCount",
+    #                     "ControlCount", "OptoAccept", "ControlAccept"]]
+    #                     .value_counts().sort_index())
 
     num_brain_regions = len(br_df_order)
     num_start_delays = df.GUI_OptoStartDelay.nunique()
-    print("Num of Brain Regions:", num_brain_regions)
+    # print("Num of Brain Regions:", num_brain_regions)
     if num_brain_regions == 2 and num_start_delays == 2:
         return _2x2BrainRegionOptoConfigLoop(df, df_disp, subject_name, split_level,
                                             min_choice_trials,
@@ -417,13 +424,13 @@ def plotOptoEffect(start_state, start_delay, max_dur, stimulus_time, end_state,
             star = "***" if corrected_pval <= 0.001 else "**" if corrected_pval <= 0.01 else "*"
             y = max_y + 5
             x = x_ticks[i]
-            print("Y[ticks]:", y_ticks[i])
+            # print("Y[ticks]:", y_ticks[i])
             y = y_ticks[i] + 0.2 if y_ticks[i] > pos_y else y_ticks[i] - 0.2
             ax.text(x, y, star, fontsize=12, ha="center",
                     va="bottom" if y > pos_y else "top")
         else:
             if rejected[i]:
-                print("************** Rejected:", corrected_pval)
+                # print("************** Rejected:", corrected_pval)
                 continue
             assert not rejected[i]
 
@@ -481,17 +488,16 @@ def _2x2BrainRegionOptoConfigLoop(df, df_disp, subject_name, split_level,
                                   br_df_order: List[BrainRegion],
                                   save_figs: bool = False,
                                   save_prefix: str = None):
-    print("********************* Check the next part carefully *********************")
     df_disp = df_disp[df_disp.ControlAccept & df_disp.OptoAccept]
     df = df_disp
     df_disp = df_disp.rename(columns={"GUI_OptoBrainRegion": "OptoBrainRegion"})
     df_disp["OptoBrainRegion"] = df_disp.OptoBrainRegion.apply(lambda br: str(BrainRegion(br))[:-3])
     df_disp["Phase"] = "Early"
     df_disp.loc[df_disp.GUI_OptoStartDelay > 0.5, "Phase"] = "Late"
-    display(df_disp[["Name", "OptoBrainRegion", "Phase", "OptoCount", "ControlCount",
-                        # "OptoAccept", "ControlAccept",
-                        "ControlPerf","OptoPerf", "OptoEffect"]]
-                    .value_counts().sort_index())
+    # display(df_disp[["Name", "OptoBrainRegion", "Phase", "OptoCount", "ControlCount",
+    #                     # "OptoAccept", "ControlAccept",
+    #                     "ControlPerf","OptoPerf", "OptoEffect"]]
+    #                 .value_counts().sort_index())
     # df = df[~((df.Name == "BVAGT4") & (df.GUI_OptoBrainRegion == BrainRegion.ALM_Bi) &
     #           (df.GUI_OptoStartDelay == 0))]
     # Construct a total df
@@ -532,8 +538,8 @@ def _2x2BrainRegionOptoConfigLoop(df, df_disp, subject_name, split_level,
                                     )
     res_stats_dict, res_obs_entries = res_tup
     # print("Two Regions Result Dict:", res_stats_dict)
-    for k, v in res_stats_dict.items():
-        print(f"Phase: {k[0]} - Region: {k[1]} - {k[2]} = {v:.4f}")
+    # for k, v in res_stats_dict.items():
+    #     print(f"Phase: {k[0]} - Region: {k[1]} - {k[2]} = {v:.4f}")
 
     fig, ax = plt.subplots(figsize=(14, 6))
     for is_early, is_early_df in two_regions_df.groupby("IsEarly"):
@@ -636,8 +642,8 @@ def _processBrainRegionOptoConfig(loop, df_col_name,
                                    meanFn=meanFn)
 
     for grp_key, grp_df in loop:
-        print("Grp Key:", grp_key, "- len:", len(grp_df),
-              " - Opto count:", (grp_df.OptoEnabled == 1).sum())
+        # print("Grp Key:", grp_key, "- len:", len(grp_df),
+        #       " - Opto count:", (grp_df.OptoEnabled == 1).sum())
         assert grp_df[df_col_name].nunique() <= 2, (
                                     "Only binary values are implemented",
                                     f"Found: {grp_df[df_col_name].unique()}")
@@ -664,8 +670,6 @@ def _processBrainRegionOptoConfig(loop, df_col_name,
         opto_trials_count += len(opto_trials)
         cntrl_trials_count += len(control_trials)
         df_li.append(grp_df)
-
-
 
     # statistic, pval = stats.ttest_rel(grps_cntrl_means, grps_opto_means)
     df_all = pd.concat(df_li)
