@@ -244,7 +244,7 @@ def plotHeatMap(df, by_split_level : SplitLevelBy, save_figs, savePrefix=None,
   else:
     # print("Sorting src df")
     match_cols = _splitLevelByCols(by_split_level)
-    print("Match cols:", match_cols)
+    # print("Match cols:", match_cols)
     # assert len(match_cols), (
     #                 "No matching cols, if on purporse then skip the loop below")
     def matchTrialsFn(row, src_df):
@@ -259,9 +259,10 @@ def plotHeatMap(df, by_split_level : SplitLevelBy, save_figs, savePrefix=None,
       # print(src_df.TrialNumber)
       return src_row.iloc[0]
     sort_traces_src_df, match_cols, sort_split_level, is_one_of_them = \
-                          heatMapSortSrcDf(pd.concat(df), by_split_level,
-                                          gen_by_processors._by_kws, match_cols)
-    print("New match cols:", match_cols)
+                heatMapSortSrcDf(pd.concat(df) if isinstance(df, list) else df,
+                                 by_split_level,
+                                 gen_by_processors._by_kws, match_cols)
+    # print("New match cols:", match_cols)
     sort_traces_src_df = _restrictToEpochs(sort_traces_src_df)
     # display(sort_traces_src_df[gen_by_processors._by_kws])
     sort_traces_src_df = splitDf(sort_traces_src_df,

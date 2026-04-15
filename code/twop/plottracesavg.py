@@ -66,8 +66,8 @@ class Combinations:
   ChoiceCorrect =       PlotCombination("ChoiceCorrect",                        dict(by_correctness=True),                          ChoiceOutcomeClrFn,  WithoutDifficultTrials)
   ChoiceCorrectCurDir = PlotCombination("ChoiceCorrectCurDir",                  dict(by_correctness=True, by_direction=True),       ChoiceOutcomeClrFn,  WithoutDifficultTrials)
   PrevChoiceCorrect =   PlotCombination("PrevChoiceCorrect",                    dict(by_prev_correct=True),                         ChoiceOutcomeClrFn,  OnlyCorrectTrials)
-  PrevChoiceCurDir =    PlotCombination("PrevChoiceCurDir",                     dict(by_prev_correct=True, by_direction=True),      ChoiceOutcomeClrFn,  OnlyCorrectTrials)
-  PrevChoiceCurDirAll = PlotCombination("PrevChoiceCurDir",                     dict(by_prev_correct=True, by_direction=True),      ChoiceOutcomeClrFn)
+  PrevChoiceCurDir =    PlotCombination("PrevChoiceCurDir",                     dict(by_prev_correct=True, by_direction=True),      DirectionClrFn,  OnlyCorrectTrials)
+  PrevChoiceCurDirAll = PlotCombination("PrevChoiceCurDir",                     dict(by_prev_correct=True, by_direction=True),      DirectionClrFn)
   PrevChoicePrevDir =   PlotCombination("PrevChoicePrevDir",                    dict(by_prev_direction=True,  by_prev_correct=True),ChoiceOutcomeClrFn,  OnlyCorrectTrials)
   PrevChoicePrevDirCurDirLeft =  PlotCombination("PrevChoicePrevDirCurDirLeft", dict(by_prev_direction=True, by_prev_correct=True), ChoiceOutcomeClrFn,  [OnlyCorrectTrials, Condition("ChoiceLeft", False)])
   SamplingTime =        PlotCombination("SamplingTime",                         dict(by_duration=True),                             DirectionClrFn,  )
@@ -118,7 +118,7 @@ def plotNormalized(df_concat_norm, df_concat_without_feedback, combinations,
   cached_df_avgs.clear()
   cached_df_avgs.update(cached_df_avgs_updated)
   del cached_df_avgs_updated
-  [print(k) for k in cached_df_avgs.keys()]
+  # [print(k) for k in cached_df_avgs.keys()]
 
   getAvgFn = partial(avgEpochsStub, cached_df_avgs=cached_df_avgs,
                      normalization=normalization,
@@ -234,7 +234,7 @@ def avgEpochsStub(comb, df, cached_df_avgs, normalization,
                             align_feedback_time=align_feedback_time,
                             limit_end_epoch=limit_end_epoch,
                             cache_extra_prefix=cache_extra_prefix)
-  print("Cache key:", cache_key)
+  # print("Cache key:", cache_key)
   df_avg_comb = cached_df_avgs.get(cache_key)
   if df_avg_comb is not None:
     print("Found in cache:", cache_key)
@@ -299,7 +299,7 @@ def plotTracesStub(comb, df, getAvgFn, normalization, cur_fig_save_prefix,
          # alternative_plot_id_col?
     savePrefix_kargs = dict(alternative_plot_id_col="SaveName",
                             append_plot_id_col=None)
-  print("save dir prefix:", save_dir_prefix)
+  # print("save dir prefix:", save_dir_prefix)
   savePrefix = partial(behaviorcommon.savePrefixTmplt, fig_short_name="",#"avg",
                            fig_save_prefix=cur_fig_save_prefix, #df=plot_df,
                            is_unified=False, is_widefield=is_widefield,
@@ -318,7 +318,7 @@ def plotTracesStub(comb, df, getAvgFn, normalization, cur_fig_save_prefix,
   cur_only_traces_ids = _getOnlyTracesIds(onlyTraceIdsPlotProcessFn,
                                           only_traces_ids, df_avg_comb,
                                           split_level=split_level)
-  print("plot kargs:", plot_kargs)
+  # print("plot kargs:", plot_kargs)
   if renameSaveFn is not None or appendSaveFn is not None:
     applyFn = renameSaveFn if renameSaveFn is not None else appendSaveFn
     df_avg_comb["SaveName"] = df_avg_comb.apply(applyFn, axis=1)
@@ -340,6 +340,7 @@ def heatmapStub(comb, df, getAvgFn, normalization, cur_fig_save_prefix,
                 onlyTraceIdsPlotProcessFn=None, heatMapSortSrcDf='None',
                 save_extra_prefix="", renameTracesFn=None, renameSaveFn=None,
                 only_common_sort_not_common_rng=sig(plotHeatMap).parameters["only_common_sort_not_common_rng"].default,
+                restrict_sorting_to_epochs=[],
                 save_ext=None, fig_postfix="", **plot_kargs):
   df_avg_comb, *_ = getAvgFn(comb, df=df)
   # display_epochs, extra_prefix = ["Wait Trial Start", "Sampling"], "pre_n_sampling"
@@ -395,7 +396,7 @@ def heatmapStub(comb, df, getAvgFn, normalization, cur_fig_save_prefix,
   plotHeatMap(df=df_avg_comb, by_epoch=True, by_split_level=split_level,
               title_cols=["Title"],
               restrict_to_epochs=display_epochs,
-              restrict_sorting_to_epochs=[],#["Sampling"],
+              restrict_sorting_to_epochs=restrict_sorting_to_epochs,
               heatMapSortSrcDf=heatMapSortSrcDf,
               # restrict_plotting_to_epochs=display_epochs,
               **kargs, savePrefix=savePrefix,
@@ -486,9 +487,9 @@ def _prepareDF(df, comb_name):
     df["BrainRegionStr"] = df["BrainRegion"].apply(
                                   lambda br: str(BrainRegion(br)).split("_")[0])
   if "Layer" in df.columns:
-    print("1. len(df):", len(df))
+    # print("1. len(df):", len(df))
     df = df[df.Layer == "L23"]
-    print("2. len(df):", len(df))
+    # print("2. len(df):", len(df))
   # Repeat again but aftere we filtered what needs filtering
   if "BrainRegion" in df.columns:
     br_col = df.BrainRegionStr

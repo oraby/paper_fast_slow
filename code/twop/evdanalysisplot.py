@@ -6,13 +6,15 @@ def AllClrFn(_id):
 
 def DirectionClrFn(_id):
     _ = '_' if "_Decision" in _id else ""
-    if    f"{_}DecisionLeft"  in _id: return DirectionClr.Left
-    elif  f"{_}DecisionRight" in _id: return DirectionClr.Right
+    if    f"{_}DecisionLeft"  in _id: return "g"#DirectionClr.Left
+    elif  f"{_}DecisionRight" in _id: return (85/255, 48/255, 39/255)#DirectionClr.Right
     else:                             return "gray"
 
 def ChoiceOutcomeClrFn(_id):
-    if     "Correct" in _id: return 'g'
-    elif "Incorrect" in _id: return 'r'
+    # This is now handled by the legendLabelAndLineStyle function, but we keep
+    # it here for now in case we want to use it again
+    if     "Correct" in _id: return 'k'
+    elif "Incorrect" in _id: return 'k'
     else:                    return "gray"
 
 def _stripId(_id):
@@ -34,6 +36,8 @@ def legendLabelAndLineStyle(trace_id):
     is_difficulty = any((diff in trace_id for diff in ["Easy", "Med", "Hard"]))
     if "Prev" in trace_id  and "Left" in trace_id and "Right" in trace_id:
         ls = "dotted"
+    elif "Prev" in trace_id and "Incorrect" in trace_id:
+        ls = "dashed"
     elif ("loorrect" in trace_id or is_difficulty)  and ("Left" in trace_id):
         ls = "dashed"
     trace_id = _stripId(trace_id)

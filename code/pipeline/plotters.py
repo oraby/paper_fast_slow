@@ -127,7 +127,9 @@ class TracesHeatMap(DFProcessor):
         count = 0
         for plot_id, rows_to_traces in \
                                     plot_id_to_plot_rows_to_row_traces.items():
-            fig, ax = plt.subplots(figsize=(15, 7.5))
+            # fig, ax = plt.subplots(figsize=(15, 7.5))
+            # fig, ax = plt.subplots(figsize=(9, 13.5))
+            fig, ax = plt.subplots(figsize=(7.5, 11))
             title_plot_id = plot_id if self._write_title_plot_id else ""
             title = f"{self._title_prefix}{title_plot_id}"
             if len(title):
@@ -154,7 +156,8 @@ class TracesHeatMap(DFProcessor):
                 vmax = plot_id_to_min_max_val.get(plot_id, [None, None])[1]
             # print("self.heatmap_df:", list(rows_to_traces.keys()))
             ax = sns.heatmap(heatmap_df1, cmap=cmap1, vmin=vmin, vmax=vmax,
-                             ax=ax, yticklabels=self._plot_y_ids,)
+                             ax=ax, yticklabels=self._plot_y_ids,
+                             cbar_kws=dict(aspect=40))
             if heatmap_df2 is not None:
                 sns.heatmap(heatmap_df2, cmap=cmap2, vmin=vmin, vmax=vmax,
                             ax=ax, #cbar=cbar)

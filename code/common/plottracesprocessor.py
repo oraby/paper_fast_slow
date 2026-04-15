@@ -196,7 +196,7 @@ class PlotTraces(DFProcessor):
                                                     cur_save_context,name,
                                                     ex_row)
             else:
-                sub_title = "" if not len(print_plot_id) else \
+                sub_title = "" if not len(f"{print_plot_id}") else \
                             f" - Trace:{print_plot_id}"
                 trace_title = f"{name}{sub_title}{self._plot_title_postfix}"
             ax.set_title(trace_title, fontsize="small")

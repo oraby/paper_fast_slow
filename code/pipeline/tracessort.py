@@ -121,14 +121,21 @@ class ByPeakActivityTime(DFProcessor):
             com = np.round(com)
             com = com.astype(int)
             # print("COM2:", com)
-            peak_activity = com    # np..(traces, axis=time_ax+1)
+            peak_activity_col_idx = com    # np..(traces, axis=time_ax+1)
         else:
             # Fill completetly nan values with least values in the traces
             nan_entries = np.isnan(ref_traces)
             ref_traces[nan_entries] = ref_traces[~nan_entries].min(axis=None)
-            peak_activity = np.nanargmax(ref_traces, axis=time_ax+1)
-        new_idxs = np.argsort(peak_activity)
-        # new_idxs = np.argsort(ranges)
+            peak_activity_col_idx = np.nanargmax(ref_traces, axis=time_ax+1)
+            # print("peak_activity:", peak_activity)
+        # Sort first by peak activity time then by key to have a stable sort
+        peak_activity_col_idx = np.array(peak_activity_col_idx)
+        new_idxs = np.argsort(peak_activity_col_idx)
+        keys_as_list = keys.tolist()
+        new_idxs = sorted(new_idxs,
+                          key=lambda idx: (peak_activity_col_idx[idx],
+                                           keys_as_list[idx]))
+        new_idxs = np.array(new_idxs)
         if not ascending:
             new_idxs = new_idxs[::-1]
         keys = keys[new_idxs]
