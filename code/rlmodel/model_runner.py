@@ -44,7 +44,8 @@ def loadDF(min_valid_trials=0, accepts_subjects=[], df_fp=DF_FP):
 
 
 def runModel(df, bias_fn_str, drift_fn_str, noise_fn_str, is_loss_no_dir,
-             evolve_res : dict = None, num_cpus=NUM_CPUS, dry_run=False):
+             fit_mode, evolve_res : dict = None, num_cpus=NUM_CPUS,
+             dry_run=False):
     biasFn = BIAS_FN_DICT[bias_fn_str]
     driftFn = DRIFT_FN_DICT[drift_fn_str]
     noiseFn = NOISE_FN_DICT[noise_fn_str]
@@ -63,6 +64,7 @@ def runModel(df, bias_fn_str, drift_fn_str, noise_fn_str, is_loss_no_dir,
                                      is_loss_no_dir=is_loss_no_dir,
                                      num_cpus=num_cpus,
                                      evolvs_res=evolve_res,
+                                     fit_mode=fit_mode,
                                      dry_run=dry_run)
     evolve_res.update(evolve_res_res)
     return evolve_res
@@ -77,6 +79,11 @@ def main():
                         choices=BIAS_FN_DICT.keys())
     parser.add_argument("--noise", type=str, #required=True,
                         choices=NOISE_FN_DICT.keys(), default="Normal(0, 1)")
+    parser.add_argument("--fit-mode", type=str, required=True,
+                        choices=["chisq", "mle"],
+                        help="Fitting mode: 'chisq' (existing simulation + "
+                             "Chi-square loss) or 'mle' (trial-by-trial "
+                             "maximum likelihood). Required, no default.")
     parser.add_argument("--loss-no-dir", action="store_true", default=False,
                         help="Calculate Loss without direction")
     parser.add_argument("--num-cpus", type=int, default=NUM_CPUS)
@@ -113,12 +120,14 @@ def main():
             evolve_res = runModel(df_behavior, bias_fn_str=args.bias, drift_fn_str=args.drift,
                                   noise_fn_str=args.noise, num_cpus=args.num_cpus,
                                   dry_run=args.dry_run, evolve_res=evolve_res,
-                                  is_loss_no_dir=args.loss_no_dir)
+                                  is_loss_no_dir=args.loss_no_dir,
+                                  fit_mode=args.fit_mode)
     else:
         runModel(df_behavior, bias_fn_str=args.bias, drift_fn_str=args.drift,
                  noise_fn_str=args.noise, num_cpus=args.num_cpus,
                  dry_run=args.dry_run, evolve_res=evolve_res,
-                 is_loss_no_dir=args.loss_no_dir)
+                 is_loss_no_dir=args.loss_no_dir,
+                 fit_mode=args.fit_mode)
 
 
 
@@ -197,7 +206,8 @@ def runTest():
             print("Drift:", drift_fn_str, "Bias:", bias_fn_str)
             runModel(df_behavior, drift_fn_str=drift_fn_str,
                      bias_fn_str=bias_fn_str, noise_fn_str=noise_fn_str,
-                     num_cpus=1, dry_run=True, is_loss_no_dir=True)
+                     num_cpus=1, dry_run=True, is_loss_no_dir=True,
+                     fit_mode="chisq")
             print()
 
 

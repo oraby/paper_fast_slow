@@ -92,7 +92,8 @@ def _processSubject(subject_df, fixed_params_names, fixed_params_vals,
                     noiseFn_x_idxs, noiseFn_fix_idxs,
                     biasFn_x_idxs, biasFn_fix_idxs,
                     include_Q, include_RewardRate, dt, t_dur,
-                    is_loss_no_dir, workers, evolve_dump_FP, dry_run):
+                    is_loss_no_dir, workers, evolve_dump_FP, dry_run,
+                    fit_mode):
 
     if not _running_locally:
         assert isinstance(subject_df, str)
@@ -160,6 +161,8 @@ def _processSubject(subject_df, fixed_params_names, fixed_params_vals,
                     include_Q=include_Q,
                     include_RewardRate=include_RewardRate,
                     is_loss_no_dir=is_loss_no_dir,
+                    fit_mode=fit_mode,
+                    noise_dt_scaling="sqrt_dt",
                     )
 
     with open(evolve_dump_FP_subject, 'wb') as f:
@@ -186,8 +189,17 @@ def evolveFP(drift_fn_str, bias_fn_str, noise_fn_str, t_dur, dt, is_loss_no_dir)
 
 _pool = None # Ruse pool between runs
 def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
-                is_loss_no_dir, num_cpus, evolvs_res : dict, dry_run=False):
+                is_loss_no_dir, num_cpus, evolvs_res : dict, fit_mode,
+                dry_run=False):
     global _pool
+    if fit_mode == "mle":
+        raise NotImplementedError(
+            "fit_mode='mle' is not implemented yet. "
+            "MLE path arrives in Milestone 4. "
+            "Use fit_mode='chisq' for now.")
+    if fit_mode != "chisq":
+        raise ValueError(
+            f"Unknown fit_mode: {fit_mode!r}. Expected 'chisq' or 'mle'.")
     # print("fixed params names:", scipy_params["fixed_params_names"])
     # Strip down our df to the minimum in case it gets copied to the parallel processes
 
@@ -407,7 +419,8 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
                              is_loss_no_dir=is_loss_no_dir,
                              dt=dt, t_dur=t_dur, workers=workers,
                              evolve_dump_FP=evolve_dump_FP,
-                             dry_run=dry_run)
+                             dry_run=dry_run,
+                             fit_mode=fit_mode)
     if not IS_PARALLEL_EXECUTION_ENABLED:
         for subject in remaining_subjects:
             subject_df = df[df.Name == subject]

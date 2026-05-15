@@ -13,12 +13,13 @@ _last_norm_size = None
 def _noiseNormal(size : tuple[int, int],
                  dt : float):
     global _last_noise_arr, _last_norm_size
+    sqrt_dt = np.sqrt(dt)
     if _last_norm_size == size:
         noise_arr =_last_noise_arr
         rnd_default_rng.standard_normal(size=size, out=noise_arr)
-        np.multiply(noise_arr, dt, out=noise_arr)
+        np.multiply(noise_arr, sqrt_dt, out=noise_arr)
     else:
-        noise_arr = rnd_default_rng.standard_normal(size=size) * dt
+        noise_arr = rnd_default_rng.standard_normal(size=size) * sqrt_dt
         _last_noise_arr = noise_arr
         _last_norm_size = size
     return noise_arr
@@ -29,7 +30,7 @@ def _noiseQval(size : tuple[int, int],
                Q_VAL_DECAY_RATE : float,
                Q_VAL_COEF : float):
     global run_logger
-    rndm_noise = np.random.normal(0, 1, size=size) * dt
+    rndm_noise = np.random.normal(0, 1, size=size) * np.sqrt(dt)
     decaying_Q = decayingQ(size, Q_val, Q_VAL_DECAY_RATE,  Q_VAL_COEF, dt)
     noise_Q = rndm_noise + decaying_Q
     if run_logger is not None:

@@ -1,9 +1,10 @@
 import numpy as np
 import pandas as pd
 from functools import partial
+from . import state_updates
 
-LOG_CIEL = .01
-_ciel_max = np.log(1/LOG_CIEL)
+LOG_CIEL = state_updates.LOG_CIEL
+_ciel_max = state_updates.LOG_CEIL_MAX
 
 run_logger = None
 
@@ -13,36 +14,19 @@ EWD_TIME = .3
 
 def _calcQVal(Q_L, Q_R, group_every=0):#round_decimals=0):
     ''' Returns a value between -1 and 1'''
-    Q_L = np.clip(np.asarray(Q_L), LOG_CIEL, 1)
-    Q_R = np.clip(np.asarray(Q_R), LOG_CIEL, 1)
-    Q_val = np.log(Q_L / Q_R) / _ciel_max
-    if group_every != 0:
-        Q_val = np.round(Q_val / group_every) * group_every
-    # assert np.isnan(Q_val).sum() == 0 #, f"Q_val has NaNs: {Q_val} - Q_L: {Q_L} - Q_R: {Q_R}"
-    return Q_val
+    return state_updates.compute_q_value(Q_L, Q_R, group_every=group_every)
 
 
 def _updateNextQL_Q(cur_outcome, cur_choice_left, cur_q_L, cur_q_R, ALPHA):
     '''Calculate the new Q_L and Q_R values'''
-    # Treat no decision as incorrect
-    cur_outcome = np.nan_to_num(cur_outcome, nan=0)
-    # Propagate the values from the previous trial. Also set nan values
-    # i.e, cur_choice_left != cur_choice_left, to the current values
-    new_q_L = np.where(cur_choice_left != cur_choice_left, cur_q_L,
-                       cur_q_L + ALPHA * (cur_outcome - cur_q_L) * cur_choice_left)
-    new_q_R = np.where(cur_choice_left != cur_choice_left, cur_q_R,
-                       cur_q_R + ALPHA * (cur_outcome - cur_q_R) * (1 - cur_choice_left))
-    return new_q_L, new_q_R
+    return state_updates.update_q_values(
+        cur_q_L, cur_q_R, cur_choice_left, cur_outcome, ALPHA)
 
 
 def _updateNextRewardRate(cur_outcome, cur_reward_rate, BETA, group_every=0):
     '''Calculate the new reward rate'''
-    # Treat no decision as incorrect
-    cur_outcome = np.nan_to_num(cur_outcome, nan=0)
-    new_reward_rate = cur_reward_rate + BETA * (cur_outcome - cur_reward_rate)
-    if group_every != 0:
-        new_reward_rate = np.round(new_reward_rate / group_every) * group_every
-    return new_reward_rate
+    return state_updates.update_reward_rate(
+        cur_reward_rate, cur_outcome, BETA, group_every=group_every)
 
 
 def processMultipleSess(mult_sess_df, alpha, beta, include_Q,
