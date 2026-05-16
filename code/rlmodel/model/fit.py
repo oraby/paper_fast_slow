@@ -2,6 +2,7 @@ from .bias import BIAS_FN_DICT
 from .drift import DRIFT_FN_DICT
 from .noise import NOISE_FN_DICT
 from .logic import makeOneRun
+from .mle import MLEModelConfig, objective_from_vector, result_payload
 from .util import initDF, driftFnColsAndKwargs, biasFnColsAndKwargs, noiseFnColsAndKwargs
 import numpy as np
 import pandas as pd
@@ -61,6 +62,10 @@ def _makeOneRunWrapper(x, x_params_names, fixed_params_names, fixed_params_vals,
     return makeOneRun(**logicFn_kwargs, driftFn_kwargs=driftFn_kwargs,
                       noiseFn_kwargs=noiseFn_kwargs, biasFn_kwargs=biasFn_kwargs)
 
+
+def _mleObjectiveWrapper(x, x_params_names, subject_df, model_config):
+    return objective_from_vector(x, x_params_names, subject_df, model_config)
+
 class _NoDaemonProcess(multiprocessing.Process):
     @property
     def daemon(self):
@@ -93,7 +98,7 @@ def _processSubject(subject_df, fixed_params_names, fixed_params_vals,
                     biasFn_x_idxs, biasFn_fix_idxs,
                     include_Q, include_RewardRate, dt, t_dur,
                     is_loss_no_dir, workers, evolve_dump_FP, dry_run,
-                    fit_mode):
+                    fit_mode, model_config=None):
 
     if not _running_locally:
         assert isinstance(subject_df, str)
@@ -110,9 +115,44 @@ def _processSubject(subject_df, fixed_params_names, fixed_params_vals,
     # print(f"Subject: {subject}")
     # Crash early if we built the wrong path
     evolve_dump_FP_subject = _evolveFPSubject(evolve_dump_FP, subject)
-    assert evolve_dump_FP_subject.parent.exists(), f"{evolve_dump_FP_subject.parent} does not exist"
+    if not dry_run:
+        assert evolve_dump_FP_subject.parent.exists(), f"{evolve_dump_FP_subject.parent} does not exist"
 
     fixed_params_vals[0] = subject_df
+    if fit_mode == "mle":
+        if dry_run:
+            return result_payload(
+                optim_res=None,
+                params_names=fit_params_names,
+                params_init=fit_params_init,
+                params_bounds=fit_params_bounds,
+                subject_df=subject_df,
+                model_config=model_config,
+            )
+
+        res = differential_evolution(
+            _mleObjectiveWrapper,
+            bounds=fit_params_bounds,
+            args=(fit_params_names, subject_df, model_config),
+            x0=fit_params_init,
+            disp=True,
+            workers=workers,
+            polish=True,
+            popsize=100,
+            mutation=(0.5, 1.5),
+        )
+        dict_res = result_payload(
+            optim_res=res,
+            params_names=fit_params_names,
+            params_init=fit_params_init,
+            params_bounds=fit_params_bounds,
+            subject_df=subject_df,
+            model_config=model_config,
+        )
+        with open(evolve_dump_FP_subject, 'wb') as f:
+            pickle.dump(dict_res, f)
+        return dict_res
+
     if dry_run:
         loss = _makeOneRunWrapper(x=np.array(fit_params_init),
                                   x_params_names=fit_params_names,
@@ -172,7 +212,7 @@ def _processSubject(subject_df, fixed_params_names, fixed_params_vals,
 
 def _evolveFPSubject(evolveFP : pathlib.Path, subject):
     # Add the subject before .pkl and save in the evolv_res_dump/ folder
-    fp_str = str(evolveFP)
+    fp_str = str(evolveFP).replace("\\", "/")
     save_dir = "../../data/RLModel/"
     assert f"{save_dir}" in fp_str
     evolve_subj_FP = fp_str.replace(f"{save_dir}", f"{save_dir}/subject/")
@@ -192,14 +232,10 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
                 is_loss_no_dir, num_cpus, evolvs_res : dict, fit_mode,
                 dry_run=False):
     global _pool
-    if fit_mode == "mle":
-        raise NotImplementedError(
-            "fit_mode='mle' is not implemented yet. "
-            "MLE path arrives in Milestone 4. "
-            "Use fit_mode='chisq' for now.")
     if fit_mode != "chisq":
-        raise ValueError(
-            f"Unknown fit_mode: {fit_mode!r}. Expected 'chisq' or 'mle'.")
+        if fit_mode != "mle":
+            raise ValueError(
+                f"Unknown fit_mode: {fit_mode!r}. Expected 'chisq' or 'mle'.")
     # print("fixed params names:", scipy_params["fixed_params_names"])
     # Strip down our df to the minimum in case it gets copied to the parallel processes
 
@@ -385,6 +421,17 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
     driftFn_str = reverse_DriftLookup[driftFn]
     biasFn_str = reverse_BiasLookup[biasFn]
     noiseFn_str = reverse_NoiseLookup[noiseFn]
+    model_config = None
+    if fit_mode == "mle":
+        model_config = MLEModelConfig(
+            drift_fn_str=driftFn_str,
+            bias_fn_str=biasFn_str,
+            noise_fn_str=noiseFn_str,
+            include_Q=include_Q,
+            include_RewardRate=include_RewardRate,
+            dt=dt,
+            t_dur=t_dur,
+        )
     evolve_dump_FP = evolveFP(driftFn_str, biasFn_str, noiseFn_str, t_dur, dt,
                               is_loss_no_dir)
 
@@ -420,7 +467,8 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
                              dt=dt, t_dur=t_dur, workers=workers,
                              evolve_dump_FP=evolve_dump_FP,
                              dry_run=dry_run,
-                             fit_mode=fit_mode)
+                             fit_mode=fit_mode,
+                             model_config=model_config)
     if not IS_PARALLEL_EXECUTION_ENABLED:
         for subject in remaining_subjects:
             subject_df = df[df.Name == subject]
