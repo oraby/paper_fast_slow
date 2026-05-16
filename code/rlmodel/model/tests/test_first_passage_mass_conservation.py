@@ -29,6 +29,7 @@ def _total_mass(result):
             + float(result.survival[-1]))
 
 
+@pytest.mark.parametrize("backend", ["reference", "auto", "const_mu"])
 @pytest.mark.parametrize("z, mu, sigma", [
     (0.0, 0.5, 1.0),       # centered, positive drift
     (0.0, -0.5, 1.0),      # centered, negative drift
@@ -36,8 +37,9 @@ def _total_mass(result):
     (0.0, 0.0, 0.5),       # smaller noise
     (-0.5, 1.0, 1.5),      # off-center, strong drift, larger noise
 ])
-def test_mass_conservation_scalar_mu(z, mu, sigma):
-    r = first_passage_density(z, mu, sigma, BOUND, DT, DX, TMAX)
+def test_mass_conservation_scalar_mu(z, mu, sigma, backend):
+    r = first_passage_density(
+        z, mu, sigma, BOUND, DT, DX, TMAX, backend=backend)
     total = _total_mass(r)
     assert abs(total - 1.0) < 1e-6, (
         f"z={z}, mu={mu}, sigma={sigma}: total mass {total} != 1.0 "
@@ -46,17 +48,20 @@ def test_mass_conservation_scalar_mu(z, mu, sigma):
         f"survival={r.survival[-1]})")
 
 
-def test_mass_conservation_time_varying_mu():
+@pytest.mark.parametrize("backend", ["reference", "auto", "time_mu"])
+def test_mass_conservation_time_varying_mu(backend):
     n_t = int(round(TMAX / DT))
     mu_array = np.linspace(0.8, 0.2, n_t)  # decaying drift
-    r = first_passage_density(0.0, mu_array, 1.0, BOUND, DT, DX, TMAX)
+    r = first_passage_density(
+        0.0, mu_array, 1.0, BOUND, DT, DX, TMAX, backend=backend)
     total = _total_mass(r)
     assert abs(total - 1.0) < 1e-6, (
         f"time-varying mu: total mass {total} != 1.0")
 
 
 def test_logged_fields_populated_and_shape_consistent():
-    r = first_passage_density(0.0, 0.5, 1.0, BOUND, DT, DX, TMAX)
+    r = first_passage_density(
+        0.0, 0.5, 1.0, BOUND, DT, DX, TMAX, backend="reference")
     assert r.x_grid is not None
     assert r.p_by_t is not None
     assert r.upper_mass_by_t is not None
