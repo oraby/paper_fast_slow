@@ -454,7 +454,9 @@ def makeOneRun(df, include_Q, include_RewardRate, biasFn, driftFn,
                driftFn_df_cols=[], driftFn_kwargs={},
                noiseFn_df_cols=[], noiseFn_kwargs={},
                is_loss_no_dir=False,
-               return_df=False):
+               return_df=False,
+               seed=0,
+               skip_loss=False):
     global np, pd
     global _last_df_name, _last_df
     from . import bias
@@ -524,7 +526,7 @@ def makeOneRun(df, include_Q, include_RewardRate, biasFn, driftFn,
 
     # Fix the random seed
     # np.random.seed(0)
-    rnd_rng = np.random.default_rng(seed=0)
+    rnd_rng = np.random.default_rng(seed=seed)
     bias.rnd_default_rng = rnd_rng
     drift.rnd_default_rng = rnd_rng
     noise.rnd_default_rng = rnd_rng
@@ -551,8 +553,11 @@ def makeOneRun(df, include_Q, include_RewardRate, biasFn, driftFn,
                                            max_dt=t_dur)
     # print(f"Simulation = {time.time() - time_start:.2f}")
     # time_start = time.time()
-    total_loss = calcLoss(processed_df, dt, t_dur,
-                          is_loss_no_dir=is_loss_no_dir)
+    if skip_loss:
+        total_loss = np.nan
+    else:
+        total_loss = calcLoss(processed_df, dt, t_dur,
+                              is_loss_no_dir=is_loss_no_dir)
     if REPEAT > 1:
         # THen it is a cudf dataframe
         total_loss = total_loss.get()

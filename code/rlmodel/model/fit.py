@@ -16,8 +16,10 @@ import pickle
 
 
 
+_NON_FITTABLE_MAKEONERUN_PARAMS = {"seed", "skip_loss"}
 _makeOneRun_params_names = inspect.signature(makeOneRun).parameters.keys()
-_makeOneRun_params_names = np.asanyarray(list(_makeOneRun_params_names))
+_makeOneRun_params_names = np.asanyarray([p for p in _makeOneRun_params_names
+                                          if p not in _NON_FITTABLE_MAKEONERUN_PARAMS])
 
 def _makeOneRunWrapper(x, x_params_names, fixed_params_names, fixed_params_vals,
                        logicFn_x_idxs, logicFn_fix_idxs,
