@@ -5,7 +5,9 @@ from .. import fit
 from ..bias import BIAS_FN_DICT
 from ..drift import DRIFT_FN_DICT
 from ..initvals import InitVals
-from ..mle import MLEModelConfig, result_payload
+from ..mle import MLEModelConfig, objective_from_vector, result_payload
+from ..mle import evaluate_neg_loglik
+from ..mle_likelihood import LOGLIK_FLOOR, trial_choice_rt_loglik
 from ..noise import NOISE_FN_DICT
 
 
@@ -133,3 +135,80 @@ def test_fit_dispatcher_mle_dry_run_returns_mle_payload():
     assert payload["fit_mode"] == "mle"
     assert payload["mle_df"] is not None
     assert np.isfinite(payload["neg_loglik"])
+
+
+def test_trial_likelihood_invalid_solver_inputs_are_floored():
+    for sigma in [0.0, np.nan]:
+        like = trial_choice_rt_loglik(
+            observed_choice_left=1,
+            observed_rt=0.2,
+            z=0.0,
+            mu=1.0,
+            sigma=sigma,
+            bound=1.0,
+            non_decision_time=0.05,
+            dt=0.01,
+            dx=0.05,
+            tmax=1.0,
+        )
+        assert np.isfinite(like.loglik)
+        assert like.choice_prob_or_density == LOGLIK_FLOOR
+
+
+def test_mle_objective_returns_finite_penalty_for_invalid_candidate():
+    config = MLEModelConfig(
+        drift_fn_str="Classic",
+        bias_fn_str="Q-Val (Offset)",
+        noise_fn_str="Normal(0, 1)",
+        include_Q=True,
+        include_RewardRate=False,
+        dt=0.01,
+        t_dur=0.2,
+        dx=0.1,
+    )
+    names = np.array([
+        "DRIFT_COEF",
+        "NOISE_SIGMA",
+        "BIAS_COEF",
+        "Q_VAL_OFFSET",
+        "BOUND",
+        "ALPHA",
+        "NON_DECISION_TIME",
+    ])
+    x = np.array([1.0, np.nan, 0.5, 0.0, 1.0, 0.3, 0.02])
+
+    value = objective_from_vector(x, names, _small_df(), config)
+
+    assert np.isfinite(value)
+    assert value > 0
+
+
+def test_mle_skips_likelihood_for_missing_dv_without_nan_propagation():
+    df = _small_df()
+    df.loc[0, "DV"] = np.nan
+    config = MLEModelConfig(
+        drift_fn_str="Classic",
+        bias_fn_str="Q-Val (Offset)",
+        noise_fn_str="Normal(0, 1)",
+        include_Q=True,
+        include_RewardRate=False,
+        dt=0.01,
+        t_dur=0.2,
+        dx=0.1,
+    )
+    params = {
+        "DRIFT_COEF": 1.0,
+        "NOISE_SIGMA": 1.0,
+        "BIAS_COEF": 0.5,
+        "Q_VAL_OFFSET": 0.0,
+        "BOUND": 1.0,
+        "ALPHA": 0.3,
+        "NON_DECISION_TIME": 0.02,
+    }
+
+    result = evaluate_neg_loglik(params, df, config, return_df=True)
+
+    assert np.isfinite(result.neg_loglik)
+    assert result.n_trials_loss == 2
+    assert not result.mle_df.loc[0, "mle_valid_for_loss"]
+    assert np.isnan(result.mle_df.loc[0, "mle_loglik"])

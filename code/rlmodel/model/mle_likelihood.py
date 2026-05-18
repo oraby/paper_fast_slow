@@ -25,6 +25,29 @@ def _hit_probabilities(result, dt):
     return upper, lower, survival
 
 
+def _floor_likelihood(decision_time=np.nan):
+    floor_loglik = float(np.log(LOGLIK_FLOOR))
+    return TrialLikelihood(
+        loglik=floor_loglik,
+        choice_prob_or_density=LOGLIK_FLOOR,
+        decision_time=decision_time,
+        survival_at_tmax=LOGLIK_FLOOR,
+        upper_hit_prob_tmax=np.nan,
+        lower_hit_prob_tmax=np.nan,
+    )
+
+
+def _is_valid_solver_input(z, mu, sigma, bound, dt, dx, tmax):
+    scalar_values = [z, sigma, bound, dt, dx, tmax]
+    if not all(np.isfinite(float(v)) for v in scalar_values):
+        return False
+    if sigma <= 0 or bound <= 0 or dt <= 0 or dx <= 0 or tmax <= 0:
+        return False
+    if z < -bound or z > bound:
+        return False
+    return np.all(np.isfinite(np.asarray(mu, dtype=float)))
+
+
 def trial_choice_rt_loglik(observed_choice_left, observed_rt, z, mu, sigma,
                            bound, non_decision_time, dt, dx, tmax, *,
                            diffusion_backend="auto", no_choice=False):
@@ -34,8 +57,15 @@ def trial_choice_rt_loglik(observed_choice_left, observed_rt, z, mu, sigma,
     existing simulation code. No-choice trials contribute the survival mass at
     ``tmax``.
     """
-    result = first_passage_density(
-        z, mu, sigma, bound, dt, dx, tmax, backend=diffusion_backend)
+    if not _is_valid_solver_input(z, mu, sigma, bound, dt, dx, tmax):
+        return _floor_likelihood()
+
+    try:
+        result = first_passage_density(
+            z, mu, sigma, bound, dt, dx, tmax, backend=diffusion_backend)
+    except (AssertionError, FloatingPointError, ValueError, OverflowError):
+        return _floor_likelihood()
+
     upper_hit_prob, lower_hit_prob, survival = _hit_probabilities(result, dt)
 
     if no_choice:
@@ -47,25 +77,11 @@ def trial_choice_rt_loglik(observed_choice_left, observed_rt, z, mu, sigma,
         except (TypeError, ValueError):
             observed_rt = np.nan
         if np.isnan(observed_rt):
-            return TrialLikelihood(
-                loglik=float(np.log(LOGLIK_FLOOR)),
-                choice_prob_or_density=LOGLIK_FLOOR,
-                decision_time=np.nan,
-                survival_at_tmax=survival,
-                upper_hit_prob_tmax=upper_hit_prob,
-                lower_hit_prob_tmax=lower_hit_prob,
-            )
+            return _floor_likelihood(decision_time=np.nan)
 
         decision_time = observed_rt - float(non_decision_time)
         if decision_time <= 0 or decision_time > tmax:
-            return TrialLikelihood(
-                loglik=float(np.log(LOGLIK_FLOOR)),
-                choice_prob_or_density=LOGLIK_FLOOR,
-                decision_time=decision_time,
-                survival_at_tmax=survival,
-                upper_hit_prob_tmax=upper_hit_prob,
-                lower_hit_prob_tmax=lower_hit_prob,
-            )
+            return _floor_likelihood(decision_time=decision_time)
 
         idx = int(np.ceil(decision_time / dt)) - 1
         idx = min(max(idx, 0), len(result.times) - 1)
@@ -74,7 +90,9 @@ def trial_choice_rt_loglik(observed_choice_left, observed_rt, z, mu, sigma,
         else:
             likelihood = float(np.asarray(result.f_lower)[idx])
 
-    likelihood = max(float(likelihood), LOGLIK_FLOOR)
+    likelihood = float(likelihood)
+    if not np.isfinite(likelihood) or likelihood <= 0:
+        likelihood = LOGLIK_FLOOR
     return TrialLikelihood(
         loglik=float(np.log(likelihood)),
         choice_prob_or_density=likelihood,

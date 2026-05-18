@@ -90,12 +90,16 @@ def evaluate_neg_loglik(params, df, model_config, return_df=False):
             reward_rate_before,
             model_config.include_RewardRate,
         )
-        mu = _compute_mu(
-            float(trial["DV"]), params, model_config, q_rel_before, sigma)
+
         bound = _param(params, "BOUND", 1.0)
         non_decision_time = _param(params, "NON_DECISION_TIME", 0.0)
-
-        is_valid = bool(trial["valid"])
+        if not np.isnan(trial["DV"]):
+            mu = _compute_mu(
+                float(trial["DV"]), params, model_config, q_rel_before, sigma)
+            is_valid = bool(trial["valid"])
+        else:
+            mu = np.nan
+            is_valid = False
         choice_left = trial["ChoiceLeft"]
         reward = trial["ChoiceCorrect"]
         no_choice = is_valid and pd.isna(choice_left)
@@ -104,7 +108,7 @@ def evaluate_neg_loglik(params, df, model_config, return_df=False):
         if contributes_likelihood:
             trial_like = trial_choice_rt_loglik(
                 observed_choice_left=choice_left,
-                observed_rt=trial["calcStimulusTime"],
+                observed_rt=observed_rt,
                 z=z,
                 mu=mu,
                 sigma=sigma,
@@ -179,7 +183,13 @@ def evaluate_neg_loglik(params, df, model_config, return_df=False):
 
 
 def objective_from_vector(x, params_names, df, model_config):
-    return neg_loglik(params_from_vector(x, params_names), df, model_config)
+    try:
+        value = neg_loglik(params_from_vector(x, params_names), df, model_config)
+    except (AssertionError, FloatingPointError, ValueError, OverflowError):
+        return _objective_penalty(df)
+    if not np.isfinite(value):
+        return _objective_penalty(df)
+    return value
 
 
 def result_payload(optim_res, params_names, params_init, params_bounds,
@@ -228,6 +238,11 @@ def _param(params, name, default=None):
     if default is not None:
         return default
     raise KeyError(f"missing MLE parameter {name!r}")
+
+
+def _objective_penalty(df):
+    n = max(int(getattr(df, "shape", [1])[0]), 1)
+    return float(-np.log(1e-300) * n)
 
 
 def _compute_z(state, params, model_config, q_rel_before):
