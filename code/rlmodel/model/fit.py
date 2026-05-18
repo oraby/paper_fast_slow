@@ -103,7 +103,7 @@ def _processSubject(subject_df, fixed_params_names, fixed_params_vals,
                     fit_mode, model_config=None):
 
     if not _running_locally:
-        assert isinstance(subject_df, str)
+        assert isinstance(subject_df, (str, pathlib.Path))
         global _last_df_FP, _last_df
         if subject_df != _last_df_FP:
             _tmp_df = pd.read_pickle(subject_df)
@@ -215,16 +215,18 @@ def _processSubject(subject_df, fixed_params_names, fixed_params_vals,
 def _evolveFPSubject(evolveFP : pathlib.Path, subject):
     # Add the subject before .pkl and save in the evolv_res_dump/ folder
     fp_str = str(evolveFP).replace("\\", "/")
-    save_dir = "../../data/RLModel/"
+    save_dir = "data/RLModel/"
     assert f"{save_dir}" in fp_str
     evolve_subj_FP = fp_str.replace(f"{save_dir}", f"{save_dir}/subject/")
-    evolve_subj_FP = evolve_subj_FP.replace(".pkl", f"{subject}.pkl")
+    evolve_subj_FP = evolve_subj_FP.replace(".pkl", f"_{subject}.pkl")
     print("evolve_subj_FP:", evolve_subj_FP)
     return pathlib.Path(evolve_subj_FP)
 
-def evolveFP(drift_fn_str, bias_fn_str, noise_fn_str, t_dur, dt, is_loss_no_dir):
+def evolveFP(drift_fn_str, bias_fn_str, noise_fn_str, t_dur, dt,
+            is_loss_no_dir, fit_mode):
     loss_no_dir_str = "" if not is_loss_no_dir else "_loss_no_dir"
-    main_str = (f"../../data/RLModel/{drift_fn_str}_bias{bias_fn_str}_{noise_fn_str}"
+    main_str = (f"data/RLModel/{fit_mode}_{drift_fn_str}_"
+                f"bias{bias_fn_str}_{noise_fn_str}"
                 f"{loss_no_dir_str}_{t_dur}s_dt{dt}.pkl")
     return pathlib.Path(main_str)
 
@@ -435,7 +437,7 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
             t_dur=t_dur,
         )
     evolve_dump_FP = evolveFP(driftFn_str, biasFn_str, noiseFn_str, t_dur, dt,
-                              is_loss_no_dir)
+                              is_loss_no_dir, fit_mode)
 
     IS_PARALLEL_EXECUTION_ENABLED = False
     if IS_PARALLEL_EXECUTION_ENABLED:
@@ -475,7 +477,7 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
         for subject in remaining_subjects:
             subject_df = df[df.Name == subject]
             if not _running_locally:
-                dump_FP = pathlib.Path("../../data/RLModel/df_dump/"
+                dump_FP = pathlib.Path(f"data/RLModel/df_dump/{fit_mode}_"
                                        f"{subject}_{driftFn_str}"
                                        f"_{noiseFn_str}_{biasFn_str}.pkl")
                 if not dump_FP.parent.exists():

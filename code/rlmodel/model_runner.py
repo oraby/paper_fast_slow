@@ -10,7 +10,7 @@ import argparse
 import pickle
 
 
-DF_FP = "../../data/behavior/df_behavior.pkl"
+DF_FP = "data/behavior/df_behavior.pkl"
 
 
 def loadDF(min_valid_trials=0, accepts_subjects=[], df_fp=DF_FP):
@@ -105,7 +105,8 @@ def main():
     if args.load_evolve:
         load_evolve_fp = fit.evolveFP(args.drift, args.bias, args.noise,
                                       t_dur=T_dur, dt=DT,
-                                      is_loss_no_dir=args.loss_no_dir)
+                                      is_loss_no_dir=args.loss_no_dir,
+                                      fit_mode=args.fit_mode)
         assert load_evolve_fp.exists(), f"File not found: {load_evolve_fp}"
         with open(load_evolve_fp, "rb") as f:
             evolve_res = pickle.load(f)
@@ -219,7 +220,7 @@ if __name__ == "__main__":
     plt.rcParams['font.sans-serif'] = ['Arial']
 
     # Enable loading from relative packes
-    if "PKG" not in globals():
+    if False and "PKG" not in globals():
         import importlib, importlib.util, sys, pathlib # https://stackoverflow.com/a/50395128/11996983
         # PKG = %pwd
         PKG = pathlib.Path(".").resolve()
