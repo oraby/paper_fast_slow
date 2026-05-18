@@ -18,7 +18,7 @@ def diffusion_vectorized_const_mu(z, mu_scalar, sigma, bound, dt, dx, tmax, *, x
     dt = float(dt)
     dx = float(dx)
     sigma = float(sigma)
-    assert -bound < z < bound, f"z={z} must lie strictly inside (-{bound}, {bound})"
+    assert -bound <= z <= bound, f"z={z} must lie strictly inside (-{bound}, {bound})"
     assert sigma > 0, f"sigma={sigma} must be positive"
 
     sigma_sqrt_dt = sigma * float(np.sqrt(dt))

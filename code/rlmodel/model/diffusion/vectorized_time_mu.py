@@ -17,7 +17,7 @@ def diffusion_vectorized_time_mu(z, mu_array, sigma, bound, dt, dx, tmax, *, xp=
     dt = float(dt)
     dx = float(dx)
     sigma = float(sigma)
-    assert -bound < z < bound, f"z={z} must lie strictly inside (-{bound}, {bound})"
+    assert -bound <= z <= bound, f"z={z} must lie strictly inside (-{bound}, {bound})"
     assert sigma > 0, f"sigma={sigma} must be positive"
 
     n_t = int(round(tmax / dt))
