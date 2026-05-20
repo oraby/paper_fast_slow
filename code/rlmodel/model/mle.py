@@ -238,13 +238,17 @@ def objective_from_population(x_matrix, params_names, df, model_config):
             f"MLE diffusion ({n_candidates} candidates x {n_trials} trials)"),
     )
 
-    # Phase 4: flatten (S_valid, N) → (S_valid * N) for ALL solver inputs.
-    # Per-trial observations are tiled across candidates; per-candidate
-    # scalars (non-decision time) are repeated for each trial.
+    # Phase 4: flatten (S_valid, N) -> (S_valid * N) for ALL solver inputs.
+    # Static observations are cached on the backend and broadcast across
+    # candidates; per-candidate scalars are repeated for each trial.
     n_valid = valid_cand_idx.size
-    flat_observed_choice = np.tile(prepared.choice_left, n_valid)
-    flat_observed_rt = np.tile(prepared.observed_rt, n_valid)
-    flat_nondec = np.repeat(nondec[valid_cand_idx], n_trials)
+    backend_arrays = _prepared_session_arrays_for_backend(prepared, backend)
+    flat_observed_choice = _broadcast_population_observation(
+        backend.xp, backend_arrays, "choice_flat", n_valid)
+    flat_observed_rt = _broadcast_population_observation(
+        backend.xp, backend_arrays, "observed_rt_flat", n_valid)
+    flat_nondec = backend.xp.repeat(
+        backend.xp.asarray(nondec[valid_cand_idx], dtype=float), n_trials)
 
     flat_z = z_stack[valid_cand_idx].reshape(-1)
     flat_sigma = sigma_stack[valid_cand_idx].reshape(-1)
@@ -424,9 +428,19 @@ def _prepared_session_arrays_for_backend(data, backend):
             dtype=float),
         "reward": xp.asarray(
             data.reward.reshape(n_sessions, trials_per_session), dtype=float),
+        "choice_flat": xp.asarray(data.choice_left, dtype=float),
+        "observed_rt_flat": xp.asarray(data.observed_rt, dtype=float),
     }
     _PREPARED_SESSION_BACKEND_CACHE[key] = shaped
     return shaped
+
+
+def _broadcast_population_observation(xp, backend_arrays, name, n_candidates):
+    """Return a flattened candidate-major broadcast view of a static trial array."""
+    array = backend_arrays[name]
+    return xp.broadcast_to(
+        array[None, :], (int(n_candidates), int(array.shape[0]))
+    ).reshape(-1)
 
 
 def _param_population(theta, param_lookup, name, xp, default=None):

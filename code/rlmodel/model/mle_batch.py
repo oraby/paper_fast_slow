@@ -325,13 +325,15 @@ def batched_choice_rt_loglik(observed_choice_left, observed_rt, no_choice,
     if n_trials == 0:
         return out
 
-    observed_choice_left = np.asarray(observed_choice_left, dtype=float)
-    observed_rt = np.asarray(observed_rt, dtype=float)
-    no_choice = np.asarray(no_choice, dtype=bool)
-    valid_for_loss = np.asarray(valid_for_loss, dtype=bool)
-    z = np.asarray(z, dtype=float)
-    sigma = np.asarray(sigma, dtype=float)
-    non_decision_time = np.asarray(non_decision_time, dtype=float)
+    observed_choice_left = _coerce_to_numpy(observed_choice_left).astype(
+        float, copy=False)
+    observed_rt = _coerce_to_numpy(observed_rt).astype(float, copy=False)
+    no_choice = _coerce_to_numpy(no_choice).astype(bool, copy=False)
+    valid_for_loss = _coerce_to_numpy(valid_for_loss).astype(bool, copy=False)
+    z = _coerce_to_numpy(z).astype(float, copy=False)
+    sigma = _coerce_to_numpy(sigma).astype(float, copy=False)
+    non_decision_time = _coerce_to_numpy(non_decision_time).astype(
+        float, copy=False)
 
     decision_time = observed_rt - non_decision_time
     out.decision_time[:] = decision_time

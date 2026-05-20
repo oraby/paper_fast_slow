@@ -309,6 +309,31 @@ def test_objective_from_population_matches_per_candidate_with_padded_sessions():
     np.testing.assert_allclose(pop_losses, per_candidate, rtol=1e-8, atol=1e-10)
 
 
+def test_objective_from_population_does_not_tile_static_observations(monkeypatch):
+    def fail_tile(*_args, **_kwargs):
+        raise AssertionError("population objective should broadcast observations")
+
+    monkeypatch.setattr(np, "tile", fail_tile)
+    config = MLEModelConfig(
+        drift_fn_str="Classic", bias_fn_str="None_",
+        noise_fn_str="Normal(0, 1)",
+        include_Q=False, include_RewardRate=False,
+        dt=0.01, t_dur=0.2, dx=0.1,
+    )
+    params_names = np.array(
+        ["DRIFT_COEF", "NOISE_SIGMA", "BOUND", "NON_DECISION_TIME"])
+    candidates = np.array([
+        [1.0, 1.0, 1.0, 0.02],
+        [0.8, 1.2, 1.0, 0.03],
+    ], dtype=float).T
+
+    losses = objective_from_population(
+        candidates, params_names, _small_df(), config)
+
+    assert losses.shape == (2,)
+    assert np.all(np.isfinite(losses))
+
+
 def test_objective_from_population_asserts_equal_session_length():
     config = MLEModelConfig(
         drift_fn_str="Classic", bias_fn_str="None_",
