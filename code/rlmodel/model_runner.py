@@ -44,8 +44,10 @@ def loadDF(min_valid_trials=0, accepts_subjects=[], df_fp=DF_FP):
 
 
 def runModel(df, bias_fn_str, drift_fn_str, noise_fn_str, is_loss_no_dir,
-             fit_mode, evolve_res : dict = None, num_cpus=NUM_CPUS,
-             dry_run=False):
+             fit_mode, evolve_res : dict = None, num_cpus=None,
+             dry_run=False, mle_array_backend="numpy", mle_device_id=None,
+             mle_cupy_fallback="error", mle_batch_size=1024,
+             mle_gpu_memory_gb=None):
     biasFn = BIAS_FN_DICT[bias_fn_str]
     driftFn = DRIFT_FN_DICT[drift_fn_str]
     noiseFn = NOISE_FN_DICT[noise_fn_str]
@@ -65,7 +67,12 @@ def runModel(df, bias_fn_str, drift_fn_str, noise_fn_str, is_loss_no_dir,
                                      num_cpus=num_cpus,
                                      evolvs_res=evolve_res,
                                      fit_mode=fit_mode,
-                                     dry_run=dry_run)
+                                     dry_run=dry_run,
+                                     mle_array_backend=mle_array_backend,
+                                     mle_device_id=mle_device_id,
+                                     mle_cupy_fallback=mle_cupy_fallback,
+                                     mle_batch_size=mle_batch_size,
+                                     mle_gpu_memory_gb=mle_gpu_memory_gb)
     evolve_res.update(evolve_res_res)
     return evolve_res
 
@@ -86,8 +93,22 @@ def main():
                              "maximum likelihood). Required, no default.")
     parser.add_argument("--loss-no-dir", action="store_true", default=False,
                         help="Calculate Loss without direction")
-    parser.add_argument("--num-cpus", type=int, default=NUM_CPUS)
+    parser.add_argument("--num-cpus", type=int, default=None)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--mle-backend", type=str, default=None,
+                        choices=["CPU", "GPU"],
+                        help="MLE compute backend (required when --fit-mode mle). "
+                             "GPU uses CuPy/CUDA and hard-fails if CUDA is "
+                             "unavailable — no silent fallback. CPU uses NumPy. "
+                             "When GPU is selected, the runner also enforces "
+                             "single-process / vectorized=True / "
+                             "updating='deferred' in scipy DE (see fit.py).")
+    parser.add_argument("--mle-device-id", type=int, default=None,
+                        help="CUDA device id to use when --mle-backend GPU.")
+    parser.add_argument("--mle-batch-size", type=int, default=None,
+                        help="Number of trials per batched MLE solve.")
+    parser.add_argument("--mle-gpu-memory-gb", type=float, default=None,
+                        help="GPU memory budget used to estimate MLE batch size.")
     parser.add_argument("--test", action="store_true")
     parser.add_argument("--load-evolve", action="store_true")
     parser.add_argument("--remove-subject", type=str, default=None,
@@ -96,6 +117,25 @@ def main():
     if args.test:
         runTest()
         return
+
+    # --mle-backend is required when fit-mode is mle. We delay the check until
+    # after parse_args so chisq users aren't forced to pass an unused flag.
+    if args.fit_mode == "mle" and args.mle_backend is None:
+        parser.error("--mle-backend {CPU,GPU} is required when --fit-mode mle")
+
+    # Translate the user-facing CPU/GPU knob into the two internal flags that
+    # mle.MLEModelConfig + array_backend.resolve_array_backend understand:
+    #   CPU → numpy (fallback irrelevant; we never try cupy)
+    #   GPU → cupy with cupy_fallback="error" (no silent fallback). This pair
+    #         is what MLEModelConfig.requires_gpu detects to trigger the
+    #         pre-flight assert_gpu_backend probe in fit._processSubject.
+    if args.mle_backend == "GPU":
+        mle_array_backend = "cupy"
+        mle_cupy_fallback = "error"
+    else:
+        # CPU mode for MLE, or any value for chisq (unused on the chisq path).
+        mle_array_backend = "numpy"
+        mle_cupy_fallback = "error"
 
     df_behavior = loadDF(min_valid_trials=0)
     df_behavior = _extendTrials(df_behavior)
@@ -122,13 +162,23 @@ def main():
                                   noise_fn_str=args.noise, num_cpus=args.num_cpus,
                                   dry_run=args.dry_run, evolve_res=evolve_res,
                                   is_loss_no_dir=args.loss_no_dir,
-                                  fit_mode=args.fit_mode)
+                                  fit_mode=args.fit_mode,
+                                  mle_array_backend=mle_array_backend,
+                                  mle_device_id=args.mle_device_id,
+                                  mle_cupy_fallback=mle_cupy_fallback,
+                                  mle_batch_size=args.mle_batch_size,
+                                  mle_gpu_memory_gb=args.mle_gpu_memory_gb)
     else:
         runModel(df_behavior, bias_fn_str=args.bias, drift_fn_str=args.drift,
                  noise_fn_str=args.noise, num_cpus=args.num_cpus,
                  dry_run=args.dry_run, evolve_res=evolve_res,
                  is_loss_no_dir=args.loss_no_dir,
-                 fit_mode=args.fit_mode)
+                 fit_mode=args.fit_mode,
+                 mle_array_backend=mle_array_backend,
+                 mle_device_id=args.mle_device_id,
+                 mle_cupy_fallback=mle_cupy_fallback,
+                 mle_batch_size=args.mle_batch_size,
+                 mle_gpu_memory_gb=args.mle_gpu_memory_gb)
 
 
 

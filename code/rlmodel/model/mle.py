@@ -5,10 +5,19 @@ import numpy as np
 import pandas as pd
 
 from . import state_updates
+from .array_backend import resolve_array_backend
+from .mle_batch import (
+    BatchedLikelihoodResult,
+    BatchedDiffusionSolver,
+    batched_choice_rt_loglik,
+    estimate_batch_size_for_memory,
+)
 from .mle_likelihood import trial_choice_rt_loglik
 
 
 SUPPORTED_MLE_BIASES = {"None_", "Q-Val", "Q-Val (Offset)"}
+SUPPORTED_MLE_ARRAY_BACKENDS = {"auto", "numpy", "cupy"}
+SUPPORTED_MLE_CUPY_FALLBACKS = {"numpy", "error"}
 
 
 @dataclass(frozen=True)
@@ -22,6 +31,12 @@ class MLEModelConfig:
     t_dur: float
     dx: float = 0.02
     diffusion_backend: str = "auto"
+    mle_array_backend: str = "numpy"
+    mle_device_id: int | None = None
+    mle_cupy_fallback: str = "error"
+    mle_batch_size: int | None = 1024
+    mle_gpu_memory_gb: float | None = None
+    mle_use_batched_likelihood: bool = True
 
     @property
     def uses_q_bias(self):
@@ -35,6 +50,18 @@ class MLEModelConfig:
     def uses_decay_q_noise(self):
         return self.noise_fn_str == "Decaying Q-Val"
 
+    @property
+    def requires_gpu(self):
+        """True iff the user requested GPU and ruled out silent fallback.
+
+        Set by the ``--mle-backend GPU`` CLI translation in ``model_runner.py``
+        (which maps to ``mle_array_backend="cupy"`` + ``mle_cupy_fallback="error"``).
+        Used by the pre-flight check in ``fit._processSubject`` to probe the
+        resolved backend before differential_evolution actually runs.
+        """
+        return (self.mle_array_backend == "cupy"
+                and self.mle_cupy_fallback == "error")
+
 
 @dataclass
 class MLEEvalResult:
@@ -43,6 +70,24 @@ class MLEEvalResult:
     n_trials_loss: int
     n_trials_total: int
     mle_df: pd.DataFrame | None = None
+    backend_info: dict | None = None
+
+
+@dataclass(frozen=True)
+class PreparedMLEData:
+    """Static trial data prepared once per subject/fit."""
+    df: pd.DataFrame
+    sorted_index: np.ndarray
+    session_slices: tuple
+    dv: np.ndarray
+    valid: np.ndarray
+    choice_left: np.ndarray
+    reward: np.ndarray
+    observed_rt: np.ndarray
+
+    @property
+    def n_trials(self):
+        return int(len(self.dv))
 
 
 def validate_mle_config(model_config):
@@ -50,6 +95,18 @@ def validate_mle_config(model_config):
         raise NotImplementedError(
             "MLE currently supports only bias functions: "
             f"{sorted(SUPPORTED_MLE_BIASES)}. Got {model_config.bias_fn_str!r}.")
+    if model_config.mle_array_backend not in SUPPORTED_MLE_ARRAY_BACKENDS:
+        raise ValueError(
+            f"Unknown MLE array backend {model_config.mle_array_backend!r}. "
+            f"Expected {sorted(SUPPORTED_MLE_ARRAY_BACKENDS)}.")
+    if model_config.mle_cupy_fallback not in SUPPORTED_MLE_CUPY_FALLBACKS:
+        raise ValueError(
+            f"Unknown MLE CuPy fallback {model_config.mle_cupy_fallback!r}. "
+            f"Expected {sorted(SUPPORTED_MLE_CUPY_FALLBACKS)}.")
+    if model_config.mle_batch_size is not None and model_config.mle_batch_size <= 0:
+        raise ValueError("mle_batch_size must be positive")
+    if model_config.mle_gpu_memory_gb is not None and model_config.mle_gpu_memory_gb <= 0:
+        raise ValueError("mle_gpu_memory_gb must be positive")
 
 
 def params_from_vector(x, params_names):
@@ -62,123 +119,29 @@ def neg_loglik(params, df, model_config):
 
 def evaluate_neg_loglik(params, df, model_config, return_df=False):
     validate_mle_config(model_config)
+    data = prepare_mle_data(df)
     params = {str(k).upper(): float(v) for k, v in params.items()}
 
-    total_loglik = 0.0
-    n_trials_loss = 0
-    rows = [] if return_df else None
-    state_by_sess = {}
-
-    sort_cols = [col for col in ["SessId", "TrialNumber"] if col in df.columns]
-    iter_df = df.sort_values(sort_cols) if sort_cols else df
-
-    for row_idx, trial in iter_df.iterrows():
-        sess_id = trial["SessId"]
-        if sess_id not in state_by_sess:
-            state_by_sess[sess_id] = state_updates.initialize_latent_state(
-                include_Q=model_config.include_Q,
-                include_RewardRate=model_config.include_RewardRate,
-            )
-        state = state_by_sess[sess_id]
-
-        q_rel_before = float(state_updates.compute_q_value(
-            state.q_left, state.q_right))
-        reward_rate_before = state.reward_rate
-        z = _compute_z(state, params, model_config, q_rel_before)
-        sigma = state_updates.compute_trial_sigma(
-            _param(params, "NOISE_SIGMA"),
-            reward_rate_before,
-            model_config.include_RewardRate,
-        )
-
-        bound = _param(params, "BOUND", 1.0)
-        non_decision_time = _param(params, "NON_DECISION_TIME", 0.0)
-        if not np.isnan(trial["DV"]):
-            mu = _compute_mu(
-                float(trial["DV"]), params, model_config, q_rel_before, sigma)
-            is_valid = bool(trial["valid"])
-        else:
-            mu = np.nan
-            is_valid = False
-        choice_left = trial["ChoiceLeft"]
-        reward = trial["ChoiceCorrect"]
-        no_choice = is_valid and pd.isna(choice_left)
-        contributes_likelihood = is_valid
-        trial_like = None
-        if contributes_likelihood:
-            trial_like = trial_choice_rt_loglik(
-                observed_choice_left=choice_left,
-                observed_rt=observed_rt,
-                z=z,
-                mu=mu,
-                sigma=sigma,
-                bound=bound,
-                non_decision_time=non_decision_time,
-                dt=model_config.dt,
-                dx=model_config.dx,
-                tmax=model_config.t_dur,
-                diffusion_backend=model_config.diffusion_backend,
-                no_choice=no_choice,
-            )
-            total_loglik += trial_like.loglik
-            n_trials_loss += 1
-
-        q_left_after = state.q_left
-        q_right_after = state.q_right
-        reward_rate_after = state.reward_rate
-        if is_valid:
-            if model_config.include_Q:
-                q_left_after, q_right_after = state_updates.update_q_values(
-                    state.q_left,
-                    state.q_right,
-                    None if pd.isna(choice_left) else choice_left,
-                    None if pd.isna(reward) else reward,
-                    _param(params, "ALPHA"),
-                )
-                q_left_after = float(q_left_after)
-                q_right_after = float(q_right_after)
-            if model_config.include_RewardRate:
-                reward_rate_after = state_updates.update_reward_rate(
-                    state.reward_rate,
-                    None if pd.isna(reward) else reward,
-                    _param(params, "BETA"),
-                )
-                reward_rate_after = float(reward_rate_after)
-            state_by_sess[sess_id] = state_updates.LatentState(
-                include_Q=state.include_Q,
-                include_RewardRate=state.include_RewardRate,
-                q_left=q_left_after,
-                q_right=q_right_after,
-                reward_rate=reward_rate_after,
-            )
-
-        if rows is not None:
-            rows.append(_row_record(
-                row_idx=row_idx,
-                state=state,
-                q_rel_before=q_rel_before,
-                reward_rate_before=reward_rate_before,
-                z=z,
-                mu=mu,
-                sigma=sigma,
-                trial_like=trial_like,
-                valid_for_loss=contributes_likelihood,
-                q_left_after=q_left_after,
-                q_right_after=q_right_after,
-                reward_rate_after=reward_rate_after,
-            ))
+    latents = _compute_latent_arrays(data, params, model_config)
+    like_result, backend_info = _evaluate_trial_likelihoods(
+        data, latents, params, model_config)
+    valid_mask = latents["valid_for_loss"]
+    loglik_values = like_result.loglik
+    finite_valid = valid_mask & np.isfinite(loglik_values)
+    total_loglik = float(loglik_values[finite_valid].sum())
+    n_trials_loss = int(finite_valid.sum())
 
     mle_df = None
-    if rows is not None:
-        latents = pd.DataFrame(rows).set_index("_row_index")
-        mle_df = df.copy().join(latents, how="left")
+    if return_df:
+        mle_df = _build_mle_df(data, latents, like_result)
 
     return MLEEvalResult(
         neg_loglik=-float(total_loglik),
         loglik=float(total_loglik),
         n_trials_loss=n_trials_loss,
-        n_trials_total=int(len(df)),
+        n_trials_total=data.n_trials,
         mle_df=mle_df,
+        backend_info=backend_info,
     )
 
 
@@ -192,6 +155,165 @@ def objective_from_vector(x, params_names, df, model_config):
     return value
 
 
+def objective_from_population(x_matrix, params_names, df, model_config):
+    """Vectorized DE objective for the MLE path.
+
+    Pushes batching DOWN to the solver: instead of looping ``S`` candidates and
+    making ``S`` separate solver calls, we compute per-candidate latents on the
+    CPU, stack them into ``(S, N)`` (or ``(S, N, n_t)`` for time-varying mu)
+    arrays, flatten to ``(S * N, ...)``, and make a **single** call to
+    ``batched_choice_rt_loglik`` with all candidate-trial pairs at once.
+
+    Why this matters: for small subjects (``N`` ≪ ``mle_batch_size``) the
+    trial-level chunking inside ``batched_choice_rt_loglik`` produces only one
+    sub-batch per candidate, so the GPU sees a sequence of ``S`` independent
+    small-payload kernel sequences with all the per-launch and per-context
+    overhead repeated. After this refactor the GPU sees one large payload per
+    generation. The solver's internal ``mle_batch_size`` / ``mle_gpu_memory_gb``
+    knobs still chunk the flattened stream when it would exceed memory.
+
+    Backend-agnostic: works identically on ``xp=numpy`` (no actual cost
+    reduction except per-call Python overhead) and ``xp=cupy`` (collapses
+    ``S`` GPU command streams into one, which is the main payoff).
+
+    Per-candidate exceptions during latent computation are caught and replaced
+    with the standard penalty, matching ``objective_from_vector``'s behavior.
+    Candidates whose ``BOUND`` differs from the rest are evaluated one-at-a-time
+    via ``objective_from_vector`` to avoid mixing grid sizes in the solver.
+    """
+    validate_mle_config(model_config)
+    x_matrix = np.asarray(x_matrix, dtype=float)
+    if x_matrix.ndim == 1:
+        return np.asarray([objective_from_vector(
+            x_matrix, params_names, df, model_config)], dtype=float)
+    if x_matrix.ndim != 2:
+        raise ValueError(
+            f"objective_from_population expected a 2-D (n_params, S) "
+            f"matrix; got shape {x_matrix.shape}")
+
+    n_candidates = x_matrix.shape[1]
+    prepared = prepare_mle_data(df) if not isinstance(df, PreparedMLEData) else df
+    if n_candidates == 0:
+        return np.empty(0, dtype=float)
+
+    n_trials = prepared.n_trials
+    penalty = _objective_penalty(prepared)
+    losses = np.full(n_candidates, penalty, dtype=float)
+
+    # Phase 1: per-candidate latents (Python loop, vectorized numpy inside).
+    is_time_varying = (model_config.uses_decay_q_drift
+                       or model_config.uses_decay_q_noise)
+    n_t = int(round(model_config.t_dur / model_config.dt))
+
+    if is_time_varying:
+        mu_stack = np.empty((n_candidates, n_trials, n_t), dtype=float)
+    else:
+        mu_stack = np.empty((n_candidates, n_trials), dtype=float)
+    z_stack = np.empty((n_candidates, n_trials), dtype=float)
+    sigma_stack = np.empty((n_candidates, n_trials), dtype=float)
+    valid_stack = np.zeros((n_candidates, n_trials), dtype=bool)
+    no_choice_stack = np.zeros((n_candidates, n_trials), dtype=bool)
+    bounds = np.empty(n_candidates, dtype=float)
+    nondec = np.empty(n_candidates, dtype=float)
+    succeeded = np.zeros(n_candidates, dtype=bool)
+
+    for i in range(n_candidates):
+        try:
+            params = params_from_vector(x_matrix[:, i], params_names)
+            latents = _compute_latent_arrays(prepared, params, model_config)
+        except (AssertionError, FloatingPointError, ValueError, OverflowError,
+                KeyError):
+            # losses[i] already initialized to penalty
+            continue
+        z_stack[i] = latents["z"]
+        sigma_stack[i] = latents["sigma"]
+        mu_stack[i] = latents["mu"]
+        valid_stack[i] = latents["valid_for_loss"]
+        no_choice_stack[i] = latents["no_choice"]
+        bounds[i] = _param(params, "BOUND", 1.0)
+        nondec[i] = _param(params, "NON_DECISION_TIME", 0.0)
+        succeeded[i] = True
+
+    valid_cand_idx = np.flatnonzero(succeeded)
+    if valid_cand_idx.size == 0:
+        return losses
+
+    # Phase 2: solver requires uniform BOUND across the chunk (it sets up
+    # x_grid from bound). In the default config BOUND is fixed at 1, so this
+    # holds. If any candidate disagrees, evaluate those one-at-a-time and skip
+    # the population path for them.
+    sub_bounds = bounds[valid_cand_idx]
+    if not np.allclose(sub_bounds, sub_bounds[0]):
+        for i in valid_cand_idx:
+            losses[i] = objective_from_vector(
+                x_matrix[:, i], params_names, prepared, model_config)
+        return losses
+    shared_bound = float(sub_bounds[0])
+
+    # Phase 3: resolve backend ONCE for the whole generation (cached anyway,
+    # but explicit).
+    backend = resolve_array_backend(
+        model_config.mle_array_backend,
+        model_config.mle_device_id,
+        model_config.mle_cupy_fallback,
+    )
+    batch_size, _ = _effective_batch_size(
+        model_config, {"BOUND": shared_bound})
+    solver = BatchedDiffusionSolver(
+        xp=backend.xp, normal_cdf=backend.normal_cdf)
+
+    # Phase 4: flatten (S_valid, N) → (S_valid * N) for ALL solver inputs.
+    # Per-trial observations are tiled across candidates; per-candidate
+    # scalars (non-decision time) are repeated for each trial.
+    n_valid = valid_cand_idx.size
+    flat_observed_choice = np.tile(prepared.choice_left, n_valid)
+    flat_observed_rt = np.tile(prepared.observed_rt, n_valid)
+    flat_nondec = np.repeat(nondec[valid_cand_idx], n_trials)
+
+    flat_z = z_stack[valid_cand_idx].reshape(-1)
+    flat_sigma = sigma_stack[valid_cand_idx].reshape(-1)
+    flat_valid = valid_stack[valid_cand_idx].reshape(-1)
+    flat_no_choice = no_choice_stack[valid_cand_idx].reshape(-1)
+    if is_time_varying:
+        flat_mu = mu_stack[valid_cand_idx].reshape(-1, n_t)
+    else:
+        flat_mu = mu_stack[valid_cand_idx].reshape(-1)
+
+    # Phase 5: single solver call across the entire flattened population.
+    batch_result = batched_choice_rt_loglik(
+        observed_choice_left=flat_observed_choice,
+        observed_rt=flat_observed_rt,
+        no_choice=flat_no_choice,
+        valid_for_loss=flat_valid,
+        z=flat_z,
+        mu_values=flat_mu,
+        sigma=flat_sigma,
+        bound=shared_bound,
+        non_decision_time=flat_nondec,
+        dt=model_config.dt,
+        dx=model_config.dx,
+        tmax=model_config.t_dur,
+        xp=backend.xp,
+        normal_cdf=backend.normal_cdf,
+        batch_size=batch_size,
+        solver=solver,
+    )
+
+    # Phase 6: reshape (S_valid * N,) → (S_valid, N) and aggregate.
+    per_cand_loglik = batch_result.loglik.reshape(n_valid, n_trials)
+    per_cand_valid = valid_stack[valid_cand_idx]
+    finite_valid = per_cand_valid & np.isfinite(per_cand_loglik)
+    total_loglik = np.where(finite_valid, per_cand_loglik, 0.0).sum(axis=1)
+    neg_loglik = -total_loglik
+    # Defensive: any candidate that somehow produced a non-finite sum gets
+    # the penalty. Should not happen given the LOGLIK_FLOOR clamp inside the
+    # solver, but cheap to guard.
+    bad = ~np.isfinite(neg_loglik)
+    neg_loglik[bad] = penalty
+    losses[valid_cand_idx] = neg_loglik
+    return losses
+
+
 def result_payload(optim_res, params_names, params_init, params_bounds,
                    subject_df, model_config):
     if optim_res is None:
@@ -199,13 +321,14 @@ def result_payload(optim_res, params_names, params_init, params_bounds,
     else:
         x = np.asarray(optim_res.x, dtype=float)
     params = params_from_vector(x, params_names)
-    eval_res = evaluate_neg_loglik(params, subject_df, model_config, return_df=True)
+    data = prepare_mle_data(subject_df)
+    eval_res = evaluate_neg_loglik(params, data, model_config, return_df=True)
     k = len(params_names)
     n = max(eval_res.n_trials_loss, 1)
     return dict(
         fit_mode="mle",
         mle_observation_model="choice_rt",
-        subject_df=subject_df,
+        subject_df=data.df,
         mle_df=eval_res.mle_df,
         dt=model_config.dt,
         dx=model_config.dx,
@@ -221,6 +344,7 @@ def result_payload(optim_res, params_names, params_init, params_bounds,
         neg_loglik=eval_res.neg_loglik,
         n_trials_loss=eval_res.n_trials_loss,
         n_trials_total=eval_res.n_trials_total,
+        mle_backend_info=eval_res.backend_info,
         aic=2 * k - 2 * eval_res.loglik,
         bic=k * np.log(n) - 2 * eval_res.loglik,
         model_config=model_config,
@@ -232,6 +356,32 @@ def make_objective(params_names, df, model_config):
                    df=df, model_config=model_config)
 
 
+def prepare_mle_data(df):
+    if isinstance(df, PreparedMLEData):
+        return df
+    sort_cols = [col for col in ["SessId", "TrialNumber"] if col in df.columns]
+    sorted_df = df.sort_values(sort_cols) if sort_cols else df
+    sess_ids = sorted_df["SessId"].to_numpy()
+    starts = []
+    stops = []
+    start = 0
+    for i in range(1, len(sess_ids) + 1):
+        if i == len(sess_ids) or sess_ids[i] != sess_ids[start]:
+            starts.append(start)
+            stops.append(i)
+            start = i
+    return PreparedMLEData(
+        df=df,
+        sorted_index=sorted_df.index.to_numpy(),
+        session_slices=tuple(zip(starts, stops)),
+        dv=_float_col(sorted_df, "DV"),
+        valid=sorted_df["valid"].to_numpy(dtype=bool),
+        choice_left=_float_col(sorted_df, "ChoiceLeft"),
+        reward=_float_col(sorted_df, "ChoiceCorrect"),
+        observed_rt=_float_col(sorted_df, "calcStimulusTime"),
+    )
+
+
 def _param(params, name, default=None):
     if name in params:
         return params[name]
@@ -241,8 +391,302 @@ def _param(params, name, default=None):
 
 
 def _objective_penalty(df):
-    n = max(int(getattr(df, "shape", [1])[0]), 1)
+    if isinstance(df, PreparedMLEData):
+        n = max(df.n_trials, 1)
+    else:
+        n = max(int(getattr(df, "shape", [1])[0]), 1)
     return float(-np.log(1e-300) * n)
+
+
+def _is_finite_number(value):
+    try:
+        return bool(np.isfinite(float(value)))
+    except (TypeError, ValueError):
+        return False
+
+
+def _float_col(df, name):
+    return pd.to_numeric(df[name], errors="coerce").to_numpy(dtype=float)
+
+
+def _compute_latent_arrays(data, params, model_config):
+    n = data.n_trials
+    q_left_before = np.full(n, 0.5, dtype=float)
+    q_right_before = np.full(n, 0.5, dtype=float)
+    q_rel_before = np.full(n, 0.0, dtype=float)
+    reward_rate_before = np.full(n, 0.5, dtype=float)
+    q_left_after = np.full(n, 0.5, dtype=float)
+    q_right_after = np.full(n, 0.5, dtype=float)
+    reward_rate_after = np.full(n, 0.5, dtype=float)
+
+    alpha = _param(params, "ALPHA", np.nan)
+    beta = _param(params, "BETA", np.nan)
+    finite_dv = np.isfinite(data.dv)
+    valid_for_loss = data.valid & finite_dv
+
+    for start, stop in data.session_slices:
+        q_left = 0.5
+        q_right = 0.5
+        reward_rate = 0.5
+        for i in range(start, stop):
+            q_left_before[i] = q_left
+            q_right_before[i] = q_right
+            q_rel = float(state_updates.compute_q_value(q_left, q_right))
+            q_rel_before[i] = q_rel
+            reward_rate_before[i] = reward_rate
+            next_q_left = q_left
+            next_q_right = q_right
+            next_reward_rate = reward_rate
+            if valid_for_loss[i]:
+                reward = 0.0 if np.isnan(data.reward[i]) else float(data.reward[i])
+                choice_left = data.choice_left[i]
+                if model_config.include_Q and not np.isnan(choice_left):
+                    if int(choice_left) == 1:
+                        next_q_left = q_left + alpha * (reward - q_left)
+                    else:
+                        next_q_right = q_right + alpha * (reward - q_right)
+                if model_config.include_RewardRate:
+                    next_reward_rate = reward_rate + beta * (reward - reward_rate)
+                q_left = float(next_q_left)
+                q_right = float(next_q_right)
+                reward_rate = float(next_reward_rate)
+            q_left_after[i] = q_left
+            q_right_after[i] = q_right
+            reward_rate_after[i] = reward_rate
+
+    z = _compute_z_array(q_left_before, q_right_before, q_rel_before,
+                         params, model_config)
+    sigma = _compute_sigma_array(reward_rate_before, params, model_config)
+    mu = _compute_mu_array(data.dv, q_rel_before, sigma, params, model_config)
+    return {
+        "q_left_before": q_left_before,
+        "q_right_before": q_right_before,
+        "q_rel_before": q_rel_before,
+        "reward_rate_before": reward_rate_before,
+        "z": z,
+        "mu": mu,
+        "sigma": sigma,
+        "valid_for_loss": valid_for_loss,
+        "no_choice": valid_for_loss & np.isnan(data.choice_left),
+        "q_left_after": q_left_after,
+        "q_right_after": q_right_after,
+        "reward_rate_after": reward_rate_after,
+    }
+
+
+def _compute_z_array(q_left, q_right, q_rel_before, params, model_config):
+    if not model_config.uses_q_bias:
+        return np.zeros_like(q_rel_before, dtype=float)
+    z = _param(params, "BIAS_COEF") * q_rel_before + _param(
+        params, "Q_VAL_OFFSET", 0.0)
+    return np.clip(z, -1, 1)
+
+
+def _compute_sigma_array(reward_rate_before, params, model_config):
+    base_sigma = _param(params, "NOISE_SIGMA")
+    if model_config.include_RewardRate:
+        return reward_rate_before * base_sigma
+    return np.full_like(reward_rate_before, base_sigma, dtype=float)
+
+
+def _compute_mu_array(dv, q_rel_before, sigma, params, model_config):
+    base_mu = _param(params, "DRIFT_COEF") * np.asarray(dv, dtype=float)
+    if not model_config.uses_decay_q_drift and not model_config.uses_decay_q_noise:
+        return base_mu
+
+    n_t = int(round(model_config.t_dur / model_config.dt))
+    # Keep scalar and time-varying drift in numeric arrays. Object arrays would
+    # force Python loops in the batched solver and make backend transfers slow.
+    mu = np.repeat(base_mu[:, None], n_t, axis=1)
+    if model_config.uses_decay_q_drift:
+        indices = np.arange(n_t)
+        decay_form = (1 - indices / n_t) ** _param(params, "Q_VAL_DECAY_RATE")
+        q_for_drift = np.clip(
+            q_rel_before + _param(params, "Q_VAL_OFFSET", 0.0), -1, 1)
+        mu += q_for_drift[:, None] * decay_form[None, :] * _param(
+            params, "Q_VAL_COEF")
+    if model_config.uses_decay_q_noise:
+        mu += (
+            sigma[:, None]
+            * _decaying_q_noise_array(q_rel_before, params, n_t)
+            / model_config.dt
+        )
+    return mu
+
+
+def _decaying_q_noise_array(q_rel_before, params, n_t):
+    indices = np.arange(n_t)
+    decay = 1 - (
+        _param(params, "Q_VAL_DECAY_RATE") * np.log(indices + 1)
+        / np.log(n_t + 1)
+    )
+    q_abs = np.abs(q_rel_before)[:, None] * _param(params, "Q_VAL_COEF")
+    decayed = np.maximum(q_abs - decay[None, :], 0)
+    return np.where(q_rel_before[:, None] < 0, -decayed, decayed)
+
+
+def _effective_batch_size(model_config, params):
+    bound = _param(params, "BOUND", 1.0)
+    if model_config.mle_batch_size is not None:
+        _, estimate = estimate_batch_size_for_memory(
+            model_config.mle_gpu_memory_gb, bound, model_config.dx,
+            model_config.t_dur, model_config.dt)
+        return int(model_config.mle_batch_size), estimate
+    batch_size, estimate = estimate_batch_size_for_memory(
+        model_config.mle_gpu_memory_gb, bound, model_config.dx,
+        model_config.t_dur, model_config.dt)
+    if batch_size is None:
+        batch_size = 1024
+    return int(batch_size), estimate
+
+
+def _evaluate_trial_likelihoods(data, latents, params, model_config):
+    backend = resolve_array_backend(
+        model_config.mle_array_backend,
+        model_config.mle_device_id,
+        model_config.mle_cupy_fallback,
+    )
+    if model_config.mle_use_batched_likelihood:
+        return _evaluate_trial_likelihoods_batched(
+            data, latents, params, model_config, backend)
+    likes, info = _evaluate_trial_likelihoods_rowwise(
+        data, latents, params, model_config)
+    info.update(backend.metadata())
+    info["likelihood_evaluator"] = "rowwise"
+    return _likes_to_result(likes, data.n_trials), info
+
+
+def _evaluate_trial_likelihoods_rowwise(data, latents, params, model_config):
+    likes = []
+    bound = _param(params, "BOUND", 1.0)
+    non_decision_time = _param(params, "NON_DECISION_TIME", 0.0)
+    for i in range(data.n_trials):
+        if not latents["valid_for_loss"][i]:
+            likes.append(None)
+            continue
+        likes.append(trial_choice_rt_loglik(
+            observed_choice_left=data.choice_left[i],
+            observed_rt=data.observed_rt[i],
+            z=latents["z"][i],
+            mu=latents["mu"][i],
+            sigma=latents["sigma"][i],
+            bound=bound,
+            non_decision_time=non_decision_time,
+            dt=model_config.dt,
+            dx=model_config.dx,
+            tmax=model_config.t_dur,
+            diffusion_backend=model_config.diffusion_backend,
+            no_choice=latents["no_choice"][i],
+        ))
+    return likes, {
+        "requested_backend": "rowwise",
+        "actual_backend": "rowwise",
+        "device_id": None,
+        "warning": None,
+    }
+
+
+def _evaluate_trial_likelihoods_batched(data, latents, params, model_config,
+                                        backend):
+    n = data.n_trials
+    if n == 0:
+        info = backend.metadata()
+        info["likelihood_evaluator"] = "batched"
+        return _likes_to_result([], 0), info
+    batch_size, memory_estimate = _effective_batch_size(model_config, params)
+    print(f"Using batch size {batch_size} with memory estimate "
+          f"{memory_estimate} for {n} trials")
+    solver = BatchedDiffusionSolver(
+        xp=backend.xp,
+        normal_cdf=backend.normal_cdf,
+    )
+    batch_result = batched_choice_rt_loglik(
+        observed_choice_left=data.choice_left,
+        observed_rt=data.observed_rt,
+        no_choice=latents["no_choice"],
+        valid_for_loss=latents["valid_for_loss"],
+        z=latents["z"],
+        mu_values=latents["mu"],
+        sigma=latents["sigma"],
+        bound=_param(params, "BOUND", 1.0),
+        non_decision_time=np.full(n, _param(params, "NON_DECISION_TIME", 0.0)),
+        dt=model_config.dt,
+        dx=model_config.dx,
+        tmax=model_config.t_dur,
+        xp=backend.xp,
+        normal_cdf=backend.normal_cdf,
+        batch_size=batch_size,
+        solver=solver,
+    )
+    info = backend.metadata()
+    info["likelihood_evaluator"] = "batched"
+    info["batch_size"] = batch_size
+    info["memory_estimate"] = memory_estimate
+    info["solver"] = batch_result.metadata
+    return batch_result, info
+
+
+def _array_trial_likelihood(batch_result, i):
+    from .mle_likelihood import TrialLikelihood
+
+    return TrialLikelihood(
+        loglik=float(batch_result.loglik[i]),
+        choice_prob_or_density=float(batch_result.choice_prob_or_density[i]),
+        decision_time=float(batch_result.decision_time[i]),
+        survival_at_tmax=float(batch_result.survival_at_tmax[i]),
+        upper_hit_prob_tmax=float(batch_result.upper_hit_prob_tmax[i]),
+        lower_hit_prob_tmax=float(batch_result.lower_hit_prob_tmax[i]),
+    )
+
+
+def _likes_to_result(likes, n_trials):
+    result = BatchedLikelihoodResult(
+        loglik=np.full(n_trials, np.nan, dtype=float),
+        choice_prob_or_density=np.full(n_trials, np.nan, dtype=float),
+        decision_time=np.full(n_trials, np.nan, dtype=float),
+        survival_at_tmax=np.full(n_trials, np.nan, dtype=float),
+        upper_hit_prob_tmax=np.full(n_trials, np.nan, dtype=float),
+        lower_hit_prob_tmax=np.full(n_trials, np.nan, dtype=float),
+    )
+    for i, like in enumerate(likes):
+        if like is None:
+            continue
+        result.loglik[i] = like.loglik
+        result.choice_prob_or_density[i] = like.choice_prob_or_density
+        result.decision_time[i] = like.decision_time
+        result.survival_at_tmax[i] = like.survival_at_tmax
+        result.upper_hit_prob_tmax[i] = like.upper_hit_prob_tmax
+        result.lower_hit_prob_tmax[i] = like.lower_hit_prob_tmax
+    return result
+
+
+def _build_mle_df(data, latents, like_result):
+    mu = latents["mu"]
+    if np.asarray(mu).ndim == 1:
+        mu_display = mu
+    else:
+        mu_display = mu[:, 0]
+    latent_df = pd.DataFrame({
+        "_row_index": data.sorted_index,
+        "mle_Q_left_before": latents["q_left_before"],
+        "mle_Q_right_before": latents["q_right_before"],
+        "mle_Q_rel_before": latents["q_rel_before"],
+        "mle_reward_rate_before": latents["reward_rate_before"],
+        "mle_z": latents["z"],
+        "mle_mu": mu_display,
+        "mle_sigma": latents["sigma"],
+        "mle_decision_time_observed": like_result.decision_time,
+        "mle_choice_prob_or_density": like_result.choice_prob_or_density,
+        "mle_loglik": like_result.loglik,
+        "mle_valid_for_loss": latents["valid_for_loss"],
+        "mle_survival_at_tmax": like_result.survival_at_tmax,
+        "mle_upper_hit_prob_tmax": like_result.upper_hit_prob_tmax,
+        "mle_lower_hit_prob_tmax": like_result.lower_hit_prob_tmax,
+        "mle_Q_left_after": latents["q_left_after"],
+        "mle_Q_right_after": latents["q_right_after"],
+        "mle_reward_rate_after": latents["reward_rate_after"],
+    }).set_index("_row_index")
+    return data.df.copy().join(latent_df, how="left")
 
 
 def _compute_z(state, params, model_config, q_rel_before):

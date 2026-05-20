@@ -2,7 +2,13 @@ from .bias import BIAS_FN_DICT
 from .drift import DRIFT_FN_DICT
 from .noise import NOISE_FN_DICT
 from .logic import makeOneRun
-from .mle import MLEModelConfig, objective_from_vector, result_payload
+from .array_backend import assert_gpu_backend, resolve_array_backend
+from .mle import (
+    MLEModelConfig,
+    objective_from_population,
+    prepare_mle_data,
+    result_payload,
+)
 from .util import initDF, driftFnColsAndKwargs, biasFnColsAndKwargs, noiseFnColsAndKwargs
 import numpy as np
 import pandas as pd
@@ -65,8 +71,18 @@ def _makeOneRunWrapper(x, x_params_names, fixed_params_names, fixed_params_vals,
                       noiseFn_kwargs=noiseFn_kwargs, biasFn_kwargs=biasFn_kwargs)
 
 
-def _mleObjectiveWrapper(x, x_params_names, subject_df, model_config):
-    return objective_from_vector(x, x_params_names, subject_df, model_config)
+def _mleVectorizedObjectiveWrapper(x_matrix, x_params_names, subject_df,
+                                   model_config):
+    """Vectorized DE objective.
+
+    SciPy calls this once per generation with ``x_matrix.shape == (n_params, S)``
+    and expects ``(S,)`` losses back. By doing the popsize loop inside our
+    process we keep a single CuPy context across the whole generation, avoid
+    the multiprocessing.Pool boundary, and pay one parameter-vector transfer
+    per generation instead of one per candidate.
+    """
+    return objective_from_population(
+        x_matrix, x_params_names, subject_df, model_config)
 
 class _NoDaemonProcess(multiprocessing.Process):
     @property
@@ -122,35 +138,71 @@ def _processSubject(subject_df, fixed_params_names, fixed_params_vals,
 
     fixed_params_vals[0] = subject_df
     if fit_mode == "mle":
+        assert model_config is not None, (
+            "fit_mode='mle' requires a non-None model_config; "
+            "simulateDDM constructs one — this should be unreachable.")
+        prepared_subject = prepare_mle_data(subject_df)
+
+        # Pre-flight: when the user asked for --mle-backend GPU, resolve and
+        # probe the backend before scipy DE starts. This catches
+        # CUDA-unavailable / wrong-device-id / cupy-fell-back-silently cases
+        # *immediately* instead of after a few generations of confusing slow
+        # behavior.
+        if model_config.requires_gpu:
+            backend = resolve_array_backend(
+                model_config.mle_array_backend,
+                model_config.mle_device_id,
+                model_config.mle_cupy_fallback,
+            )
+            probe = assert_gpu_backend(backend)
+            print(
+                f"MLE GPU backend confirmed: backend={backend.actual_backend}, "
+                f"device_id={backend.device_id}, "
+                f"probe_type={type(probe).__module__}.{type(probe).__name__}")
+
         if dry_run:
-            return result_payload(
+            payload = result_payload(
                 optim_res=None,
                 params_names=fit_params_names,
                 params_init=fit_params_init,
                 params_bounds=fit_params_bounds,
-                subject_df=subject_df,
+                subject_df=prepared_subject,
                 model_config=model_config,
             )
+            print("MLE backend info:", payload["mle_backend_info"])
+            return payload
 
+        # MLE path: scipy DE with vectorized=True collapses the per-generation
+        # popsize round-trips into one objective call. ``workers=1`` and
+        # ``updating="deferred"`` are the right defaults for BOTH backends:
+        # - GPU: one CuPy context per process, no Pool sharing the device,
+        #   no synchronous per-candidate evaluations.
+        # - CPU: vectorized=True already calls the objective once per
+        #   generation, so a worker pool would only add IPC/pickle overhead.
+        # The upstream warning in ``simulateDDM`` rejects --num-cpus != 1
+        # for MLE for the same reason.
         res = differential_evolution(
-            _mleObjectiveWrapper,
+            _mleVectorizedObjectiveWrapper,
             bounds=fit_params_bounds,
-            args=(fit_params_names, subject_df, model_config),
+            args=(fit_params_names, prepared_subject, model_config),
             x0=fit_params_init,
             disp=True,
-            workers=workers,
+            workers=1,
             polish=True,
-            popsize=100,
-            mutation=(0.5, 1.5),
+            popsize=1024*1024,
+            updating="deferred",
+            vectorized=True,
+            #mutation=(0.5, 1.5),
         )
         dict_res = result_payload(
             optim_res=res,
             params_names=fit_params_names,
             params_init=fit_params_init,
             params_bounds=fit_params_bounds,
-            subject_df=subject_df,
+            subject_df=prepared_subject,
             model_config=model_config,
         )
+        print("MLE backend info:", dict_res["mle_backend_info"])
         with open(evolve_dump_FP_subject, 'wb') as f:
             pickle.dump(dict_res, f)
         return dict_res
@@ -234,7 +286,9 @@ def evolveFP(drift_fn_str, bias_fn_str, noise_fn_str, t_dur, dt,
 _pool = None # Ruse pool between runs
 def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
                 is_loss_no_dir, num_cpus, evolvs_res : dict, fit_mode,
-                dry_run=False):
+                dry_run=False, mle_array_backend="numpy",
+                mle_device_id=None, mle_cupy_fallback="error",
+                mle_batch_size=None, mle_gpu_memory_gb=None):
     global _pool
     if fit_mode != "chisq":
         if fit_mode != "mle":
@@ -435,11 +489,33 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
             include_RewardRate=include_RewardRate,
             dt=dt,
             t_dur=t_dur,
+            mle_array_backend=mle_array_backend,
+            mle_device_id=mle_device_id,
+            mle_cupy_fallback=mle_cupy_fallback,
+            mle_batch_size=mle_batch_size,
+            mle_gpu_memory_gb=mle_gpu_memory_gb,
         )
     evolve_dump_FP = evolveFP(driftFn_str, biasFn_str, noiseFn_str, t_dur, dt,
                               is_loss_no_dir, fit_mode)
 
     IS_PARALLEL_EXECUTION_ENABLED = False
+    if num_cpus is None:
+        num_cpus = 1 if fit_mode == "mle" else multiprocessing.cpu_count()
+    elif fit_mode == "mle" and num_cpus != 1:
+        # Item E: the MLE DE call sets vectorized=True (which makes scipy
+        # ignore `workers`) and runs the popsize loop inside this process.
+        # A multiprocessing.Pool is therefore (a) unused by scipy and (b)
+        # actively harmful for CuPy backends since each child would init its
+        # own CUDA context fighting for the same GPU. Force num_cpus=1 for
+        # MLE regardless of the user's --num-cpus flag.
+        backend_note = (
+            " (CuPy contexts would contend for the GPU)"
+            if mle_array_backend == "cupy" else "")
+        print(
+            f"WARNING: MLE mode runs single-process; ignoring "
+            f"--num-cpus {num_cpus}{backend_note}.")
+        num_cpus = 1
+
     if IS_PARALLEL_EXECUTION_ENABLED:
         workers = num_cpus / 2
         workers = max(workers, 1)

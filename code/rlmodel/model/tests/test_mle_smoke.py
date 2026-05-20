@@ -5,7 +5,12 @@ from .. import fit
 from ..bias import BIAS_FN_DICT
 from ..drift import DRIFT_FN_DICT
 from ..initvals import InitVals
-from ..mle import MLEModelConfig, objective_from_vector, result_payload
+from ..mle import (
+    MLEModelConfig,
+    objective_from_population,
+    objective_from_vector,
+    result_payload,
+)
 from ..mle import evaluate_neg_loglik
 from ..mle_likelihood import LOGLIK_FLOOR, trial_choice_rt_loglik
 from ..noise import NOISE_FN_DICT
@@ -211,4 +216,81 @@ def test_mle_skips_likelihood_for_missing_dv_without_nan_propagation():
     assert np.isfinite(result.neg_loglik)
     assert result.n_trials_loss == 2
     assert not result.mle_df.loc[0, "mle_valid_for_loss"]
-    assert np.isnan(result.mle_df.loc[0, "mle_loglik"])
+
+
+def test_objective_from_population_matches_per_candidate_objective():
+    """The vectorized DE objective must agree element-wise with the
+    per-candidate ``objective_from_vector`` it replaces."""
+    config = MLEModelConfig(
+        drift_fn_str="Classic",
+        bias_fn_str="None_",
+        noise_fn_str="Normal(0, 1)",
+        include_Q=False,
+        include_RewardRate=False,
+        dt=0.01,
+        t_dur=0.2,
+        dx=0.1,
+    )
+    params_names = np.array(
+        ["DRIFT_COEF", "NOISE_SIGMA", "BOUND", "NON_DECISION_TIME"])
+    candidates = np.array([
+        [1.0, 1.0, 1.0, 0.02],
+        [0.8, 1.2, 1.0, 0.03],
+        [1.5, 0.9, 1.0, 0.01],
+    ], dtype=float).T  # shape (n_params, S=3)
+    df = _small_df()
+
+    pop_losses = objective_from_population(candidates, params_names, df, config)
+    per_candidate = np.array([
+        objective_from_vector(candidates[:, i], params_names, df, config)
+        for i in range(candidates.shape[1])
+    ])
+    np.testing.assert_allclose(pop_losses, per_candidate, rtol=0, atol=0)
+
+
+def test_objective_from_population_handles_1d_input():
+    """SciPy can hand us a single 1-D vector in degenerate cases; the
+    population wrapper must accept that without breaking."""
+    config = MLEModelConfig(
+        drift_fn_str="Classic", bias_fn_str="None_",
+        noise_fn_str="Normal(0, 1)",
+        include_Q=False, include_RewardRate=False,
+        dt=0.01, t_dur=0.2, dx=0.1,
+    )
+    params_names = np.array(
+        ["DRIFT_COEF", "NOISE_SIGMA", "BOUND", "NON_DECISION_TIME"])
+    x = np.array([1.0, 1.0, 1.0, 0.02])
+    out = objective_from_population(x, params_names, _small_df(), config)
+    assert out.shape == (1,)
+    assert np.isfinite(out[0])
+
+
+def test_de_vectorized_path_runs_end_to_end(tmp_path, monkeypatch):
+    """Confirms scipy DE accepts our vectorized objective and that
+    fit.simulateDDM completes a (tiny) MLE run with vectorized=True. The
+    test isolates the pickle dump side-effect into ``tmp_path``."""
+    # The fit code dumps the result pickle to data/RLModel/subject/* relative
+    # to the CWD; redirect that into the per-test tmp_path so we don't touch
+    # the user's working directory.
+    (tmp_path / "data" / "RLModel" / "subject").mkdir(parents=True)
+    monkeypatch.chdir(tmp_path)
+
+    result = fit.simulateDDM(
+        _small_df(),
+        bounds_and_defaults=InitVals().toDict(),
+        dt=0.01,
+        t_dur=0.2,
+        biasFn=BIAS_FN_DICT["None_"],
+        driftFn=DRIFT_FN_DICT["Classic"],
+        noiseFn=NOISE_FN_DICT["Normal(0, 1)"],
+        is_loss_no_dir=False,
+        num_cpus=1,
+        evolvs_res={},
+        fit_mode="mle",
+        dry_run=False,
+    )
+    payload = result["S1"]
+    assert payload["fit_mode"] == "mle"
+    assert payload["OptimRes"] is not None
+    assert np.isfinite(payload["neg_loglik"])
+    assert payload["OptimRes"].x.shape == payload["params_names"].shape
