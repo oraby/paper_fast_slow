@@ -37,6 +37,7 @@ class MLEModelConfig:
     mle_cupy_fallback: str = "error"
     mle_gpu_memory_gb: float | None = None
     mle_use_batched_likelihood: bool = True
+    mle_show_progress: bool = False
 
     @property
     def uses_q_bias(self):
@@ -230,7 +231,12 @@ def objective_from_population(x_matrix, params_names, df, model_config):
 
     # Phase 3: configure one solver for the whole generation.
     solver = BatchedDiffusionSolver(
-        xp=backend.xp, normal_cdf=backend.normal_cdf)
+        xp=backend.xp,
+        normal_cdf=backend.normal_cdf,
+        show_progress=model_config.mle_show_progress,
+        progress_desc=(
+            f"MLE diffusion ({n_candidates} candidates x {n_trials} trials)"),
+    )
 
     # Phase 4: flatten (S_valid, N) → (S_valid * N) for ALL solver inputs.
     # Per-trial observations are tiled across candidates; per-candidate
@@ -771,6 +777,7 @@ def _evaluate_trial_likelihoods_batched(data, latents, params, model_config,
     solver = BatchedDiffusionSolver(
         xp=backend.xp,
         normal_cdf=backend.normal_cdf,
+        show_progress=False,
     )
     batch_result = batched_choice_rt_loglik(
         observed_choice_left=data.choice_left,

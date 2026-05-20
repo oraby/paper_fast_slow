@@ -45,6 +45,7 @@ def _config(args, backend, batched):
         mle_cupy_fallback=args.cupy_fallback,
         mle_gpu_memory_gb=args.gpu_memory_gb,
         mle_use_batched_likelihood=batched,
+        mle_show_progress=args.progress,
     )
 
 
@@ -75,6 +76,7 @@ def main():
     parser.add_argument("--cupy-fallback", choices=["numpy", "error"],
                         default="error")
     parser.add_argument("--gpu-memory-gb", type=float, default=None)
+    parser.add_argument("--progress", action="store_true")
     parser.add_argument("--dt", type=float, default=0.01)
     parser.add_argument("--dx", type=float, default=0.1)
     parser.add_argument("--t-dur", type=float, default=0.5)

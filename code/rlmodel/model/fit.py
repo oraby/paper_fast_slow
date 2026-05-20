@@ -305,7 +305,7 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
                 is_loss_no_dir, num_cpus, evolvs_res : dict, fit_mode,
                 dry_run=False, mle_array_backend="numpy",
                 mle_device_id=None, mle_cupy_fallback="error",
-                mle_gpu_memory_gb=None):
+                mle_gpu_memory_gb=None, mle_show_progress=False):
     global _pool
     if fit_mode != "chisq":
         if fit_mode != "mle":
@@ -510,6 +510,7 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
             mle_device_id=mle_device_id,
             mle_cupy_fallback=mle_cupy_fallback,
             mle_gpu_memory_gb=mle_gpu_memory_gb,
+            mle_show_progress=mle_show_progress,
         )
     evolve_dump_FP = evolveFP(driftFn_str, biasFn_str, noiseFn_str, t_dur, dt,
                               is_loss_no_dir, fit_mode)

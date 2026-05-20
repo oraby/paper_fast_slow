@@ -50,9 +50,12 @@ class BatchedDiffusionSolver:
     with shape ``(batch, n_x, n_x + 1)`` at every timestep.
     """
 
-    def __init__(self, xp=np, normal_cdf=None):
+    def __init__(self, xp=np, normal_cdf=None, show_progress=False,
+                 progress_desc=None):
         self.xp = xp
         self.normal_cdf = normal_cdf
+        self.show_progress = bool(show_progress)
+        self.progress_desc = progress_desc
         self._shape_key = None
         self.x_grid = None
         self.offsets = None
@@ -124,7 +127,13 @@ class BatchedDiffusionSolver:
         lower_prob_valid = self.xp.zeros(b, dtype=float)
         bucket_count = 0
 
-        for t_idx in range(n_t):
+        step_iter = _progress_iter(
+            range(n_t),
+            enabled=self.show_progress,
+            total=n_t,
+            desc=self.progress_desc or "MLE diffusion",
+        )
+        for t_idx in step_iter:
             new_p = self.xp.empty_like(p)
             keys = _bucket_keys(mu_valid[:, t_idx], sigma_valid)
             for key in np.unique(keys):
@@ -411,3 +420,20 @@ def _validate_global_params(bound, dt, dx, tmax):
 
 def _next_power_of_two(n):
     return 1 << (int(n) - 1).bit_length()
+
+
+def _progress_iter(iterable, *, enabled, total, desc):
+    if not enabled:
+        return iterable
+    try:
+        from tqdm.auto import tqdm
+    except ImportError:
+        return iterable
+    return tqdm(
+        iterable,
+        total=total,
+        desc=desc,
+        unit="step",
+        leave=False,
+        dynamic_ncols=True,
+    )

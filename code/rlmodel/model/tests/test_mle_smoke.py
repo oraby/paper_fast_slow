@@ -3,6 +3,7 @@ import pandas as pd
 import pytest
 
 from .. import fit
+from .. import mle as mle_module
 from ..bias import BIAS_FN_DICT
 from ..drift import DRIFT_FN_DICT
 from ..initvals import InitVals
@@ -340,6 +341,32 @@ def test_objective_from_population_handles_1d_input():
     out = objective_from_population(x, params_names, _small_df(), config)
     assert out.shape == (1,)
     assert np.isfinite(out[0])
+
+
+def test_objective_from_population_enables_solver_progress(monkeypatch):
+    captured = []
+    original_init = mle_module.BatchedDiffusionSolver.__init__
+
+    def spy_init(self, *args, **kwargs):
+        captured.append(kwargs.get("show_progress"))
+        original_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(
+        mle_module.BatchedDiffusionSolver, "__init__", spy_init)
+    config = MLEModelConfig(
+        drift_fn_str="Classic", bias_fn_str="None_",
+        noise_fn_str="Normal(0, 1)",
+        include_Q=False, include_RewardRate=False,
+        dt=0.01, t_dur=0.2, dx=0.1,
+        mle_show_progress=True,
+    )
+    params_names = np.array(
+        ["DRIFT_COEF", "NOISE_SIGMA", "BOUND", "NON_DECISION_TIME"])
+    candidates = np.array([[1.0, 1.0, 1.0, 0.02]], dtype=float).T
+
+    objective_from_population(candidates, params_names, _small_df(), config)
+
+    assert captured == [True]
 
 
 def test_de_vectorized_path_runs_end_to_end(tmp_path, monkeypatch):

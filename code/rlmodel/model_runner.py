@@ -46,7 +46,8 @@ def loadDF(min_valid_trials=0, accepts_subjects=[], df_fp=DF_FP):
 def runModel(df, bias_fn_str, drift_fn_str, noise_fn_str, is_loss_no_dir,
              fit_mode, evolve_res : dict = None, num_cpus=None,
              dry_run=False, mle_array_backend="numpy", mle_device_id=None,
-             mle_cupy_fallback="error", mle_gpu_memory_gb=None):
+             mle_cupy_fallback="error", mle_gpu_memory_gb=None,
+             mle_show_progress=False):
     biasFn = BIAS_FN_DICT[bias_fn_str]
     driftFn = DRIFT_FN_DICT[drift_fn_str]
     noiseFn = NOISE_FN_DICT[noise_fn_str]
@@ -70,7 +71,8 @@ def runModel(df, bias_fn_str, drift_fn_str, noise_fn_str, is_loss_no_dir,
                                      mle_array_backend=mle_array_backend,
                                      mle_device_id=mle_device_id,
                                      mle_cupy_fallback=mle_cupy_fallback,
-                                     mle_gpu_memory_gb=mle_gpu_memory_gb)
+                                     mle_gpu_memory_gb=mle_gpu_memory_gb,
+                                     mle_show_progress=mle_show_progress)
     evolve_res.update(evolve_res_res)
     return evolve_res
 
@@ -106,6 +108,10 @@ def main():
     parser.add_argument("--mle-gpu-memory-gb", type=float, default=None,
                         help="Memory budget used to size each vectorized MLE "
                              "DE population.")
+    parser.add_argument("--mle-progress", action="store_true",
+                        help="Show a transient tqdm progress bar for each "
+                             "vectorized MLE diffusion solve. Enabled "
+                             "automatically for --mle-backend GPU.")
     parser.add_argument("--test", action="store_true")
     parser.add_argument("--load-evolve", action="store_true")
     parser.add_argument("--remove-subject", type=str, default=None,
@@ -133,6 +139,7 @@ def main():
         # CPU mode for MLE, or any value for chisq (unused on the chisq path).
         mle_array_backend = "numpy"
         mle_cupy_fallback = "error"
+    mle_show_progress = bool(args.mle_progress or args.mle_backend == "GPU")
 
     df_behavior = loadDF(min_valid_trials=0)
     df_behavior = _extendTrials(df_behavior)
@@ -163,7 +170,8 @@ def main():
                                   mle_array_backend=mle_array_backend,
                                   mle_device_id=args.mle_device_id,
                                   mle_cupy_fallback=mle_cupy_fallback,
-                                  mle_gpu_memory_gb=args.mle_gpu_memory_gb)
+                                  mle_gpu_memory_gb=args.mle_gpu_memory_gb,
+                                  mle_show_progress=mle_show_progress)
     else:
         runModel(df_behavior, bias_fn_str=args.bias, drift_fn_str=args.drift,
                  noise_fn_str=args.noise, num_cpus=args.num_cpus,
@@ -173,7 +181,8 @@ def main():
                  mle_array_backend=mle_array_backend,
                  mle_device_id=args.mle_device_id,
                  mle_cupy_fallback=mle_cupy_fallback,
-                 mle_gpu_memory_gb=args.mle_gpu_memory_gb)
+                 mle_gpu_memory_gb=args.mle_gpu_memory_gb,
+                 mle_show_progress=mle_show_progress)
 
 
 
