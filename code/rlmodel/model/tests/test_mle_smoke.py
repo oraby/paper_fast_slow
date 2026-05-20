@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import pytest
 
 from .. import fit
 from ..bias import BIAS_FN_DICT
@@ -36,6 +37,30 @@ def _small_df():
             ChoiceLeft=choice_left,
             ChoiceCorrect=reward,
         ))
+    return pd.DataFrame(rows)
+
+
+def _two_session_padded_df():
+    rows = []
+    for sess_num in [1, 2]:
+        for trial_num, choice_left, reward, rt, dv, valid in [
+            (1, 1.0, 1.0, 0.12, 0.7, True),
+            (2, 0.0, 0.0, 0.14, -0.5, True),
+            (3, np.nan, np.nan, np.nan, 0.2, False),
+        ]:
+            rows.append(dict(
+                Name="S1",
+                Date=pd.Timestamp("2026-01-01"),
+                SessionNum=sess_num,
+                TrialNumber=trial_num,
+                SessId=f"S1_2026-01-01_{sess_num}",
+                DV=dv,
+                DVstr=str(dv),
+                valid=valid,
+                calcStimulusTime=rt,
+                ChoiceLeft=choice_left,
+                ChoiceCorrect=reward,
+            ))
     return pd.DataFrame(rows)
 
 
@@ -246,6 +271,58 @@ def test_objective_from_population_matches_per_candidate_objective():
         for i in range(candidates.shape[1])
     ])
     np.testing.assert_allclose(pop_losses, per_candidate, rtol=0, atol=0)
+
+
+def test_objective_from_population_matches_per_candidate_with_padded_sessions():
+    config = MLEModelConfig(
+        drift_fn_str="Classic",
+        bias_fn_str="Q-Val",
+        noise_fn_str="Normal(0, 1)",
+        include_Q=True,
+        include_RewardRate=False,
+        dt=0.01,
+        t_dur=0.2,
+        dx=0.1,
+    )
+    params_names = np.array([
+        "DRIFT_COEF",
+        "NOISE_SIGMA",
+        "BOUND",
+        "NON_DECISION_TIME",
+        "ALPHA",
+        "BIAS_COEF",
+        "Q_VAL_OFFSET",
+    ])
+    candidates = np.array([
+        [1.0, 1.0, 1.0, 0.02, 0.3, 0.5, 0.0],
+        [0.8, 1.2, 1.0, 0.03, 0.2, 0.4, 0.1],
+    ], dtype=float).T
+    df = _two_session_padded_df()
+
+    pop_losses = objective_from_population(candidates, params_names, df, config)
+    per_candidate = np.array([
+        objective_from_vector(candidates[:, i], params_names, df, config)
+        for i in range(candidates.shape[1])
+    ])
+
+    np.testing.assert_allclose(pop_losses, per_candidate, rtol=1e-8, atol=1e-10)
+
+
+def test_objective_from_population_asserts_equal_session_length():
+    config = MLEModelConfig(
+        drift_fn_str="Classic", bias_fn_str="None_",
+        noise_fn_str="Normal(0, 1)",
+        include_Q=False, include_RewardRate=False,
+        dt=0.01, t_dur=0.2, dx=0.1,
+    )
+    params_names = np.array(
+        ["DRIFT_COEF", "NOISE_SIGMA", "BOUND", "NON_DECISION_TIME"])
+    candidates = np.array([[1.0, 1.0, 1.0, 0.02]], dtype=float).T
+    df = _two_session_padded_df()
+    df = df[~((df.SessId == "S1_2026-01-01_2") & (df.TrialNumber == 3))]
+
+    with pytest.raises(AssertionError, match="equal length"):
+        objective_from_population(candidates, params_names, df, config)
 
 
 def test_objective_from_population_handles_1d_input():

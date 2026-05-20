@@ -227,7 +227,7 @@ def batched_choice_rt_loglik(observed_choice_left, observed_rt, no_choice,
         "batch_size": int(batch_size) if batch_size is not None else None,
         "bucket_count": 0,
     }
-    print(f"Evaluating {n_trials} trials with batch size {batch_size}...")
+    print(f"Evaluating {n_trials:,} trials with batch size {batch_size:,}...")
     for start in range(0, n_trials, int(batch_size)):
         print(f"Processing batch starting at index {start}...")
         stop = min(start + int(batch_size), n_trials)

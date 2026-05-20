@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 
 from . import state_updates
-from .array_backend import resolve_array_backend
+from .array_backend import asnumpy, resolve_array_backend
 from .mle_batch import (
     BatchedLikelihoodResult,
     BatchedDiffusionSolver,
@@ -18,6 +18,7 @@ from .mle_likelihood import trial_choice_rt_loglik
 SUPPORTED_MLE_BIASES = {"None_", "Q-Val", "Q-Val (Offset)"}
 SUPPORTED_MLE_ARRAY_BACKENDS = {"auto", "numpy", "cupy"}
 SUPPORTED_MLE_CUPY_FALLBACKS = {"numpy", "error"}
+_PREPARED_SESSION_BACKEND_CACHE = {}
 
 
 @dataclass(frozen=True)
@@ -84,6 +85,7 @@ class PreparedMLEData:
     choice_left: np.ndarray
     reward: np.ndarray
     observed_rt: np.ndarray
+    trial_number: np.ndarray
 
     @property
     def n_trials(self):
@@ -200,43 +202,30 @@ def objective_from_population(x_matrix, params_names, df, model_config):
     penalty = _objective_penalty(prepared)
     losses = np.full(n_candidates, penalty, dtype=float)
 
-    # Phase 1: per-candidate latents (Python loop, vectorized numpy inside).
+    # Phase 1: compute latents for the whole population. Prepared data is
+    # padded to equal session length, so we keep only a short Python loop over
+    # trial position while updating all candidates and sessions at once.
     is_time_varying = (model_config.uses_decay_q_drift
                        or model_config.uses_decay_q_noise)
     n_t = int(round(model_config.t_dur / model_config.dt))
-
-    if is_time_varying:
-        mu_stack = np.empty((n_candidates, n_trials, n_t), dtype=float)
-    else:
-        mu_stack = np.empty((n_candidates, n_trials), dtype=float)
-    z_stack = np.empty((n_candidates, n_trials), dtype=float)
-    sigma_stack = np.empty((n_candidates, n_trials), dtype=float)
-    valid_stack = np.zeros((n_candidates, n_trials), dtype=bool)
-    no_choice_stack = np.zeros((n_candidates, n_trials), dtype=bool)
-    bounds = np.empty(n_candidates, dtype=float)
-    nondec = np.empty(n_candidates, dtype=float)
-    succeeded = np.zeros(n_candidates, dtype=bool)
-
-    for i in range(n_candidates):
-        try:
-            params = params_from_vector(x_matrix[:, i], params_names)
-            latents = _compute_latent_arrays(prepared, params, model_config)
-        except (AssertionError, FloatingPointError, ValueError, OverflowError,
-                KeyError):
-            # losses[i] already initialized to penalty
-            continue
-        z_stack[i] = latents["z"]
-        sigma_stack[i] = latents["sigma"]
-        mu_stack[i] = latents["mu"]
-        valid_stack[i] = latents["valid_for_loss"]
-        no_choice_stack[i] = latents["no_choice"]
-        bounds[i] = _param(params, "BOUND", 1.0)
-        nondec[i] = _param(params, "NON_DECISION_TIME", 0.0)
-        succeeded[i] = True
-
-    valid_cand_idx = np.flatnonzero(succeeded)
-    if valid_cand_idx.size == 0:
+    backend = resolve_array_backend(
+        model_config.mle_array_backend,
+        model_config.mle_device_id,
+        model_config.mle_cupy_fallback,
+    )
+    try:
+        pop_latents = _compute_latent_population_equal_sessions(
+            prepared, x_matrix, params_names, model_config, backend)
+    except (FloatingPointError, ValueError, OverflowError, KeyError):
         return losses
+    valid_cand_idx = np.arange(n_candidates, dtype=int)
+    z_stack = pop_latents["z"]
+    sigma_stack = pop_latents["sigma"]
+    mu_stack = pop_latents["mu"]
+    valid_stack = pop_latents["valid_for_loss"]
+    no_choice_stack = pop_latents["no_choice"]
+    bounds = pop_latents["bounds"]
+    nondec = pop_latents["non_decision_time"]
 
     # Phase 2: solver requires uniform BOUND across the chunk (it sets up
     # x_grid from bound). In the default config BOUND is fixed at 1, so this
@@ -250,13 +239,7 @@ def objective_from_population(x_matrix, params_names, df, model_config):
         return losses
     shared_bound = float(sub_bounds[0])
 
-    # Phase 3: resolve backend ONCE for the whole generation (cached anyway,
-    # but explicit).
-    backend = resolve_array_backend(
-        model_config.mle_array_backend,
-        model_config.mle_device_id,
-        model_config.mle_cupy_fallback,
-    )
+    # Phase 3: configure one solver for the whole generation.
     batch_size, _ = _effective_batch_size(
         model_config, {"BOUND": shared_bound})
     solver = BatchedDiffusionSolver(
@@ -379,6 +362,7 @@ def prepare_mle_data(df):
         choice_left=_float_col(sorted_df, "ChoiceLeft"),
         reward=_float_col(sorted_df, "ChoiceCorrect"),
         observed_rt=_float_col(sorted_df, "calcStimulusTime"),
+        trial_number=_float_col(sorted_df, "TrialNumber"),
     )
 
 
@@ -407,6 +391,192 @@ def _is_finite_number(value):
 
 def _float_col(df, name):
     return pd.to_numeric(df[name], errors="coerce").to_numpy(dtype=float)
+
+
+def _equal_session_shape(data):
+    lengths = np.asarray([stop - start for start, stop in data.session_slices],
+                         dtype=int)
+    if lengths.size == 0:
+        return 0, 0
+    if not np.all(lengths == lengths[0]):
+        raise AssertionError(
+            "Population MLE requires padded sessions with equal length; "
+            f"got session lengths {lengths.tolist()}.")
+    n_sessions = int(lengths.size)
+    trials_per_session = int(lengths[0])
+    trial_grid = data.trial_number.reshape(n_sessions, trials_per_session)
+    if not np.all(trial_grid == trial_grid[0][None, :]):
+        raise AssertionError(
+            "Population MLE requires every padded session to share the same "
+            "TrialNumber grid.")
+    return n_sessions, trials_per_session
+
+
+def _prepared_session_arrays_for_backend(data, backend):
+    key = (id(data), backend.actual_backend, backend.device_id)
+    cached = _PREPARED_SESSION_BACKEND_CACHE.get(key)
+    if cached is not None:
+        return cached
+    xp = backend.xp
+    n_sessions, trials_per_session = _equal_session_shape(data)
+    shaped = {
+        "n_sessions": n_sessions,
+        "trials_per_session": trials_per_session,
+        "dv": xp.asarray(
+            data.dv.reshape(n_sessions, trials_per_session), dtype=float),
+        "valid": xp.asarray(
+            data.valid.reshape(n_sessions, trials_per_session), dtype=bool),
+        "choice": xp.asarray(
+            data.choice_left.reshape(n_sessions, trials_per_session),
+            dtype=float),
+        "reward": xp.asarray(
+            data.reward.reshape(n_sessions, trials_per_session), dtype=float),
+    }
+    _PREPARED_SESSION_BACKEND_CACHE[key] = shaped
+    return shaped
+
+
+def _param_population(theta, param_lookup, name, xp, default=None):
+    if name in param_lookup:
+        return theta[param_lookup[name]]
+    if default is not None:
+        return xp.full(theta.shape[1], float(default), dtype=float)
+    raise KeyError(f"missing MLE parameter {name!r}")
+
+
+def _compute_latent_population_equal_sessions(data, x_matrix, params_names,
+                                              model_config, backend):
+    xp = backend.xp
+    n_candidates = int(x_matrix.shape[1])
+    prepared = _prepared_session_arrays_for_backend(data, backend)
+    n_sessions = prepared["n_sessions"]
+    trials_per_session = prepared["trials_per_session"]
+    n_trials = data.n_trials
+    param_lookup = {str(name).upper(): i for i, name in enumerate(params_names)}
+    theta = xp.asarray(x_matrix, dtype=float)
+
+    dv = prepared["dv"]
+    valid = prepared["valid"]
+    choice = prepared["choice"]
+    reward_arr = prepared["reward"]
+    finite_dv = xp.isfinite(dv)
+    valid_for_loss_2d = valid & finite_dv
+    no_choice_2d = valid_for_loss_2d & xp.isnan(choice)
+
+    drift_coef = _param_population(theta, param_lookup, "DRIFT_COEF", xp)
+    noise_sigma = _param_population(theta, param_lookup, "NOISE_SIGMA", xp)
+    bounds = _param_population(theta, param_lookup, "BOUND", xp, 1.0)
+    nondec = _param_population(theta, param_lookup, "NON_DECISION_TIME", xp, 0.0)
+    alpha = _param_population(theta, param_lookup, "ALPHA", xp, np.nan)
+    beta = _param_population(theta, param_lookup, "BETA", xp, np.nan)
+    bias_coef = _param_population(theta, param_lookup, "BIAS_COEF", xp, 0.0)
+    q_offset = _param_population(theta, param_lookup, "Q_VAL_OFFSET", xp, 0.0)
+    q_coef = _param_population(theta, param_lookup, "Q_VAL_COEF", xp, 0.0)
+    q_decay_rate = _param_population(
+        theta, param_lookup, "Q_VAL_DECAY_RATE", xp, 1.0)
+
+    q_left = xp.full((n_candidates, n_sessions), 0.5, dtype=float)
+    q_right = xp.full((n_candidates, n_sessions), 0.5, dtype=float)
+    reward_rate = xp.full((n_candidates, n_sessions), 0.5, dtype=float)
+    z = xp.empty((n_candidates, n_sessions, trials_per_session), dtype=float)
+    sigma = xp.empty_like(z)
+    time_varying = model_config.uses_decay_q_drift or model_config.uses_decay_q_noise
+    n_t = int(round(model_config.t_dur / model_config.dt))
+    if time_varying:
+        mu = xp.empty((n_candidates, n_sessions, trials_per_session, n_t),
+                      dtype=float)
+        t_idx = xp.arange(n_t, dtype=float)
+        decay_base = 1.0 - t_idx / float(n_t)
+        log_decay = 1.0 - (
+            q_decay_rate[:, None] * xp.log(t_idx[None, :] + 1.0)
+            / np.log(n_t + 1.0)
+        )
+    else:
+        mu = xp.empty_like(z)
+
+    for trial_pos in range(trials_per_session):
+        q_left_clip = xp.clip(q_left, state_updates.LOG_CIEL, 1.0)
+        q_right_clip = xp.clip(q_right, state_updates.LOG_CIEL, 1.0)
+        q_rel = xp.log(q_left_clip / q_right_clip) / state_updates.LOG_CEIL_MAX
+
+        if model_config.uses_q_bias:
+            z_t = xp.clip(
+                bias_coef[:, None] * q_rel + q_offset[:, None], -1.0, 1.0)
+        else:
+            z_t = xp.zeros_like(q_rel)
+        sigma_t = (
+            reward_rate * noise_sigma[:, None]
+            if model_config.include_RewardRate
+            else xp.broadcast_to(noise_sigma[:, None], q_rel.shape)
+        )
+        base_mu = drift_coef[:, None] * dv[None, :, trial_pos]
+        z[:, :, trial_pos] = z_t
+        sigma[:, :, trial_pos] = sigma_t
+
+        if time_varying:
+            mu_t = xp.repeat(base_mu[:, :, None], n_t, axis=2)
+            if model_config.uses_decay_q_drift:
+                decay_form = decay_base[None, :] ** q_decay_rate[:, None]
+                q_for_drift = xp.clip(q_rel + q_offset[:, None], -1.0, 1.0)
+                mu_t += (
+                    q_for_drift[:, :, None]
+                    * decay_form[:, None, :]
+                    * q_coef[:, None, None]
+                )
+            if model_config.uses_decay_q_noise:
+                q_abs = xp.abs(q_rel)[:, :, None] * q_coef[:, None, None]
+                decayed = xp.maximum(q_abs - log_decay[:, None, :], 0.0)
+                decayed = xp.where(q_rel[:, :, None] < 0.0, -decayed, decayed)
+                mu_t += sigma_t[:, :, None] * decayed / model_config.dt
+            mu[:, :, trial_pos, :] = mu_t
+        else:
+            mu[:, :, trial_pos] = base_mu
+
+        valid_t = valid_for_loss_2d[None, :, trial_pos]
+        reward_t = xp.nan_to_num(reward_arr[None, :, trial_pos], nan=0.0)
+        choice_t = choice[None, :, trial_pos]
+        if model_config.include_Q:
+            left_mask = valid_t & (choice_t == 1)
+            right_mask = valid_t & (choice_t == 0)
+            q_left = xp.where(
+                left_mask,
+                q_left + alpha[:, None] * (reward_t - q_left),
+                q_left,
+            )
+            q_right = xp.where(
+                right_mask,
+                q_right + alpha[:, None] * (reward_t - q_right),
+                q_right,
+            )
+        if model_config.include_RewardRate:
+            reward_rate = xp.where(
+                valid_t,
+                reward_rate + beta[:, None] * (reward_t - reward_rate),
+                reward_rate,
+            )
+
+    flat_shape = (n_candidates, n_trials)
+    valid_flat = xp.broadcast_to(
+        valid_for_loss_2d[None, :, :],
+        (n_candidates, n_sessions, trials_per_session),
+    ).reshape(flat_shape)
+    no_choice_flat = xp.broadcast_to(
+        no_choice_2d[None, :, :],
+        (n_candidates, n_sessions, trials_per_session),
+    ).reshape(flat_shape)
+    if time_varying:
+        mu_out = mu.reshape(n_candidates, n_trials, n_t)
+    else:
+        mu_out = mu.reshape(flat_shape)
+    return {
+        "z": asnumpy(xp, z.reshape(flat_shape)),
+        "sigma": asnumpy(xp, sigma.reshape(flat_shape)),
+        "mu": asnumpy(xp, mu_out),
+        "valid_for_loss": asnumpy(xp, valid_flat).astype(bool),
+        "no_choice": asnumpy(xp, no_choice_flat).astype(bool),
+        "bounds": asnumpy(xp, bounds),
+        "non_decision_time": asnumpy(xp, nondec),
+    }
 
 
 def _compute_latent_arrays(data, params, model_config):
