@@ -17,7 +17,7 @@
   - `mle_array_backend: "auto" | "numpy" | "cupy"`
   - `mle_device_id: int | None`
   - `mle_cupy_fallback: "numpy" | "error"`
-  - `mle_batch_size`
+  - `mle_gpu_memory_gb`
   - CLI flags: `--mle-array-backend`, `--mle-device-id`, `--mle-cupy-fallback`.
 
 - Add backend resolver:

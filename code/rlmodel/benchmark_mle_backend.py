@@ -43,7 +43,6 @@ def _config(args, backend, batched):
         mle_array_backend=backend,
         mle_device_id=args.device_id,
         mle_cupy_fallback=args.cupy_fallback,
-        mle_batch_size=args.batch_size,
         mle_gpu_memory_gb=args.gpu_memory_gb,
         mle_use_batched_likelihood=batched,
     )
@@ -75,7 +74,6 @@ def main():
     parser.add_argument("--device-id", type=int, default=None)
     parser.add_argument("--cupy-fallback", choices=["numpy", "error"],
                         default="error")
-    parser.add_argument("--batch-size", type=int, default=1024)
     parser.add_argument("--gpu-memory-gb", type=float, default=None)
     parser.add_argument("--dt", type=float, default=0.01)
     parser.add_argument("--dx", type=float, default=0.1)
@@ -112,7 +110,7 @@ def main():
             f"evaluator={info['likelihood_evaluator']} "
             f"trials={result.n_trials_loss} neg_loglik={result.neg_loglik:.6g} "
             f"prep_seconds={prep_elapsed:.4f} objective_seconds={total_elapsed:.4f} "
-            f"batch_size={info.get('batch_size')}"
+            f"workload_trials={info.get('solver', {}).get('workload_trials')}"
         )
 
 

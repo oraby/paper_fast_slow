@@ -10,7 +10,7 @@ from .mle_batch import (
     BatchedLikelihoodResult,
     BatchedDiffusionSolver,
     batched_choice_rt_loglik,
-    estimate_batch_size_for_memory,
+    estimate_flat_trial_capacity_for_memory,
 )
 from .mle_likelihood import trial_choice_rt_loglik
 
@@ -35,7 +35,6 @@ class MLEModelConfig:
     mle_array_backend: str = "numpy"
     mle_device_id: int | None = None
     mle_cupy_fallback: str = "error"
-    mle_batch_size: int | None = 1024
     mle_gpu_memory_gb: float | None = None
     mle_use_batched_likelihood: bool = True
 
@@ -105,8 +104,6 @@ def validate_mle_config(model_config):
         raise ValueError(
             f"Unknown MLE CuPy fallback {model_config.mle_cupy_fallback!r}. "
             f"Expected {sorted(SUPPORTED_MLE_CUPY_FALLBACKS)}.")
-    if model_config.mle_batch_size is not None and model_config.mle_batch_size <= 0:
-        raise ValueError("mle_batch_size must be positive")
     if model_config.mle_gpu_memory_gb is not None and model_config.mle_gpu_memory_gb <= 0:
         raise ValueError("mle_gpu_memory_gb must be positive")
 
@@ -160,19 +157,11 @@ def objective_from_vector(x, params_names, df, model_config):
 def objective_from_population(x_matrix, params_names, df, model_config):
     """Vectorized DE objective for the MLE path.
 
-    Pushes batching DOWN to the solver: instead of looping ``S`` candidates and
-    making ``S`` separate solver calls, we compute per-candidate latents on the
-    CPU, stack them into ``(S, N)`` (or ``(S, N, n_t)`` for time-varying mu)
-    arrays, flatten to ``(S * N, ...)``, and make a **single** call to
-    ``batched_choice_rt_loglik`` with all candidate-trial pairs at once.
+    Compute population latents in candidate-major order, flatten all
+    candidate-trial pairs, and make one solver call for the whole generation.
 
-    Why this matters: for small subjects (``N`` ≪ ``mle_batch_size``) the
-    trial-level chunking inside ``batched_choice_rt_loglik`` produces only one
-    sub-batch per candidate, so the GPU sees a sequence of ``S`` independent
-    small-payload kernel sequences with all the per-launch and per-context
-    overhead repeated. After this refactor the GPU sees one large payload per
-    generation. The solver's internal ``mle_batch_size`` / ``mle_gpu_memory_gb``
-    knobs still chunk the flattened stream when it would exceed memory.
+    The DE population size is chosen upstream from the memory ceiling, so the
+    solver processes the supplied workload as one batch.
 
     Backend-agnostic: works identically on ``xp=numpy`` (no actual cost
     reduction except per-call Python overhead) and ``xp=cupy`` (collapses
@@ -240,8 +229,6 @@ def objective_from_population(x_matrix, params_names, df, model_config):
     shared_bound = float(sub_bounds[0])
 
     # Phase 3: configure one solver for the whole generation.
-    batch_size, _ = _effective_batch_size(
-        model_config, {"BOUND": shared_bound})
     solver = BatchedDiffusionSolver(
         xp=backend.xp, normal_cdf=backend.normal_cdf)
 
@@ -278,7 +265,6 @@ def objective_from_population(x_matrix, params_names, df, model_config):
         tmax=model_config.t_dur,
         xp=backend.xp,
         normal_cdf=backend.normal_cdf,
-        batch_size=batch_size,
         solver=solver,
     )
 
@@ -298,7 +284,7 @@ def objective_from_population(x_matrix, params_names, df, model_config):
 
 
 def result_payload(optim_res, params_names, params_init, params_bounds,
-                   subject_df, model_config):
+                   subject_df, model_config, population_info=None):
     if optim_res is None:
         x = np.asarray(params_init, dtype=float)
     else:
@@ -328,6 +314,7 @@ def result_payload(optim_res, params_names, params_init, params_bounds,
         n_trials_loss=eval_res.n_trials_loss,
         n_trials_total=eval_res.n_trials_total,
         mle_backend_info=eval_res.backend_info,
+        mle_population_info=population_info,
         aic=2 * k - 2 * eval_res.loglik,
         bic=k * np.log(n) - 2 * eval_res.loglik,
         model_config=model_config,
@@ -695,19 +682,36 @@ def _decaying_q_noise_array(q_rel_before, params, n_t):
     return np.where(q_rel_before[:, None] < 0, -decayed, decayed)
 
 
-def _effective_batch_size(model_config, params):
-    bound = _param(params, "BOUND", 1.0)
-    if model_config.mle_batch_size is not None:
-        _, estimate = estimate_batch_size_for_memory(
-            model_config.mle_gpu_memory_gb, bound, model_config.dx,
-            model_config.t_dur, model_config.dt)
-        return int(model_config.mle_batch_size), estimate
-    batch_size, estimate = estimate_batch_size_for_memory(
+def estimate_population_settings(model_config, n_trials, n_params, bound=1.0):
+    """Return candidate count and SciPy popsize from the memory ceiling."""
+    flat_capacity, memory_estimate = estimate_flat_trial_capacity_for_memory(
         model_config.mle_gpu_memory_gb, bound, model_config.dx,
         model_config.t_dur, model_config.dt)
-    if batch_size is None:
-        batch_size = 1024
-    return int(batch_size), estimate
+    if flat_capacity is None:
+        target_candidates = 100 * max(int(n_params), 1)
+        memory_estimate = None
+    else:
+        target_candidates = max(int(flat_capacity) // max(int(n_trials), 1), 1)
+    n_params = max(int(n_params), 1)
+    scipy_popsize = max(target_candidates // n_params, 1)
+    actual_candidates = scipy_popsize * n_params
+    population_info = {
+        "target_candidates": int(target_candidates),
+        "actual_candidates": int(actual_candidates),
+        "scipy_popsize": int(scipy_popsize),
+        "n_trials": int(n_trials),
+        "n_params": int(n_params),
+        "memory_estimate": memory_estimate,
+    }
+    return population_info
+
+
+def _effective_memory_estimate(model_config, params):
+    bound = _param(params, "BOUND", 1.0)
+    _, estimate = estimate_flat_trial_capacity_for_memory(
+        model_config.mle_gpu_memory_gb, bound, model_config.dx,
+        model_config.t_dur, model_config.dt)
+    return estimate
 
 
 def _evaluate_trial_likelihoods(data, latents, params, model_config):
@@ -763,9 +767,7 @@ def _evaluate_trial_likelihoods_batched(data, latents, params, model_config,
         info = backend.metadata()
         info["likelihood_evaluator"] = "batched"
         return _likes_to_result([], 0), info
-    batch_size, memory_estimate = _effective_batch_size(model_config, params)
-    print(f"Using batch size {batch_size} with memory estimate "
-          f"{memory_estimate} for {n} trials")
+    memory_estimate = _effective_memory_estimate(model_config, params)
     solver = BatchedDiffusionSolver(
         xp=backend.xp,
         normal_cdf=backend.normal_cdf,
@@ -785,12 +787,10 @@ def _evaluate_trial_likelihoods_batched(data, latents, params, model_config,
         tmax=model_config.t_dur,
         xp=backend.xp,
         normal_cdf=backend.normal_cdf,
-        batch_size=batch_size,
         solver=solver,
     )
     info = backend.metadata()
     info["likelihood_evaluator"] = "batched"
-    info["batch_size"] = batch_size
     info["memory_estimate"] = memory_estimate
     info["solver"] = batch_result.metadata
     return batch_result, info

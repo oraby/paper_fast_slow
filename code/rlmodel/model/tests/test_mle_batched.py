@@ -1,7 +1,7 @@
 import numpy as np
 
-from ..mle import MLEModelConfig, evaluate_neg_loglik
-from ..mle_batch import estimate_batch_size_for_memory
+from ..mle import MLEModelConfig, estimate_population_settings, evaluate_neg_loglik
+from ..mle_batch import estimate_flat_trial_capacity_for_memory
 from .test_mle_smoke import _params_for, _small_df
 
 
@@ -18,7 +18,6 @@ def _config(drift_name, bias_name, noise_name, include_q, include_rr,
         dx=0.1,
         mle_array_backend=backend,
         mle_use_batched_likelihood=batched,
-        mle_batch_size=2,
     )
 
 
@@ -106,8 +105,8 @@ def test_optional_cupy_backend_is_skipped_without_cuda():
     assert np.isfinite(result.neg_loglik)
 
 
-def test_gpu_memory_budget_estimates_batch_size():
-    batch_size, estimate = estimate_batch_size_for_memory(
+def test_gpu_memory_budget_estimates_flat_trial_capacity():
+    flat_capacity, estimate = estimate_flat_trial_capacity_for_memory(
         memory_gb=0.25,
         bound=1.0,
         dx=0.1,
@@ -115,6 +114,27 @@ def test_gpu_memory_budget_estimates_batch_size():
         dt=0.01,
     )
 
-    assert batch_size > 0
+    assert flat_capacity > 0
     assert estimate["requested_memory_gb"] == 0.25
     assert estimate["estimated_total_bytes"] <= int(0.25 * (1024 ** 3))
+
+
+def test_memory_budget_scales_population_candidates_below_ceiling():
+    config = MLEModelConfig(
+        drift_fn_str="Classic",
+        bias_fn_str="None_",
+        noise_fn_str="Normal(0, 1)",
+        include_Q=False,
+        include_RewardRate=False,
+        dt=0.01,
+        t_dur=0.2,
+        dx=0.1,
+        mle_gpu_memory_gb=0.01,
+    )
+
+    info = estimate_population_settings(
+        config, n_trials=25, n_params=4, bound=1.0)
+
+    assert info["actual_candidates"] <= info["target_candidates"]
+    assert info["actual_candidates"] == info["scipy_popsize"] * 4
+    assert info["target_candidates"] >= 1

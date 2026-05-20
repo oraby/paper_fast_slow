@@ -94,7 +94,7 @@ class BatchedDiffusionSolver:
         base_meta = {
             "solver": "bucketed_fft",
             "bucket_count": 0,
-            "batch_size": int(n_trials),
+            "workload_trials": int(n_trials),
             "n_x": int(n_x),
             "n_t": int(n_t),
             "backend": self.xp.__name__,
@@ -194,10 +194,9 @@ class BatchedDiffusionSolver:
 def batched_choice_rt_loglik(observed_choice_left, observed_rt, no_choice,
                              valid_for_loss, z, mu_values, sigma, bound,
                              non_decision_time, dt, dx, tmax, *, xp=np,
-                             normal_cdf=None, batch_size=None,
-                             solver=None):
+                             normal_cdf=None, solver=None):
     """Evaluate choice/RT likelihoods for many trials on one array backend."""
-    _validate_global_params(bound, dt, dx, tmax, batch_size)
+    _validate_global_params(bound, dt, dx, tmax)
     n_trials = len(valid_for_loss)
     out = _empty_result(n_trials)
     if n_trials == 0:
@@ -224,41 +223,36 @@ def batched_choice_rt_loglik(observed_choice_left, observed_rt, no_choice,
     metadata = {
         "solver": "bucketed_fft",
         "backend": getattr(xp, "__name__", "array_backend"),
-        "batch_size": int(batch_size) if batch_size is not None else None,
+        "workload_trials": int(n_trials),
         "bucket_count": 0,
     }
-    print(f"Evaluating {n_trials:,} trials with batch size {batch_size:,}...")
-    for start in range(0, n_trials, int(batch_size)):
-        print(f"Processing batch starting at index {start}...")
-        stop = min(start + int(batch_size), n_trials)
-        sl = slice(start, stop)
-        _evaluate_batch(
-            result=out,
-            observed_choice_left=observed_choice_left[sl],
-            no_choice=no_choice[sl],
-            valid_for_loss=valid_for_loss[sl],
-            z=z[sl],
-            mu_values=mu_values[sl] if getattr(mu_values, "ndim", 1) == 1 else mu_values[sl, :],
-            sigma=sigma[sl],
-            bound=float(bound),
-            decision_time=decision_time[sl],
-            dt=float(dt),
-            dx=float(dx),
-            tmax=float(tmax),
-            offset=start,
-            solver=solver,
-        )
-        batch_meta = out.metadata.pop("_last_batch", {})
-        metadata["bucket_count"] += int(batch_meta.get("bucket_count", 0))
-        metadata["n_x"] = batch_meta.get("n_x")
-        metadata["n_t"] = batch_meta.get("n_t")
+    _evaluate_batch(
+        result=out,
+        observed_choice_left=observed_choice_left,
+        no_choice=no_choice,
+        valid_for_loss=valid_for_loss,
+        z=z,
+        mu_values=mu_values,
+        sigma=sigma,
+        bound=float(bound),
+        decision_time=decision_time,
+        dt=float(dt),
+        dx=float(dx),
+        tmax=float(tmax),
+        offset=0,
+        solver=solver,
+    )
+    batch_meta = out.metadata.pop("_last_batch", {})
+    metadata["bucket_count"] += int(batch_meta.get("bucket_count", 0))
+    metadata["n_x"] = batch_meta.get("n_x")
+    metadata["n_t"] = batch_meta.get("n_t")
     out.metadata.update(metadata)
     return out
 
 
-def estimate_batch_size_for_memory(memory_gb, bound, dx, tmax, dt,
-                                   dtype_bytes=8):
-    """Estimate a conservative batch size for the bucketed FFT solver."""
+def estimate_flat_trial_capacity_for_memory(memory_gb, bound, dx, tmax, dt,
+                                            dtype_bytes=8):
+    """Estimate flat candidate-trial capacity for one solver call."""
     if memory_gb is None:
         return None, None
     n_x = int(round(2.0 * float(bound) / float(dx)))
@@ -269,11 +263,11 @@ def estimate_batch_size_for_memory(memory_gb, bound, dx, tmax, dt,
     # dominated by shape, not Python object count.
     per_trial_bytes = dtype_bytes * (2 * n_t + 6 * fft_n + 6 * n_x)
     available_bytes = float(memory_gb) * (1024 ** 3)
-    batch_size = max(int(available_bytes // max(per_trial_bytes, 1)), 1)
-    return batch_size, {
+    flat_trial_capacity = max(int(available_bytes // max(per_trial_bytes, 1)), 1)
+    return flat_trial_capacity, {
         "requested_memory_gb": float(memory_gb),
         "estimated_bytes_per_trial": int(per_trial_bytes),
-        "estimated_total_bytes": int(batch_size * per_trial_bytes),
+        "estimated_total_bytes": int(flat_trial_capacity * per_trial_bytes),
         "n_x": int(n_x),
         "n_t": int(n_t),
         "fft_n": int(fft_n),
@@ -407,12 +401,12 @@ def _empty_result(n_trials):
     )
 
 
-def _validate_global_params(bound, dt, dx, tmax, batch_size):
-    vals = [bound, dt, dx, tmax, batch_size]
+def _validate_global_params(bound, dt, dx, tmax):
+    vals = [bound, dt, dx, tmax]
     if not all(np.isfinite(float(v)) for v in vals):
-        raise ValueError("bound, dt, dx, tmax, and batch_size must be finite")
-    if bound <= 0 or dt <= 0 or dx <= 0 or tmax <= 0 or batch_size <= 0:
-        raise ValueError("bound, dt, dx, tmax, and batch_size must be positive")
+        raise ValueError("bound, dt, dx, and tmax must be finite")
+    if bound <= 0 or dt <= 0 or dx <= 0 or tmax <= 0:
+        raise ValueError("bound, dt, dx, and tmax must be positive")
 
 
 def _next_power_of_two(n):

@@ -5,6 +5,7 @@ from .logic import makeOneRun
 from .array_backend import assert_gpu_backend, resolve_array_backend
 from .mle import (
     MLEModelConfig,
+    estimate_population_settings,
     objective_from_population,
     prepare_mle_data,
     result_payload,
@@ -160,6 +161,20 @@ def _processSubject(subject_df, fixed_params_names, fixed_params_vals,
                 f"device_id={backend.device_id}, "
                 f"probe_type={type(probe).__module__}.{type(probe).__name__}")
 
+        bound_for_population = 1.0
+        bound_idxs = np.flatnonzero(
+            np.asarray([str(name).upper() for name in fit_params_names])
+            == "BOUND")
+        if len(bound_idxs):
+            bound_for_population = float(fit_params_bounds[bound_idxs[0]][1])
+        population_info = estimate_population_settings(
+            model_config,
+            n_trials=prepared_subject.n_trials,
+            n_params=len(fit_params_names),
+            bound=bound_for_population,
+        )
+        print("MLE population info:", population_info)
+
         if dry_run:
             payload = result_payload(
                 optim_res=None,
@@ -168,6 +183,7 @@ def _processSubject(subject_df, fixed_params_names, fixed_params_vals,
                 params_bounds=fit_params_bounds,
                 subject_df=prepared_subject,
                 model_config=model_config,
+                population_info=population_info,
             )
             print("MLE backend info:", payload["mle_backend_info"])
             return payload
@@ -189,7 +205,7 @@ def _processSubject(subject_df, fixed_params_names, fixed_params_vals,
             disp=True,
             workers=1,
             polish=True,
-            popsize=1024*100,
+            popsize=population_info["scipy_popsize"],
             updating="deferred",
             vectorized=True,
             #mutation=(0.5, 1.5),
@@ -201,6 +217,7 @@ def _processSubject(subject_df, fixed_params_names, fixed_params_vals,
             params_bounds=fit_params_bounds,
             subject_df=prepared_subject,
             model_config=model_config,
+            population_info=population_info,
         )
         print("MLE backend info:", dict_res["mle_backend_info"])
         with open(evolve_dump_FP_subject, 'wb') as f:
@@ -288,7 +305,7 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
                 is_loss_no_dir, num_cpus, evolvs_res : dict, fit_mode,
                 dry_run=False, mle_array_backend="numpy",
                 mle_device_id=None, mle_cupy_fallback="error",
-                mle_batch_size=None, mle_gpu_memory_gb=None):
+                mle_gpu_memory_gb=None):
     global _pool
     if fit_mode != "chisq":
         if fit_mode != "mle":
@@ -492,7 +509,6 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
             mle_array_backend=mle_array_backend,
             mle_device_id=mle_device_id,
             mle_cupy_fallback=mle_cupy_fallback,
-            mle_batch_size=mle_batch_size,
             mle_gpu_memory_gb=mle_gpu_memory_gb,
         )
     evolve_dump_FP = evolveFP(driftFn_str, biasFn_str, noiseFn_str, t_dur, dt,
