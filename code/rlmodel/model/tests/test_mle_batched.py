@@ -1,7 +1,11 @@
 import numpy as np
 
 from ..mle import MLEModelConfig, estimate_population_settings, evaluate_neg_loglik
-from ..mle_batch import estimate_flat_trial_capacity_for_memory
+from ..mle_batch import (
+    batched_choice_rt_loglik,
+    estimate_flat_trial_capacity_for_memory,
+    _prepare_mu,
+)
 from .test_mle_smoke import _params_for, _small_df
 
 
@@ -84,6 +88,49 @@ def test_batched_numpy_matches_rowwise_for_time_varying_mu():
         rowwise.mle_df.mle_loglik,
         rtol=1e-8,
         atol=1e-10,
+    )
+
+
+def test_prepare_mu_keeps_constant_mu_1d():
+    mu = np.array([0.2, 0.4, 0.4])
+
+    prepared, is_constant = _prepare_mu(mu, n_trials=3, n_t=5)
+
+    assert is_constant
+    assert prepared.shape == (3,)
+    np.testing.assert_allclose(prepared, mu)
+
+
+def test_constant_mu_fast_path_matches_explicit_time_matrix():
+    observed_choice_left = np.array([1.0, 0.0, np.nan, 1.0])
+    observed_rt = np.array([0.08, 0.10, np.nan, 0.16])
+    no_choice = np.array([False, False, True, False])
+    valid_for_loss = np.array([True, True, True, True])
+    z = np.array([0.0, 0.1, -0.1, 0.0])
+    mu = np.array([0.2, 0.2, -0.1, -0.1])
+    sigma = np.array([1.0, 1.0, 1.2, 1.2])
+    non_decision_time = np.array([0.02, 0.02, 0.02, 0.02])
+
+    constant = batched_choice_rt_loglik(
+        observed_choice_left, observed_rt, no_choice, valid_for_loss,
+        z, mu, sigma, 1.0, non_decision_time, 0.01, 0.1, 0.2,
+    )
+    time_matrix = batched_choice_rt_loglik(
+        observed_choice_left, observed_rt, no_choice, valid_for_loss,
+        z, np.repeat(mu[:, None], 20, axis=1), sigma, 1.0,
+        non_decision_time, 0.01, 0.1, 0.2,
+    )
+
+    assert constant.metadata["mu_is_constant"]
+    assert not time_matrix.metadata["mu_is_constant"]
+    assert constant.metadata["bucket_count"] == 2 * 20
+    np.testing.assert_allclose(
+        constant.loglik, time_matrix.loglik, rtol=1e-10, atol=1e-12)
+    np.testing.assert_allclose(
+        constant.choice_prob_or_density,
+        time_matrix.choice_prob_or_density,
+        rtol=1e-10,
+        atol=1e-12,
     )
 
 

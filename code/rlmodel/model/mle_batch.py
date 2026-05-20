@@ -24,21 +24,21 @@ class BatchedLikelihoodResult:
 class _BatchedSolverResult:
     """Solver output kept on the array backend (xp).
 
-    Carries (b, n_t) densities and (b,) scalars for the ``b`` valid-solver
-    trials. The caller is responsible for the single ``asnumpy`` transfer
-    after gathering at the per-trial decision indices — that single transfer
-    is the only sync per batch, instead of one transfer per output array.
+    All fields are ``(b,)`` per-valid-trial arrays. The solver gathers the
+    first-passage density at each trial's decision-time bin **inside** the
+    timestep loop and writes only that scalar — see O1 in
+    ``mle_optimization_plan.md``. The previous ``(b, n_t)`` density tensors
+    are gone, freeing ~14 GB of GPU memory on a typical population fit.
 
-    For ``xp=numpy`` this is just a no-op pass-through; for ``xp=cupy`` it is
-    the difference between five ``(b, n_t)`` GPU->CPU copies per batch and one
-    ``(b,)`` copy at the end of the gather.
+    For ``xp=numpy`` this is just a no-op pass-through; for ``xp=cupy`` it
+    also collapses the per-batch GPU→CPU transfer to a single ``(b,)`` copy.
     """
-    upper_density_xp: object   # (b, n_t) on xp
-    lower_density_xp: object   # (b, n_t) on xp
-    survival_xp: object        # (b,) on xp
-    upper_prob_xp: object      # (b,) on xp
-    lower_prob_xp: object      # (b,) on xp
-    valid_idx: np.ndarray      # (b,) numpy indices into the full batch
+    upper_at_decision_xp: object   # (b,) f_upper(decision_time) / dt
+    lower_at_decision_xp: object   # (b,) f_lower(decision_time) / dt
+    survival_xp: object            # (b,) survival mass at tmax
+    upper_prob_xp: object          # (b,) total upper absorption prob
+    lower_prob_xp: object          # (b,) total lower absorption prob
+    valid_idx: np.ndarray          # (b,) numpy indices into the full batch
     metadata: dict
 
 
@@ -72,7 +72,23 @@ class BatchedDiffusionSolver:
             np.arange(-(n_x - 1), n_x, dtype=float))
         self.fft_n = _next_power_of_two(3 * n_x - 2)
 
-    def solve(self, z, mu, sigma, valid_for_loss, bound, dt, dx, tmax):
+    def solve(self, z, mu, sigma, valid_for_loss, bound, dt, dx, tmax,
+              decision_idx=None):
+        """Run the bucketed-FFT first-passage solver.
+
+        Parameters
+        ----------
+        decision_idx : np.ndarray | None, shape (n_trials,), int
+            Per-trial decision-time bin index in ``[0, n_t-1]`` for trials
+            whose density we need to gather; sentinel ``-1`` (or any value
+            outside ``[0, n_t-1]``) means "skip — don't write a density for
+            this trial". When provided, the solver stores only ``(b,)``
+            decision-time densities instead of the full ``(b, n_t)`` tensor
+            (see O1 in ``mle_optimization_plan.md``). When ``None``, no
+            density is ever written and ``upper_at_decision_xp`` /
+            ``lower_at_decision_xp`` come back as zeros — useful for callers
+            that only need ``survival`` / ``upper_prob`` / ``lower_prob``.
+        """
         n_trials = len(valid_for_loss)
         n_t = int(round(float(tmax) / float(dt)))
         n_x = int(round(2.0 * float(bound) / float(dx)))
@@ -80,8 +96,10 @@ class BatchedDiffusionSolver:
             raise ValueError(f"n_x={n_x} (need at least 2 bins); decrease dx")
         self.ensure_shape(float(bound), float(dx), n_x)
 
-        mu_matrix = _as_mu_matrix(mu, n_trials, n_t)
-        finite_mu = np.all(np.isfinite(mu_matrix), axis=1)
+        # O4: keep mu in natural shape. For constant-mu (1-D), this avoids the
+        # old (b, n_t) expansion and the cupy → numpy transfer of that tensor.
+        mu_cpu, mu_is_constant = _prepare_mu(mu, n_trials, n_t)
+        finite_mu = _mu_isfinite_per_trial(mu_cpu, mu_is_constant)
         valid_solver = (
             np.asarray(valid_for_loss, dtype=bool)
             & np.isfinite(z)
@@ -101,11 +119,12 @@ class BatchedDiffusionSolver:
             "n_x": int(n_x),
             "n_t": int(n_t),
             "backend": self.xp.__name__,
+            "mu_is_constant": bool(mu_is_constant),
         }
         if b == 0:
             return _BatchedSolverResult(
-                upper_density_xp=self.xp.zeros((0, n_t), dtype=float),
-                lower_density_xp=self.xp.zeros((0, n_t), dtype=float),
+                upper_at_decision_xp=self.xp.zeros(0, dtype=float),
+                lower_at_decision_xp=self.xp.zeros(0, dtype=float),
                 survival_xp=self.xp.zeros(0, dtype=float),
                 upper_prob_xp=self.xp.zeros(0, dtype=float),
                 lower_prob_xp=self.xp.zeros(0, dtype=float),
@@ -118,14 +137,52 @@ class BatchedDiffusionSolver:
 
         p = self.xp.zeros((b, n_x), dtype=float)
         p[self.xp.arange(b), self.xp.asarray(z_idx)] = 1.0
-        mu_valid = np.asarray(mu_matrix[valid_idx], dtype=float)
         sigma_valid = np.asarray(sigma[valid_idx], dtype=float)
+        # Constant-mu: (b,) view; never expanded to (b, n_t). Time-varying:
+        # (b, n_t) — required for per-timestep bucket assignment.
+        if mu_is_constant:
+            mu_valid = mu_cpu[valid_idx]                # (b,)
+        else:
+            mu_valid = mu_cpu[valid_idx]                # (b, n_t)
 
-        upper_density_valid = self.xp.zeros((b, n_t), dtype=float)
-        lower_density_valid = self.xp.zeros((b, n_t), dtype=float)
+        # O1: per-valid-trial decision-time index on xp. Sentinel value -1
+        # (or anything outside [0, n_t-1]) means "skip the gather for this
+        # trial"; trials where (decision_idx_xp[i] == t_idx) at step t_idx
+        # are the only positions that get a density written. The previous
+        # (b, n_t) upper/lower density tensors are gone — that was ~14 GB
+        # of GPU memory per evaluation on a typical population fit.
+        if decision_idx is None:
+            decision_idx_for_valid = np.full(b, -1, dtype=np.int64)
+        else:
+            decision_idx_for_valid = np.asarray(
+                decision_idx, dtype=np.int64)[valid_idx]
+        decision_idx_xp = self.xp.asarray(decision_idx_for_valid)
+
+        upper_at_decision = self.xp.zeros(b, dtype=float)
+        lower_at_decision = self.xp.zeros(b, dtype=float)
         upper_prob_valid = self.xp.zeros(b, dtype=float)
         lower_prob_valid = self.xp.zeros(b, dtype=float)
         bucket_count = 0
+
+        # O2: for constant-mu the bucket structure (which trials share (mu, σ))
+        # is identical at every timestep — compute it ONCE before the loop and
+        # reuse the cached `local_xp` index arrays. For time-varying mu we
+        # fall back to per-timestep bucketing (trajectory-based caching is a
+        # candidate for a later pass once O6's factorization is in place).
+        cached_buckets = None
+        constant_bucket_total = 0
+        if mu_is_constant:
+            keys_const = _bucket_keys(mu_valid, sigma_valid)
+            cached_buckets = []
+            for key in np.unique(keys_const):
+                local = np.flatnonzero(keys_const == key)
+                cached_buckets.append({
+                    "local_xp": self.xp.asarray(local),
+                    "mu": float(mu_valid[local[0]]),
+                    "sigma": float(sigma_valid[local[0]]),
+                })
+            # One bucket-count tally for the whole solve (instead of × n_t).
+            constant_bucket_total = len(cached_buckets) * n_t
 
         step_iter = _progress_iter(
             range(n_t),
@@ -135,36 +192,60 @@ class BatchedDiffusionSolver:
         )
         for t_idx in step_iter:
             new_p = self.xp.empty_like(p)
-            keys = _bucket_keys(mu_valid[:, t_idx], sigma_valid)
-            for key in np.unique(keys):
-                local = np.flatnonzero(keys == key)
-                mu_t = float(mu_valid[local[0], t_idx])
-                sigma_t = float(sigma_valid[local[0]])
+            if cached_buckets is not None:
+                # Constant-mu fast path: same buckets every timestep.
+                step_buckets = cached_buckets
+            else:
+                # Time-varying mu: re-bucket per timestep on the current mu
+                # column. `mu_valid` is on CPU only because bucket assignment
+                # needs `np.unique`; per-bucket scalars below are still cheap.
+                keys = _bucket_keys(mu_valid[:, t_idx], sigma_valid)
+                step_buckets = []
+                for key in np.unique(keys):
+                    local = np.flatnonzero(keys == key)
+                    step_buckets.append({
+                        "local_xp": self.xp.asarray(local),
+                        "mu": float(mu_valid[local[0], t_idx]),
+                        "sigma": float(sigma_valid[local[0]]),
+                    })
+
+            for bucket in step_buckets:
+                mu_t = bucket["mu"]
+                sigma_t = bucket["sigma"]
+                local_xp = bucket["local_xp"]
                 kernel, mass_above, mass_below = self._transition_terms(
                     mu_t, sigma_t, bound, dt, dx)
 
-                local_xp = self.xp.asarray(local)
                 p_sub = p[local_xp]
                 upper_abs = p_sub @ mass_above
                 lower_abs = p_sub @ mass_below
                 upper_prob_valid[local_xp] += upper_abs
                 lower_prob_valid[local_xp] += lower_abs
-                upper_density_valid[local_xp, t_idx] = upper_abs / dt
-                lower_density_valid[local_xp, t_idx] = lower_abs / dt
+                # O1 gather: write density / dt only at trials whose
+                # decision-time bin is the current t_idx. Branch-free on xp.
+                hits = decision_idx_xp[local_xp] == t_idx
+                upper_at_decision[local_xp] = self.xp.where(
+                    hits, upper_abs / dt, upper_at_decision[local_xp])
+                lower_at_decision[local_xp] = self.xp.where(
+                    hits, lower_abs / dt, lower_at_decision[local_xp])
                 new_p[local_xp] = self._convolve_rows(p_sub, kernel, n_x)
-                bucket_count += 1
+                if cached_buckets is None:
+                    bucket_count += 1
             p = new_p
 
+        if cached_buckets is not None:
+            bucket_count = constant_bucket_total
+
         survival_valid = self.xp.sum(p, axis=1)
-        # NOTE: deliberately no `asnumpy` here. Keeping the (b, n_t) density
-        # tensors on the xp backend lets the caller gather at decision indices
-        # on-device and pay only a single (b,) GPU->CPU copy per batch instead
-        # of three (b, n_t) copies. For xp=numpy this is a no-op pass-through.
+        # NOTE: deliberately no `asnumpy` here. The caller gathers on xp
+        # (with valid_decision_xp / no_choice_xp masks) and emits a single
+        # (b,) GPU->CPU copy per batch. For xp=numpy this is a no-op
+        # pass-through.
         meta = dict(base_meta)
         meta["bucket_count"] = int(bucket_count)
         return _BatchedSolverResult(
-            upper_density_xp=upper_density_valid,
-            lower_density_xp=lower_density_valid,
+            upper_at_decision_xp=upper_at_decision,
+            lower_at_decision_xp=lower_at_decision,
             survival_xp=survival_valid,
             upper_prob_xp=upper_prob_valid,
             lower_prob_xp=lower_prob_valid,
@@ -255,6 +336,7 @@ def batched_choice_rt_loglik(observed_choice_left, observed_rt, no_choice,
     metadata["bucket_count"] += int(batch_meta.get("bucket_count", 0))
     metadata["n_x"] = batch_meta.get("n_x")
     metadata["n_t"] = batch_meta.get("n_t")
+    metadata["mu_is_constant"] = batch_meta.get("mu_is_constant")
     out.metadata.update(metadata)
     return out
 
@@ -287,18 +369,41 @@ def _evaluate_batch(result, observed_choice_left, no_choice, valid_for_loss, z,
                     mu_values, sigma, bound, decision_time, dt, dx, tmax,
                     offset, solver):
     n_t = int(round(float(tmax) / float(dt)))
-    mu_matrix = _as_mu_matrix(mu_values, len(valid_for_loss), n_t)
+    # O4: keep mu in its natural shape; constant-mu stays as (n_trials,).
+    mu_cpu, mu_is_constant = _prepare_mu(mu_values, len(valid_for_loss), n_t)
     valid_solver = (
         valid_for_loss
         & np.isfinite(z)
         & np.isfinite(sigma)
-        & np.all(np.isfinite(mu_matrix), axis=1)
+        & _mu_isfinite_per_trial(mu_cpu, mu_is_constant)
         & (sigma > 0)
         & (z >= -bound)
         & (z <= bound)
     )
+
+    # O1: build the per-trial decision-time bin index BEFORE the solver call
+    # so the solver can do the gather inside its timestep loop and skip
+    # allocating the (b, n_t) density tensors. Sentinel -1 means "no valid
+    # decision for this trial; don't gather density" — those positions get
+    # LOGLIK_FLOOR (or survival mass, for no-choice trials) via the masks
+    # below.
+    valid_decision_full = (
+        valid_solver
+        & ~no_choice
+        & np.isfinite(observed_choice_left)
+        & np.isfinite(decision_time)
+        & (decision_time > 0)
+        & (decision_time <= tmax)
+    )
+    raw_decision_idx = np.ceil(
+        np.where(valid_decision_full, decision_time, dt) / dt
+    ).astype(np.int64) - 1
+    decision_idx_full = np.where(
+        valid_decision_full, np.clip(raw_decision_idx, 0, n_t - 1), -1)
+
     solver_result = solver.solve(
-        z, mu_matrix, sigma, valid_solver, bound, dt, dx, tmax)
+        z, mu_cpu, sigma, valid_solver, bound, dt, dx, tmax,
+        decision_idx=decision_idx_full)
     valid_idx = solver_result.valid_idx
     b = valid_idx.size
     metadata = solver_result.metadata
@@ -312,38 +417,22 @@ def _evaluate_batch(result, observed_choice_left, no_choice, valid_for_loss, z,
     lower_prob_full = np.full(len(valid_for_loss), np.nan, dtype=float)
 
     if b > 0:
-        # Build per-valid-trial gather inputs on CPU (small, cheap).
-        decision_time_v = decision_time[valid_idx]
+        # Per-valid-trial masks for the likelihood reduction. No more
+        # decision_idx-based row gather here — the solver already wrote the
+        # decision-time density into (b,) arrays.
         choice_left_v = observed_choice_left[valid_idx]
         no_choice_v = no_choice[valid_idx]
-        valid_decision_v = (
-            ~no_choice_v
-            & np.isfinite(choice_left_v)
-            & np.isfinite(decision_time_v)
-            & (decision_time_v > 0)
-            & (decision_time_v <= tmax)
-        )
-        # decision_idx_v is bounded into [0, n_t-1]; for invalid-decision
-        # rows we fill in below via xp.where, so the index value is harmless.
-        decision_idx_v = np.clip(
-            np.ceil(np.where(valid_decision_v,
-                             decision_time_v, dt) / dt).astype(int) - 1,
-            0, n_t - 1)
+        valid_decision_v = valid_decision_full[valid_idx]
 
-        # One CPU->xp transfer per small (b,) array. These are tiny compared
-        # to the (b, n_t) density tensors that are no longer transferred.
         xp = solver.xp
-        trial_idx_xp = xp.arange(b)
-        decision_idx_xp = xp.asarray(decision_idx_v)
         is_left_xp = xp.asarray((choice_left_v == 1))
         no_choice_xp = xp.asarray(no_choice_v)
         valid_decision_xp = xp.asarray(valid_decision_v)
 
-        # Gather densities at each trial's decision-time bin on xp.
-        upper_at_t_xp = solver_result.upper_density_xp[trial_idx_xp,
-                                                       decision_idx_xp]
-        lower_at_t_xp = solver_result.lower_density_xp[trial_idx_xp,
-                                                       decision_idx_xp]
+        # Already-gathered densities on xp — (b,) each, populated by the
+        # solver only at decision-time hits. No row indexing needed.
+        upper_at_t_xp = solver_result.upper_at_decision_xp
+        lower_at_t_xp = solver_result.lower_at_decision_xp
         density_at_t_xp = xp.where(is_left_xp, upper_at_t_xp, lower_at_t_xp)
 
         # No-choice trials contribute the survival mass at tmax. Trials that
@@ -382,14 +471,49 @@ def _evaluate_batch(result, observed_choice_left, no_choice, valid_for_loss, z,
     result.metadata["_last_batch"] = metadata
 
 
-def _as_mu_matrix(mu_values, n_trials, n_t):
-    mu_values = np.asarray(mu_values, dtype=float)
-    if mu_values.ndim == 1:
-        return np.repeat(mu_values[:, None], n_t, axis=1)
-    if mu_values.shape != (n_trials, n_t):
-        raise ValueError(
-            f"time-varying mu shape {mu_values.shape} != ({n_trials}, {n_t})")
-    return mu_values
+def _coerce_to_numpy(value):
+    """Bring an array-like (numpy or cupy) to numpy without `np.asarray`-on-cupy.
+
+    ``np.asarray(cupy_array)`` raises ``TypeError`` on CuPy ≥ 13 and silently
+    forces a host transfer on older versions; both behaviors are surprising in
+    a hot loop. ``.get()`` (CuPy) and pass-through (NumPy) are explicit.
+    """
+    # cupy arrays expose ``.get`` and ``__cuda_array_interface__``; either is a
+    # sufficient duck-type signal. We prefer ``.get`` so we don't depend on a
+    # CuPy-version-specific protocol.
+    if hasattr(value, "get") and hasattr(value, "__cuda_array_interface__"):
+        return value.get()
+    return np.asarray(value)
+
+
+def _prepare_mu(mu_values, n_trials, n_t):
+    """Return (mu_cpu, is_constant) without ever expanding (b,) to (b, n_t).
+
+    O4: the previous ``_as_mu_matrix`` always returned the 2-D shape — for
+    constant-mu inputs that meant materializing an (n_trials × n_t) float
+    array purely to broadcast the same value per timestep. Now we keep the
+    natural shape and let the solver branch.
+    """
+    mu_cpu = _coerce_to_numpy(mu_values).astype(float, copy=False)
+    if mu_cpu.ndim == 1:
+        if mu_cpu.shape != (n_trials,):
+            raise ValueError(
+                f"constant mu shape {mu_cpu.shape} != ({n_trials},)")
+        return mu_cpu, True
+    if mu_cpu.ndim == 2:
+        if mu_cpu.shape != (n_trials, n_t):
+            raise ValueError(
+                f"time-varying mu shape {mu_cpu.shape} != ({n_trials}, {n_t})")
+        return mu_cpu, False
+    raise ValueError(
+        f"mu must be 1-D (constant) or 2-D (time-varying); got ndim={mu_cpu.ndim}")
+
+
+def _mu_isfinite_per_trial(mu_cpu, is_constant):
+    """Per-trial isfinite mask. (n_trials,) bool."""
+    if is_constant:
+        return np.isfinite(mu_cpu)
+    return np.all(np.isfinite(mu_cpu), axis=1)
 
 
 def _bucket_keys(mu_t, sigma):
