@@ -115,6 +115,8 @@ class BatchedDiffusionSolver:
         base_meta = {
             "solver": "bucketed_fft",
             "bucket_count": 0,
+            "kernel_cache_count": 0,
+            "kernel_cache_hits": 0,
             "workload_trials": int(n_trials),
             "n_x": int(n_x),
             "n_t": int(n_t),
@@ -171,18 +173,29 @@ class BatchedDiffusionSolver:
         # candidate for a later pass once O6's factorization is in place).
         cached_buckets = None
         constant_bucket_total = 0
+        kernel_cache_count = 0
+        kernel_cache_hits = 0
         if mu_is_constant:
             keys_const = _bucket_keys(mu_valid, sigma_valid)
             cached_buckets = []
             for key in np.unique(keys_const):
                 local = np.flatnonzero(keys_const == key)
+                mu_t = float(mu_valid[local[0]])
+                sigma_t = float(sigma_valid[local[0]])
+                kernel, mass_above, mass_below = self._transition_terms(
+                    mu_t, sigma_t, bound, dt, dx)
                 cached_buckets.append({
                     "local_xp": self.xp.asarray(local),
-                    "mu": float(mu_valid[local[0]]),
-                    "sigma": float(sigma_valid[local[0]]),
+                    "mu": mu_t,
+                    "sigma": sigma_t,
+                    "mass_above": mass_above,
+                    "mass_below": mass_below,
+                    "kernel_fft": self._kernel_fft(kernel, n_x),
                 })
             # One bucket-count tally for the whole solve (instead of × n_t).
             constant_bucket_total = len(cached_buckets) * n_t
+            kernel_cache_count = len(cached_buckets)
+            kernel_cache_hits = len(cached_buckets) * n_t
 
         step_iter = _progress_iter(
             range(n_t),
@@ -213,8 +226,14 @@ class BatchedDiffusionSolver:
                 mu_t = bucket["mu"]
                 sigma_t = bucket["sigma"]
                 local_xp = bucket["local_xp"]
-                kernel, mass_above, mass_below = self._transition_terms(
-                    mu_t, sigma_t, bound, dt, dx)
+                if "kernel_fft" in bucket:
+                    mass_above = bucket["mass_above"]
+                    mass_below = bucket["mass_below"]
+                    kernel_fft = bucket["kernel_fft"]
+                else:
+                    kernel, mass_above, mass_below = self._transition_terms(
+                        mu_t, sigma_t, bound, dt, dx)
+                    kernel_fft = None
 
                 p_sub = p[local_xp]
                 upper_abs = p_sub @ mass_above
@@ -228,7 +247,11 @@ class BatchedDiffusionSolver:
                     hits, upper_abs / dt, upper_at_decision[local_xp])
                 lower_at_decision[local_xp] = self.xp.where(
                     hits, lower_abs / dt, lower_at_decision[local_xp])
-                new_p[local_xp] = self._convolve_rows(p_sub, kernel, n_x)
+                if kernel_fft is None:
+                    new_p[local_xp] = self._convolve_rows(p_sub, kernel, n_x)
+                else:
+                    new_p[local_xp] = self._convolve_rows_cached(
+                        p_sub, kernel_fft, n_x)
                 if cached_buckets is None:
                     bucket_count += 1
             p = new_p
@@ -243,6 +266,8 @@ class BatchedDiffusionSolver:
         # pass-through.
         meta = dict(base_meta)
         meta["bucket_count"] = int(bucket_count)
+        meta["kernel_cache_count"] = int(kernel_cache_count)
+        meta["kernel_cache_hits"] = int(kernel_cache_hits)
         return _BatchedSolverResult(
             upper_at_decision_xp=upper_at_decision,
             lower_at_decision_xp=lower_at_decision,
@@ -268,13 +293,21 @@ class BatchedDiffusionSolver:
         return transition_kernel, mass_above, mass_below
 
     def _convolve_rows(self, p_sub, kernel, n_x):
-        p_pad = self.xp.zeros((p_sub.shape[0], self.fft_n), dtype=float)
+        return self._convolve_rows_cached(
+            p_sub, self._kernel_fft(kernel, n_x), n_x)
+
+    def _kernel_fft(self, kernel, n_x):
+        """Return the padded transition-kernel FFT for convolution."""
         k_pad = self.xp.zeros(self.fft_n, dtype=float)
-        p_pad[:, :n_x] = p_sub
         k_pad[:2 * n_x - 1] = kernel
+        return self.xp.fft.rfft(k_pad)
+
+    def _convolve_rows_cached(self, p_sub, kernel_fft, n_x):
+        p_pad = self.xp.zeros((p_sub.shape[0], self.fft_n), dtype=float)
+        p_pad[:, :n_x] = p_sub
         full = self.xp.fft.irfft(
             self.xp.fft.rfft(p_pad, axis=1)
-            * self.xp.fft.rfft(k_pad)[None, :],
+            * kernel_fft[None, :],
             n=self.fft_n,
             axis=1,
         )
@@ -337,6 +370,8 @@ def batched_choice_rt_loglik(observed_choice_left, observed_rt, no_choice,
     metadata["n_x"] = batch_meta.get("n_x")
     metadata["n_t"] = batch_meta.get("n_t")
     metadata["mu_is_constant"] = batch_meta.get("mu_is_constant")
+    metadata["kernel_cache_count"] = batch_meta.get("kernel_cache_count")
+    metadata["kernel_cache_hits"] = batch_meta.get("kernel_cache_hits")
     out.metadata.update(metadata)
     return out
 

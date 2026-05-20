@@ -124,6 +124,10 @@ def test_constant_mu_fast_path_matches_explicit_time_matrix():
     assert constant.metadata["mu_is_constant"]
     assert not time_matrix.metadata["mu_is_constant"]
     assert constant.metadata["bucket_count"] == 2 * 20
+    assert constant.metadata["kernel_cache_count"] == 2
+    assert constant.metadata["kernel_cache_hits"] == 2 * 20
+    assert time_matrix.metadata["kernel_cache_count"] == 0
+    assert time_matrix.metadata["kernel_cache_hits"] == 0
     np.testing.assert_allclose(
         constant.loglik, time_matrix.loglik, rtol=1e-10, atol=1e-12)
     np.testing.assert_allclose(
