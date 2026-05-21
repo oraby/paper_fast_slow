@@ -182,38 +182,48 @@ class BatchedDiffusionSolver:
         if mu_is_constant:
             cached_buckets = self._constant_mu_buckets(
                 mu_valid_xp, sigma_valid_xp)
-            for bucket in cached_buckets:
-                mu_t = bucket["mu"]
-                sigma_t = bucket["sigma"]
-                kernel, mass_above, mass_below = self._transition_terms(
-                    mu_t, sigma_t, bound, dt, dx)
-                bucket["mass_above"] = mass_above
-                bucket["mass_below"] = mass_below
-                bucket["kernel_fft"] = self._kernel_fft(kernel, n_x)
 
-            # O7: pre-gather per-trial mass / kernel-FFT from the per-bucket
-            # cache. Replaces the inner bucket Python loop in the hot timestep
-            # iteration with a fully batched op on (b, ...) tensors. The cost
-            # is one set of (b, n_x) and (b, fft_n_complex) allocations; the
-            # win is dropping the bucket-loop Python dispatch count from
-            # n_buckets × n_t to zero (it becomes n_t batched ops total). This
-            # is the dominant win for NoiseGain-RewardRate variants whose
-            # per-(candidate, session) sigma inflates bucket count by ~10×.
+            # O8: batch the per-bucket transition + kernel-FFT setup. The old
+            # per-bucket Python loop did 6 CuPy dispatches × n_buckets just to
+            # populate per-bucket mass/kernel-FFT — for NoiseGain-RewardRate
+            # with ~8400 buckets that was ~50k setup-time dispatches per
+            # evaluation. Now we compute the whole (n_buckets, ...) batch in
+            # ~7 dispatches total, then gather to (b, ...) per-trial exactly
+            # as O7 needs.
             if len(cached_buckets) > 0:
+                # (n_buckets,) scalars → xp arrays. The Python list
+                # comprehension is unavoidable here (host-side dict access),
+                # but it runs once per fit on the small bucket table, not in
+                # the hot loop.
+                mu_per_bucket = self.xp.asarray(
+                    [bk["mu"] for bk in cached_buckets], dtype=float)
+                sigma_per_bucket = self.xp.asarray(
+                    [bk["sigma"] for bk in cached_buckets], dtype=float)
+
+                # Batched transition_terms: one set of CDF dispatches across
+                # all buckets. Returns (n_buckets, 2n-1), (n_buckets, n),
+                # (n_buckets, n).
+                kernels_b, mass_above_b, mass_below_b = (
+                    self._transition_terms_batched(
+                        mu_per_bucket, sigma_per_bucket, bound, dt, dx))
+                # Batched kernel FFT: one rfft on (n_buckets, fft_n).
+                kernel_ffts_b = self._kernel_fft_batched(kernels_b, n_x)
+                del kernels_b  # no longer needed; only the FFT survives
+
+                # Scatter bucket ids to per-trial. Still N Python iterations,
+                # but each is just an int-array slice assignment; trivial vs
+                # the old per-bucket transition-term loop.
                 bucket_id_per_trial = self.xp.zeros(b, dtype=self.xp.int64)
                 for bid, bucket in enumerate(cached_buckets):
                     bucket_id_per_trial[bucket["local_xp"]] = bid
-                stacked_mass_above = self.xp.stack(
-                    [bk["mass_above"] for bk in cached_buckets], axis=0)
-                stacked_mass_below = self.xp.stack(
-                    [bk["mass_below"] for bk in cached_buckets], axis=0)
-                stacked_kernel_fft = self.xp.stack(
-                    [bk["kernel_fft"] for bk in cached_buckets], axis=0)
-                per_trial_mass_above = stacked_mass_above[bucket_id_per_trial]
-                per_trial_mass_below = stacked_mass_below[bucket_id_per_trial]
-                per_trial_kernel_fft = stacked_kernel_fft[bucket_id_per_trial]
-                # The compact per-bucket tables are no longer needed.
-                del stacked_mass_above, stacked_mass_below, stacked_kernel_fft
+
+                # O7 per-trial gather (same as before, just no intermediate
+                # per-bucket dict storage).
+                per_trial_mass_above = mass_above_b[bucket_id_per_trial]
+                per_trial_mass_below = mass_below_b[bucket_id_per_trial]
+                per_trial_kernel_fft = kernel_ffts_b[bucket_id_per_trial]
+                del mass_above_b, mass_below_b, kernel_ffts_b
+
                 # Reuse one FFT padding buffer across timesteps; only the
                 # leading n_x columns are touched per step, so the tail stays
                 # at the initial zeros.
@@ -323,29 +333,15 @@ class BatchedDiffusionSolver:
             metadata=meta,
         )
 
-    def _transition_terms(self, mu_t, sigma_t, bound, dt, dx):
-        sigma_sqrt_dt = sigma_t * float(np.sqrt(dt))
-        mean_shift = mu_t * dt
-        kernel_upper = ((self.offsets + 0.5) * dx - mean_shift) / sigma_sqrt_dt
-        kernel_lower = ((self.offsets - 0.5) * dx - mean_shift) / sigma_sqrt_dt
-        transition_kernel = (
-            self.normal_cdf(kernel_upper) - self.normal_cdf(kernel_lower)
-        )
-        mass_above = 1.0 - self.normal_cdf(
-            (bound - self.x_grid - mean_shift) / sigma_sqrt_dt)
-        mass_below = self.normal_cdf(
-            (-bound - self.x_grid - mean_shift) / sigma_sqrt_dt)
-        return transition_kernel, mass_above, mass_below
-
     def _transition_terms_batched(self, mu_t_xp, sigma_t_xp, bound, dt, dx):
-        """Batched variant of ``_transition_terms``.
+        """Compute the per-step Gaussian transition kernel and absorbed-mass
+        terms for a batch of `(mu_t, sigma)` pairs.
 
         ``mu_t_xp`` and ``sigma_t_xp`` are ``(B,)`` arrays on ``self.xp``;
         returns ``(B, 2n_x-1)`` transition kernels and ``(B, n_x)`` absorbed-
-        mass tensors. Used by the time-varying-mu fast path to compute one
-        kernel per trial in a single CuPy dispatch, instead of looping over
-        buckets and calling the scalar version per bucket. The arithmetic is
-        identical to ``_transition_terms`` modulo broadcasting.
+        mass tensors in a single CuPy dispatch per CDF call. Used by both
+        the constant-mu setup (`B = n_buckets`) and the time-varying hot
+        loop (`B = b`, recomputed every timestep).
         """
         # ensure_shape() ran at the top of solve(), and the solver constructor
         # always receives a normal_cdf when used from production paths. The
@@ -418,26 +414,20 @@ class BatchedDiffusionSolver:
             in zip(starts, stops, unique_mu, unique_sigma)
         ]
 
-    def _convolve_rows(self, p_sub, kernel, n_x):
-        return self._convolve_rows_cached(
-            p_sub, self._kernel_fft(kernel, n_x), n_x)
+    def _kernel_fft_batched(self, kernels, n_x):
+        """Pad and FFT a batch of transition kernels.
 
-    def _kernel_fft(self, kernel, n_x):
-        """Return the padded transition-kernel FFT for convolution."""
-        k_pad = self.xp.zeros(self.fft_n, dtype=float)
-        k_pad[:2 * n_x - 1] = kernel
-        return self.xp.fft.rfft(k_pad)
-
-    def _convolve_rows_cached(self, p_sub, kernel_fft, n_x):
-        p_pad = self.xp.zeros((p_sub.shape[0], self.fft_n), dtype=float)
-        p_pad[:, :n_x] = p_sub
-        full = self.xp.fft.irfft(
-            self.xp.fft.rfft(p_pad, axis=1)
-            * kernel_fft[None, :],
-            n=self.fft_n,
-            axis=1,
-        )
-        return full[:, n_x - 1:2 * n_x - 1]
+        ``kernels`` is ``(n_buckets, 2n_x-1)``; returns ``(n_buckets, fft_n_complex)``
+        in a single CuPy ``rfft`` dispatch on the padded ``(n_buckets, fft_n)``
+        tensor. Used by the constant-mu setup; the time-varying hot loop
+        builds its per-trial FFTs inline already.
+        """
+        assert self.fft_n is not None, (
+            "_kernel_fft_batched called before ensure_shape()")
+        n_buckets = int(kernels.shape[0])
+        k_pad = self.xp.zeros((n_buckets, self.fft_n), dtype=float)
+        k_pad[:, :2 * n_x - 1] = kernels
+        return self.xp.fft.rfft(k_pad, axis=1)
 
 
 def batched_choice_rt_loglik(observed_choice_left, observed_rt, no_choice,

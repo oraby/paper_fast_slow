@@ -28,6 +28,7 @@ timesteps**, with `dx = 0.02 → n_x = 100`.
 | D16 | **O5** — Cache constant per-trial observations on xp; broadcast instead of `np.tile` | ✅ done | [mle.py](mle.py) `_prepared_session_arrays_for_backend` (already shared with D11) |
 | D17 | **O7** — Vectorize across buckets within a timestep (per-trial gather of mass / kernel-FFT). Eliminates the Python inner bucket loop entirely on the constant-mu fast path; one set of batched ops per step regardless of bucket count. | ✅ done | [mle_batch.py](mle_batch.py) `BatchedDiffusionSolver.solve` `per_trial_mass_above` / `per_trial_kernel_fft` |
 | D18 | **O7-tv** — Same vectorization for the time-varying-mu path (Decay-Q drift, Decaying-Q-Val noise). Pushes `mu_valid` to xp once, then per timestep calls `_transition_terms_batched` to produce `(b, n_x)` mass and `(b, 2n_x-1)` kernel tensors in a single CuPy dispatch — no bucketing. Removes the per-bucket Python loop that previously dominated Decay-Q runs (and NoiseGain-RewardRate via inflated bucket count). | ✅ done | [mle_batch.py](mle_batch.py) `_transition_terms_batched`, `BatchedDiffusionSolver.solve` time-varying branch |
+| D19 | **O8** — Batched per-bucket kernel FFT + dead-helper removal. Const-mu setup now does ~7 CuPy dispatches across all buckets (was ~6N). Removed `_kernel_fft`, `_convolve_rows`, `_convolve_rows_cached`, and the scalar `_transition_terms` — all dead after O7. | ✅ done | [mle_batch.py](mle_batch.py) `_kernel_fft_batched`; const-mu setup in `BatchedDiffusionSolver.solve` |
 
 ## What's left — the hot loop today
 
@@ -225,6 +226,85 @@ Python list-building overhead.
 
 **Risk:** low. The trickiness is in agreeing on the broadcast convention with
 the solver (which is currently flat `(S*N,)`).
+
+---
+
+### O8 — Batched per-bucket kernel FFT; remove dead per-bucket convolve helpers
+
+**Status:** proposed (not yet implemented).
+
+**Where:** [mle_batch.py](mle_batch.py) `_kernel_fft` (called per bucket from the
+constant-mu setup loop), `_convolve_rows`, `_convolve_rows_cached`.
+
+**Why:** the constant-mu setup loop ([mle_batch.py around line 185-192](mle_batch.py#L185-L192))
+still does N **per-bucket** Python dispatches:
+
+```python
+for bucket in cached_buckets:
+    mu_t = bucket["mu"]
+    sigma_t = bucket["sigma"]
+    kernel, mass_above, mass_below = self._transition_terms(mu_t, sigma_t, ...)   # 5 CuPy dispatches × N buckets
+    bucket["mass_above"] = mass_above
+    bucket["mass_below"] = mass_below
+    bucket["kernel_fft"] = self._kernel_fft(kernel, n_x)                            # 1 FFT × N buckets
+```
+
+For NoiseGain-RewardRate with `S=60 × unique_DVs=14 × n_sessions=10 ≈ 8400`
+buckets, that's **~50 000 setup-time CuPy dispatches** per evaluation — paid
+*every generation*, not amortized across timesteps. The hot loop is fine
+after O7 but the setup itself is now the bottleneck.
+
+`_transition_terms_batched` already exists (added for O7-tv); we just need a
+matching `_kernel_fft_batched` and one rewrite of the constant-mu setup to
+use both:
+
+```python
+# (n_buckets,) xp arrays of bucket scalars — built once via a small
+# Python list comprehension on the host (n_buckets is small).
+mu_per_bucket = self.xp.asarray([bk["mu"] for bk in cached_buckets])
+sigma_per_bucket = self.xp.asarray([bk["sigma"] for bk in cached_buckets])
+
+# 5 CuPy dispatches total (not 5N).
+kernels_b, mass_above_b, mass_below_b = self._transition_terms_batched(
+    mu_per_bucket, sigma_per_bucket, bound, dt, dx)
+# 1 batched rfft (not N).
+kernel_ffts_b = self._kernel_fft_batched(kernels_b, n_x)
+
+# Gather to (b, ...) per-trial exactly as today.
+per_trial_mass_above = mass_above_b[bucket_id_per_trial]
+per_trial_mass_below = mass_below_b[bucket_id_per_trial]
+per_trial_kernel_fft = kernel_ffts_b[bucket_id_per_trial]
+```
+
+**Dead-code removal:** with O7, the hot timestep loop already does the FFT
+convolution inline (see [mle_batch.py line 258-264](mle_batch.py#L258-L264)
+for const-mu and line 295-301 for time-varying). The per-bucket helpers
+`_convolve_rows` and `_convolve_rows_cached` have **no remaining callers** —
+they were the previous per-bucket Python-loop convolution path. Remove them.
+
+The scalar `_kernel_fft(kernel, n_x)` becomes unused after the setup loop
+collapses; remove it in the same pass.
+
+**Impact:**
+
+- Setup CuPy dispatches: `~6 N` (per-bucket loop) → `~7` (batched). For
+  NoiseGain-RewardRate that's **~50 000 → ~7 dispatches per evaluation** at
+  setup time.
+- Wall-clock impact depends on whether setup or hot loop dominates after
+  O1–O7. For large `n_t` the hot loop dominates; for small `n_t` (e.g.,
+  short trials) the setup becomes the floor.
+- Code clarity: drops two dead helpers, simplifies the setup block.
+
+**Risk:** low. `_transition_terms_batched` is already used by the
+time-varying path and tested for numerical equivalence; the FFT batching
+is a single `rfft(axis=1)` on a `(n_buckets, fft_n)` tensor — same math
+as N individual rffts, just one dispatch.
+
+**Remaining setup overhead after O8:** `bucket_id_per_trial[bucket["local_xp"]] = bid`
+is still an N-iteration Python loop (one scatter per bucket). Could be
+collapsed to a single `cumsum`-on-boundaries dispatch using the
+`starts_xp` / `order` already produced by `_constant_mu_buckets`. Cheap
+follow-up, not on this pass.
 
 ---
 
