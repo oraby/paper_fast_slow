@@ -138,6 +138,59 @@ def test_constant_mu_fast_path_matches_explicit_time_matrix():
     )
 
 
+def test_constant_mu_bucket_building_does_not_use_numpy_unique(monkeypatch):
+    def fail_unique(*_args, **_kwargs):
+        raise AssertionError("constant-mu bucketing should use the array backend")
+
+    monkeypatch.setattr(np, "unique", fail_unique)
+    result = batched_choice_rt_loglik(
+        observed_choice_left=np.array([1.0, 0.0, 1.0]),
+        observed_rt=np.array([0.08, 0.10, 0.16]),
+        no_choice=np.array([False, False, False]),
+        valid_for_loss=np.array([True, True, True]),
+        z=np.array([0.0, 0.1, 0.0]),
+        mu_values=np.array([0.2, 0.2, -0.1]),
+        sigma=np.array([1.0, 1.0, 1.2]),
+        bound=1.0,
+        non_decision_time=np.array([0.02, 0.02, 0.02]),
+        dt=0.01,
+        dx=0.1,
+        tmax=0.2,
+    )
+
+    assert result.metadata["mu_is_constant"]
+    assert result.metadata["kernel_cache_count"] == 2
+    assert np.all(np.isfinite(result.loglik))
+
+
+def test_constant_mu_bucket_lexsort_uses_stacked_keys(monkeypatch):
+    original_lexsort = np.lexsort
+
+    def strict_lexsort(keys, *args, **kwargs):
+        assert not isinstance(keys, tuple)
+        assert getattr(keys, "ndim", None) == 2
+        return original_lexsort(keys, *args, **kwargs)
+
+    monkeypatch.setattr(np, "lexsort", strict_lexsort)
+    result = batched_choice_rt_loglik(
+        observed_choice_left=np.array([1.0, 0.0, 1.0]),
+        observed_rt=np.array([0.08, 0.10, 0.16]),
+        no_choice=np.array([False, False, False]),
+        valid_for_loss=np.array([True, True, True]),
+        z=np.array([0.0, 0.1, 0.0]),
+        mu_values=np.array([0.2, 0.2, -0.1]),
+        sigma=np.array([1.0, 1.0, 1.2]),
+        bound=1.0,
+        non_decision_time=np.array([0.02, 0.02, 0.02]),
+        dt=0.01,
+        dx=0.1,
+        tmax=0.2,
+    )
+
+    assert result.metadata["kernel_cache_count"] == 2
+    assert np.all(np.isfinite(result.loglik))
+
+
 def test_optional_cupy_backend_is_skipped_without_cuda():
     pytest = __import__("pytest")
     try:

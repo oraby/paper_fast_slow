@@ -109,7 +109,6 @@ class BatchedDiffusionSolver:
             & (z >= -bound)
             & (z <= bound)
         )
-
         valid_idx = np.flatnonzero(valid_solver)
         b = valid_idx.size
         base_meta = {
@@ -140,12 +139,13 @@ class BatchedDiffusionSolver:
         p = self.xp.zeros((b, n_x), dtype=float)
         p[self.xp.arange(b), self.xp.asarray(z_idx)] = 1.0
         sigma_valid = np.asarray(sigma[valid_idx], dtype=float)
+        sigma_valid_xp = self.xp.asarray(sigma_valid)
         # Constant-mu: (b,) view; never expanded to (b, n_t). Time-varying:
-        # (b, n_t) — required for per-timestep bucket assignment.
-        if mu_is_constant:
-            mu_valid = mu_cpu[valid_idx]                # (b,)
-        else:
-            mu_valid = mu_cpu[valid_idx]                # (b, n_t)
+        # (b, n_t) — the whole matrix lives on xp so the per-timestep slice
+        # `mu_valid_xp[:, t]` is a zero-copy view feeding the batched
+        # transition_terms (no per-step CPU→xp transfer).
+        mu_valid = mu_cpu[valid_idx]                    # (b,) or (b, n_t)
+        mu_valid_xp = self.xp.asarray(mu_valid)
 
         # O1: per-valid-trial decision-time index on xp. Sentinel value -1
         # (or anything outside [0, n_t-1]) means "skip the gather for this
@@ -175,27 +175,61 @@ class BatchedDiffusionSolver:
         constant_bucket_total = 0
         kernel_cache_count = 0
         kernel_cache_hits = 0
+        per_trial_mass_above = None
+        per_trial_mass_below = None
+        per_trial_kernel_fft = None
+        p_pad_buffer = None
         if mu_is_constant:
-            keys_const = _bucket_keys(mu_valid, sigma_valid)
-            cached_buckets = []
-            for key in np.unique(keys_const):
-                local = np.flatnonzero(keys_const == key)
-                mu_t = float(mu_valid[local[0]])
-                sigma_t = float(sigma_valid[local[0]])
+            cached_buckets = self._constant_mu_buckets(
+                mu_valid_xp, sigma_valid_xp)
+            for bucket in cached_buckets:
+                mu_t = bucket["mu"]
+                sigma_t = bucket["sigma"]
                 kernel, mass_above, mass_below = self._transition_terms(
                     mu_t, sigma_t, bound, dt, dx)
-                cached_buckets.append({
-                    "local_xp": self.xp.asarray(local),
-                    "mu": mu_t,
-                    "sigma": sigma_t,
-                    "mass_above": mass_above,
-                    "mass_below": mass_below,
-                    "kernel_fft": self._kernel_fft(kernel, n_x),
-                })
+                bucket["mass_above"] = mass_above
+                bucket["mass_below"] = mass_below
+                bucket["kernel_fft"] = self._kernel_fft(kernel, n_x)
+
+            # O7: pre-gather per-trial mass / kernel-FFT from the per-bucket
+            # cache. Replaces the inner bucket Python loop in the hot timestep
+            # iteration with a fully batched op on (b, ...) tensors. The cost
+            # is one set of (b, n_x) and (b, fft_n_complex) allocations; the
+            # win is dropping the bucket-loop Python dispatch count from
+            # n_buckets × n_t to zero (it becomes n_t batched ops total). This
+            # is the dominant win for NoiseGain-RewardRate variants whose
+            # per-(candidate, session) sigma inflates bucket count by ~10×.
+            if len(cached_buckets) > 0:
+                bucket_id_per_trial = self.xp.zeros(b, dtype=self.xp.int64)
+                for bid, bucket in enumerate(cached_buckets):
+                    bucket_id_per_trial[bucket["local_xp"]] = bid
+                stacked_mass_above = self.xp.stack(
+                    [bk["mass_above"] for bk in cached_buckets], axis=0)
+                stacked_mass_below = self.xp.stack(
+                    [bk["mass_below"] for bk in cached_buckets], axis=0)
+                stacked_kernel_fft = self.xp.stack(
+                    [bk["kernel_fft"] for bk in cached_buckets], axis=0)
+                per_trial_mass_above = stacked_mass_above[bucket_id_per_trial]
+                per_trial_mass_below = stacked_mass_below[bucket_id_per_trial]
+                per_trial_kernel_fft = stacked_kernel_fft[bucket_id_per_trial]
+                # The compact per-bucket tables are no longer needed.
+                del stacked_mass_above, stacked_mass_below, stacked_kernel_fft
+                # Reuse one FFT padding buffer across timesteps; only the
+                # leading n_x columns are touched per step, so the tail stays
+                # at the initial zeros.
+                p_pad_buffer = self.xp.zeros((b, self.fft_n), dtype=float)
+
             # One bucket-count tally for the whole solve (instead of × n_t).
             constant_bucket_total = len(cached_buckets) * n_t
             kernel_cache_count = len(cached_buckets)
             kernel_cache_hits = len(cached_buckets) * n_t
+        else:
+            # Time-varying mu setup (O7 extension): mu_valid_xp is already on
+            # xp from the unconditional push above; we just need a reusable
+            # FFT padding buffer. No bucketing — every trial gets its own
+            # kernel/mass row computed per timestep via the batched transition
+            # terms below.
+            p_pad_buffer = self.xp.zeros((b, self.fft_n), dtype=float)
 
         step_iter = _progress_iter(
             range(n_t),
@@ -204,57 +238,68 @@ class BatchedDiffusionSolver:
             desc=self.progress_desc or "MLE diffusion",
         )
         for t_idx in step_iter:
-            new_p = self.xp.empty_like(p)
-            if cached_buckets is not None:
-                # Constant-mu fast path: same buckets every timestep.
-                step_buckets = cached_buckets
+            if (mu_is_constant
+                    and per_trial_mass_above is not None
+                    and p_pad_buffer is not None):
+                # O7 vectorized path. Six batched cupy/numpy ops per step,
+                # independent of bucket count.
+                upper_abs_t = (p * per_trial_mass_above).sum(axis=1)
+                lower_abs_t = (p * per_trial_mass_below).sum(axis=1)
+                upper_prob_valid = upper_prob_valid + upper_abs_t
+                lower_prob_valid = lower_prob_valid + lower_abs_t
+                hits = decision_idx_xp == t_idx
+                upper_at_decision = self.xp.where(
+                    hits, upper_abs_t / dt, upper_at_decision)
+                lower_at_decision = self.xp.where(
+                    hits, lower_abs_t / dt, lower_at_decision)
+                # Batched FFT convolution: per-trial kernel applied in one go.
+                # ``p_pad_buffer`` is reused across timesteps; only the leading
+                # n_x columns change per step.
+                p_pad_buffer[:, :n_x] = p
+                full = self.xp.fft.irfft(
+                    self.xp.fft.rfft(p_pad_buffer, axis=1)
+                    * per_trial_kernel_fft,
+                    n=self.fft_n,
+                    axis=1,
+                )
+                p = full[:, n_x - 1: 2 * n_x - 1]
             else:
-                # Time-varying mu: re-bucket per timestep on the current mu
-                # column. `mu_valid` is on CPU only because bucket assignment
-                # needs `np.unique`; per-bucket scalars below are still cheap.
-                keys = _bucket_keys(mu_valid[:, t_idx], sigma_valid)
-                step_buckets = []
-                for key in np.unique(keys):
-                    local = np.flatnonzero(keys == key)
-                    step_buckets.append({
-                        "local_xp": self.xp.asarray(local),
-                        "mu": float(mu_valid[local[0], t_idx]),
-                        "sigma": float(sigma_valid[local[0]]),
-                    })
-
-            for bucket in step_buckets:
-                mu_t = bucket["mu"]
-                sigma_t = bucket["sigma"]
-                local_xp = bucket["local_xp"]
-                if "kernel_fft" in bucket:
-                    mass_above = bucket["mass_above"]
-                    mass_below = bucket["mass_below"]
-                    kernel_fft = bucket["kernel_fft"]
-                else:
-                    kernel, mass_above, mass_below = self._transition_terms(
-                        mu_t, sigma_t, bound, dt, dx)
-                    kernel_fft = None
-
-                p_sub = p[local_xp]
-                upper_abs = p_sub @ mass_above
-                lower_abs = p_sub @ mass_below
-                upper_prob_valid[local_xp] += upper_abs
-                lower_prob_valid[local_xp] += lower_abs
-                # O1 gather: write density / dt only at trials whose
-                # decision-time bin is the current t_idx. Branch-free on xp.
-                hits = decision_idx_xp[local_xp] == t_idx
-                upper_at_decision[local_xp] = self.xp.where(
-                    hits, upper_abs / dt, upper_at_decision[local_xp])
-                lower_at_decision[local_xp] = self.xp.where(
-                    hits, lower_abs / dt, lower_at_decision[local_xp])
-                if kernel_fft is None:
-                    new_p[local_xp] = self._convolve_rows(p_sub, kernel, n_x)
-                else:
-                    new_p[local_xp] = self._convolve_rows_cached(
-                        p_sub, kernel_fft, n_x)
-                if cached_buckets is None:
-                    bucket_count += 1
-            p = new_p
+                # Time-varying mu (Decay-Q drift / Decaying-Q-Val noise):
+                # vectorize across all valid trials per timestep using the
+                # batched transition_terms. No bucketing — for population
+                # fits the trajectories are usually unique per (cand, trial)
+                # so bucketing wasn't compressing anything.
+                assert p_pad_buffer is not None, "time-varying setup missing"
+                assert mu_valid_xp is not None, (
+                    "time-varying branch reached without mu_valid_xp bound")
+                mu_t_xp = mu_valid_xp[:, t_idx]               # (b,) xp view
+                kernel_b, mass_above_b, mass_below_b = (
+                    self._transition_terms_batched(
+                        mu_t_xp, sigma_valid_xp, bound, dt, dx))
+                # kernel_b: (b, 2n-1)
+                # mass_above_b, mass_below_b: (b, n)
+                upper_abs_t = (p * mass_above_b).sum(axis=1)   # (b,)
+                lower_abs_t = (p * mass_below_b).sum(axis=1)   # (b,)
+                upper_prob_valid = upper_prob_valid + upper_abs_t
+                lower_prob_valid = lower_prob_valid + lower_abs_t
+                hits = decision_idx_xp == t_idx
+                upper_at_decision = self.xp.where(
+                    hits, upper_abs_t / dt, upper_at_decision)
+                lower_at_decision = self.xp.where(
+                    hits, lower_abs_t / dt, lower_at_decision)
+                # Build per-trial kernel-FFT freshly each timestep (kernel
+                # changes with mu_t). One batched rfft on (b, fft_n).
+                k_pad = self.xp.zeros((b, self.fft_n), dtype=float)
+                k_pad[:, :2 * n_x - 1] = kernel_b
+                kernel_fft_b = self.xp.fft.rfft(k_pad, axis=1)
+                p_pad_buffer[:, :n_x] = p
+                full = self.xp.fft.irfft(
+                    self.xp.fft.rfft(p_pad_buffer, axis=1) * kernel_fft_b,
+                    n=self.fft_n,
+                    axis=1,
+                )
+                p = full[:, n_x - 1: 2 * n_x - 1]
+                bucket_count += 1
 
         if cached_buckets is not None:
             bucket_count = constant_bucket_total
@@ -291,6 +336,87 @@ class BatchedDiffusionSolver:
         mass_below = self.normal_cdf(
             (-bound - self.x_grid - mean_shift) / sigma_sqrt_dt)
         return transition_kernel, mass_above, mass_below
+
+    def _transition_terms_batched(self, mu_t_xp, sigma_t_xp, bound, dt, dx):
+        """Batched variant of ``_transition_terms``.
+
+        ``mu_t_xp`` and ``sigma_t_xp`` are ``(B,)`` arrays on ``self.xp``;
+        returns ``(B, 2n_x-1)`` transition kernels and ``(B, n_x)`` absorbed-
+        mass tensors. Used by the time-varying-mu fast path to compute one
+        kernel per trial in a single CuPy dispatch, instead of looping over
+        buckets and calling the scalar version per bucket. The arithmetic is
+        identical to ``_transition_terms`` modulo broadcasting.
+        """
+        # ensure_shape() ran at the top of solve(), and the solver constructor
+        # always receives a normal_cdf when used from production paths. The
+        # asserts here are for the type checker only — they cannot fire in
+        # practice.
+        assert self.offsets is not None and self.x_grid is not None, (
+            "_transition_terms_batched called before ensure_shape()")
+        assert self.normal_cdf is not None, (
+            "BatchedDiffusionSolver requires normal_cdf")
+        sigma_sqrt_dt = sigma_t_xp * float(np.sqrt(dt))            # (B,)
+        mean_shift = mu_t_xp * dt                                  # (B,)
+        # Broadcast offsets (2n-1,) and x_grid (n,) against the (B,) scalars.
+        z_upper = (
+            (self.offsets[None, :] + 0.5) * dx - mean_shift[:, None]
+        ) / sigma_sqrt_dt[:, None]                                 # (B, 2n-1)
+        z_lower = (
+            (self.offsets[None, :] - 0.5) * dx - mean_shift[:, None]
+        ) / sigma_sqrt_dt[:, None]                                 # (B, 2n-1)
+        transition_kernel = (
+            self.normal_cdf(z_upper) - self.normal_cdf(z_lower)
+        )                                                          # (B, 2n-1)
+        mass_above = 1.0 - self.normal_cdf(
+            (bound - self.x_grid[None, :] - mean_shift[:, None])
+            / sigma_sqrt_dt[:, None]
+        )                                                          # (B, n)
+        mass_below = self.normal_cdf(
+            (-bound - self.x_grid[None, :] - mean_shift[:, None])
+            / sigma_sqrt_dt[:, None]
+        )                                                          # (B, n)
+        return transition_kernel, mass_above, mass_below
+
+    def _constant_mu_buckets(self, mu_valid_xp, sigma_valid_xp):
+        """Group constant-mu trials by (mu, sigma) on the active backend.
+
+        This replaces the older NumPy ``unique`` + ``flatnonzero`` path, which
+        walked the full valid population on CPU. Only the small unique
+        ``(mu, sigma)`` scalar table is copied back to host for transition
+        setup; each bucket's trial indices stay on ``self.xp``.
+        """
+        n = int(mu_valid_xp.shape[0])
+        if n == 0:
+            return []
+        # CuPy expects lexsort keys as a stacked ndarray, not a Python tuple.
+        # NumPy accepts both forms, so use the stricter representation here.
+        order = self.xp.lexsort(self.xp.stack((sigma_valid_xp, mu_valid_xp)))
+        sorted_mu = mu_valid_xp[order]
+        sorted_sigma = sigma_valid_xp[order]
+
+        starts_mask = self.xp.empty(n, dtype=bool)
+        starts_mask[0] = True
+        starts_mask[1:] = (
+            (sorted_mu[1:] != sorted_mu[:-1])
+            | (sorted_sigma[1:] != sorted_sigma[:-1])
+        )
+        starts_xp = self.xp.nonzero(starts_mask)[0]
+        stops_xp = self.xp.concatenate(
+            (starts_xp[1:], self.xp.asarray([n], dtype=starts_xp.dtype)))
+
+        starts = asnumpy(self.xp, starts_xp).astype(int, copy=False)
+        stops = asnumpy(self.xp, stops_xp).astype(int, copy=False)
+        unique_mu = asnumpy(self.xp, sorted_mu[starts_xp])
+        unique_sigma = asnumpy(self.xp, sorted_sigma[starts_xp])
+        return [
+            {
+                "local_xp": order[int(start):int(stop)],
+                "mu": float(mu_t),
+                "sigma": float(sigma_t),
+            }
+            for start, stop, mu_t, sigma_t
+            in zip(starts, stops, unique_mu, unique_sigma)
+        ]
 
     def _convolve_rows(self, p_sub, kernel, n_x):
         return self._convolve_rows_cached(
@@ -553,13 +679,6 @@ def _mu_isfinite_per_trial(mu_cpu, is_constant):
     return np.all(np.isfinite(mu_cpu), axis=1)
 
 
-def _bucket_keys(mu_t, sigma):
-    keys = np.empty(len(mu_t), dtype=[("mu", "f8"), ("sigma", "f8")])
-    keys["mu"] = np.asarray(mu_t, dtype=float)
-    keys["sigma"] = np.asarray(sigma, dtype=float)
-    return keys
-
-
 def _empty_result(n_trials):
     return BatchedLikelihoodResult(
         loglik=np.full(n_trials, np.nan, dtype=float),
@@ -586,10 +705,11 @@ def _next_power_of_two(n):
 def _progress_iter(iterable, *, enabled, total, desc):
     if not enabled:
         return iterable
-    try:
-        from tqdm.auto import tqdm
-    except ImportError:
-        return iterable
+    # try:
+    #     from tqdm.auto import tqdm
+    # except ImportError:
+    #     return iterable
+    from tqdm.auto import tqdm
     return tqdm(
         iterable,
         total=total,

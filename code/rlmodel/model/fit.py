@@ -160,6 +160,11 @@ def _processSubject(subject_df, fixed_params_names, fixed_params_vals,
                 f"MLE GPU backend confirmed: backend={backend.actual_backend}, "
                 f"device_id={backend.device_id}, "
                 f"probe_type={type(probe).__module__}.{type(probe).__name__}")
+            num_workers = 1
+        else:
+            num_workers = workers
+            print(f"Using CPU backend with {num_workers} workers for MLE.")
+
 
         bound_for_population = 1.0
         bound_idxs = np.flatnonzero(
@@ -203,7 +208,7 @@ def _processSubject(subject_df, fixed_params_names, fixed_params_vals,
             args=(fit_params_names, prepared_subject, model_config),
             x0=fit_params_init,
             disp=True,
-            workers=1,
+            workers=num_workers,
             polish=True,
             popsize=population_info["scipy_popsize"],
             updating="deferred",
@@ -516,22 +521,22 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
                               is_loss_no_dir, fit_mode)
 
     IS_PARALLEL_EXECUTION_ENABLED = False
+    is_gpu_mle = fit_mode == "mle" and model_config.requires_gpu
     if num_cpus is None:
-        num_cpus = 1 if fit_mode == "mle" else multiprocessing.cpu_count()
-    elif fit_mode == "mle" and num_cpus != 1:
+        if is_gpu_mle:
+            num_cpus = 1
+        else:
+            num_cpus = multiprocessing.cpu_count()
+    elif is_gpu_mle and num_cpus != 1:
         # Item E: the MLE DE call sets vectorized=True (which makes scipy
         # ignore `workers`) and runs the popsize loop inside this process.
         # A multiprocessing.Pool is therefore (a) unused by scipy and (b)
         # actively harmful for CuPy backends since each child would init its
         # own CUDA context fighting for the same GPU. Force num_cpus=1 for
         # MLE regardless of the user's --num-cpus flag.
-        backend_note = (
-            " (CuPy contexts would contend for the GPU)"
-            if mle_array_backend == "cupy" else "")
-        print(
-            f"WARNING: MLE mode runs single-process; ignoring "
-            f"--num-cpus {num_cpus}{backend_note}.")
-        num_cpus = 1
+        raise ValueError(
+                    f"fit_mode='mle' with GPU backend {model_config.mle_array_backend} "
+                    f"requires num_cpus=1; got {num_cpus}.")
 
     if IS_PARALLEL_EXECUTION_ENABLED:
         workers = num_cpus / 2

@@ -24,6 +24,10 @@ timesteps**, with `dx = 0.02 → n_x = 100`.
 | D12 | **O1** — Drop `(b, n_t)` density tensors; in-loop decision-time gather | ✅ done | [mle_batch.py](mle_batch.py) `BatchedDiffusionSolver.solve` (`upper_at_decision`, `lower_at_decision`); `_BatchedSolverResult.upper_at_decision_xp` |
 | D13 | **O4** — Stop expanding constant-mu `(b,)` → `(b, n_t)`; use `_prepare_mu` to keep mu in natural shape | ✅ done | [mle_batch.py](mle_batch.py) `_prepare_mu`, `_mu_isfinite_per_trial`, `_coerce_to_numpy` |
 | D14 | **O2** — Cache bucket structure across timesteps (constant-mu fast path) | ✅ done | [mle_batch.py](mle_batch.py) `BatchedDiffusionSolver.solve` `cached_buckets` |
+| D15 | **O3** — Cache per-bucket transition kernel + kernel-FFT (constant-mu fast path) | ✅ done | [mle_batch.py](mle_batch.py) `_kernel_fft` + per-bucket `kernel_fft` precompute |
+| D16 | **O5** — Cache constant per-trial observations on xp; broadcast instead of `np.tile` | ✅ done | [mle.py](mle.py) `_prepared_session_arrays_for_backend` (already shared with D11) |
+| D17 | **O7** — Vectorize across buckets within a timestep (per-trial gather of mass / kernel-FFT). Eliminates the Python inner bucket loop entirely on the constant-mu fast path; one set of batched ops per step regardless of bucket count. | ✅ done | [mle_batch.py](mle_batch.py) `BatchedDiffusionSolver.solve` `per_trial_mass_above` / `per_trial_kernel_fft` |
+| D18 | **O7-tv** — Same vectorization for the time-varying-mu path (Decay-Q drift, Decaying-Q-Val noise). Pushes `mu_valid` to xp once, then per timestep calls `_transition_terms_batched` to produce `(b, n_x)` mass and `(b, 2n_x-1)` kernel tensors in a single CuPy dispatch — no bucketing. Removes the per-bucket Python loop that previously dominated Decay-Q runs (and NoiseGain-RewardRate via inflated bucket count). | ✅ done | [mle_batch.py](mle_batch.py) `_transition_terms_batched`, `BatchedDiffusionSolver.solve` time-varying branch |
 
 ## What's left — the hot loop today
 
