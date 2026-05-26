@@ -365,16 +365,3 @@ def _simulate_observed_history(df, fitted_params, model_config, *,
         pieces.append(sim_df)
 
     return pd.concat(pieces, ignore_index=True)
-
-
-# --- Saving --------------------------------------------------------------
-
-
-def save_posterior_result(result: dict,
-                          path: Union[str, pathlib.Path]) -> pathlib.Path:
-    """Save a posterior-simulation result dict as a pickle. Returns the path."""
-    path = pathlib.Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "wb") as f:
-        pickle.dump(result, f)
-    return path

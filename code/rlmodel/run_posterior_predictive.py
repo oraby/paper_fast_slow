@@ -17,11 +17,9 @@ from __future__ import annotations
 import argparse
 import pathlib
 import pickle
+import pandas as pd
 
-from .model.posterior_simulate import (
-    save_posterior_result,
-    simulate_from_result_pickle,
-)
+from .model.posterior_simulate import simulate_from_result_pickle
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -40,6 +38,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--observed-history", action="store_true",
                    help="Per-trial sampling under observed-history latents "
                         "(debug mode, not a synthetic session).")
+    p.add_argument("--population-df", type=bool, default=True,
+                   help="Whether the loaded MLE result is expected to have a "
+                        "population-level (True) or subject-level (False) "
+                        "DataFrame. ")
     return p
 
 
@@ -50,25 +52,48 @@ def main(argv=None) -> int:
 
     with open(args.mle_result, "rb") as f:
         mle_pickle = pickle.load(f)
+    if args.population_df:
+        df_li = []
+        for subject_id, mle_subject_pickle in mle_pickle.items():
+            print(f"Simulating posterior predictive for subject {subject_id}...")
+            result_df = _iterate_subjects(mle_subject_pickle, args)
 
-    if mle_pickle.get("fit_mode") != "mle":
+            df_li.append(result_df)
+            # Do an intermediate save of the reults
+            if len(df_li) > 1:
+                result_df = pd.concat(df_li, ignore_index=True).reset_index(
+                                                                      drop=True)
+            result_df.to_pickle(args.output)
+            print(f"Saved intermediate posterior simulation to {args.output}")
+        print("Finished all subjects.")
+    else:
+        result_df = _iterate_subjects(mle_pickle, args)
+        result_df.to_pickle(args.output)
+        print(f"Saved posterior simulation to {args.output}")
+
+    return 0
+
+def _iterate_subjects(mle_subject_pickle, args):
+    """Helper to iterate over subjects in a population-level MLE result."""
+    if mle_subject_pickle.get("fit_mode") != "mle":
         raise ValueError(
             f"Expected a fit_mode='mle' pickle; got "
-            f"fit_mode={mle_pickle.get('fit_mode')!r}. "
+            f"fit_mode={mle_subject_pickle.get('fit_mode')!r}. "
             "Posterior predictive simulation is only defined for MLE fits.")
 
-    result = simulate_from_result_pickle(
-        mle_pickle,
+    result_dict = simulate_from_result_pickle(
+        mle_subject_pickle,
         n_repeats=args.n_repeats,
         seed=args.seed,
         use_observed_history_for_inputs=args.observed_history,
     )
-    save_posterior_result(result, args.output)
-    print(f"Saved posterior simulation to {args.output}")
-    print(f"  mode={result['mode']}, n_repeats={result['n_repeats']}, "
-          f"seed={result['seed']}, n_rows={len(result['sim_df'])}")
-    return 0
-
+    sim_df = result_dict.pop("sim_df")
+    assign_keys = ["drift_fn_str", "bias_fn_str", "noise_fn_str", "include_Q",
+                   "include_RewardRate"]
+    for key in assign_keys:
+        assert key not in sim_df.columns, f"Expected key {key!r} not to be in sim_df columns"
+        sim_df[key] = result_dict[key]
+    return sim_df
 
 if __name__ == "__main__":
     raise SystemExit(main())
