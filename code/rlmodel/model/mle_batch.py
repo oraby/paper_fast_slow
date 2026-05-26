@@ -39,6 +39,16 @@ class _BatchedSolverResult:
     survival_xp: object            # (b,) survival mass at tmax
     upper_prob_xp: object          # (b,) total upper absorption prob
     lower_prob_xp: object          # (b,) total lower absorption prob
+    # Terminal-C redistribution of residual interior mass at t = tmax.
+    # Partition of survival_xp into three buckets by bin-center position
+    # relative to the threshold ``terminal_c * bound``:
+    #   x >  C·B  → terminal_upper_mass_xp
+    #   x < -C·B  → terminal_lower_mass_xp
+    #   |x| ≤ C·B → terminal_no_decision_mass_xp
+    # Invariant: upper + lower + no_decision == survival.
+    terminal_upper_mass_xp: object
+    terminal_lower_mass_xp: object
+    terminal_no_decision_mass_xp: object
     valid_idx: np.ndarray          # (b,) numpy indices into the full batch
     metadata: dict
 
@@ -194,7 +204,7 @@ class BatchedDiffusionSolver:
         self.fft_n = _next_power_of_two(3 * n_x - 2)
 
     def solve(self, z, mu, sigma, valid_for_loss, bound, dt, dx, tmax,
-              decision_idx=None):
+              decision_idx=None, terminal_c=0.0):
         """Run the bucketed-FFT first-passage solver.
 
         Parameters
@@ -209,7 +219,14 @@ class BatchedDiffusionSolver:
             density is ever written and ``upper_at_decision_xp`` /
             ``lower_at_decision_xp`` come back as zeros — useful for callers
             that only need ``survival`` / ``upper_prob`` / ``lower_prob``.
+        terminal_c : float, default 0.0
+            Threshold C ∈ [0, 1) used to partition residual interior mass at
+            t = tmax into terminal_upper / terminal_lower / terminal_no_decision
+            buckets. See ``mle_terminal_c_plan.md``.
         """
+        if not (0.0 <= float(terminal_c) < 1.0):
+            raise ValueError(
+                f"terminal_c must satisfy 0 <= C < 1; got {terminal_c}.")
         n_trials = len(valid_for_loss)
         n_t = int(round(float(tmax) / float(dt)))
         n_x = int(round(2.0 * float(bound) / float(dx)))
@@ -267,6 +284,9 @@ class BatchedDiffusionSolver:
                 survival_xp=self.xp.zeros(0, dtype=float),
                 upper_prob_xp=self.xp.zeros(0, dtype=float),
                 lower_prob_xp=self.xp.zeros(0, dtype=float),
+                terminal_upper_mass_xp=self.xp.zeros(0, dtype=float),
+                terminal_lower_mass_xp=self.xp.zeros(0, dtype=float),
+                terminal_no_decision_mass_xp=self.xp.zeros(0, dtype=float),
                 valid_idx=valid_idx,
                 metadata=base_meta,
             )
@@ -476,6 +496,18 @@ class BatchedDiffusionSolver:
             bucket_count = constant_bucket_total
 
         survival_valid = self.xp.sum(p, axis=1)
+        # Terminal-C redistribution: partition residual interior mass into
+        # three buckets based on bin-center position relative to ±C·B. The
+        # masks are (n_x,) on xp; broadcasting `(b, n_x) * (n_x,)` keeps the
+        # whole reduction on-device. self.x_grid is set up by ensure_shape().
+        thresh = float(terminal_c) * float(bound)
+        assert self.x_grid is not None  # narrow for pyright
+        upper_mask = self.x_grid > thresh
+        lower_mask = self.x_grid < -thresh
+        no_decision_mask = ~upper_mask & ~lower_mask
+        terminal_upper_mass = (p * upper_mask).sum(axis=1)
+        terminal_lower_mass = (p * lower_mask).sum(axis=1)
+        terminal_no_decision_mass = (p * no_decision_mask).sum(axis=1)
         # NOTE: deliberately no `asnumpy` here. The caller gathers on xp
         # (with valid_decision_xp / no_choice_xp masks) and emits a single
         # (b,) GPU->CPU copy per batch. For xp=numpy this is a no-op
@@ -484,12 +516,16 @@ class BatchedDiffusionSolver:
         meta["bucket_count"] = int(bucket_count)
         meta["kernel_cache_count"] = int(kernel_cache_count)
         meta["kernel_cache_hits"] = int(kernel_cache_hits)
+        meta["terminal_c"] = float(terminal_c)
         return _BatchedSolverResult(
             upper_at_decision_xp=upper_at_decision,
             lower_at_decision_xp=lower_at_decision,
             survival_xp=survival_valid,
             upper_prob_xp=upper_prob_valid,
             lower_prob_xp=lower_prob_valid,
+            terminal_upper_mass_xp=terminal_upper_mass,
+            terminal_lower_mass_xp=terminal_lower_mass,
+            terminal_no_decision_mass_xp=terminal_no_decision_mass,
             valid_idx=valid_idx,
             metadata=meta,
         )
@@ -594,8 +630,17 @@ class BatchedDiffusionSolver:
 def batched_choice_rt_loglik(observed_choice_left, observed_rt, no_choice,
                              valid_for_loss, z, mu_values, sigma, bound,
                              non_decision_time, dt, dx, tmax, *, xp=np,
-                             normal_cdf=None, solver=None):
-    """Evaluate choice/RT likelihoods for many trials on one array backend."""
+                             normal_cdf=None, solver=None, terminal_c=0.0):
+    """Evaluate choice/RT likelihoods for many trials on one array backend.
+
+    Parameters
+    ----------
+    terminal_c : float, default 0.0
+        Threshold C ∈ [0, 1) forwarded to the solver. No-choice trials use
+        ``terminal_no_decision_mass`` (with this threshold) as their
+        likelihood instead of the full survival mass. See
+        ``mle_terminal_c_plan.md``.
+    """
     _validate_global_params(bound, dt, dx, tmax)
     n_trials = len(valid_for_loss)
     out = _empty_result(n_trials)
@@ -643,6 +688,7 @@ def batched_choice_rt_loglik(observed_choice_left, observed_rt, no_choice,
         tmax=float(tmax),
         offset=0,
         solver=solver,
+        terminal_c=float(terminal_c),
     )
     batch_meta = out.metadata.pop("_last_batch", {})
     metadata["bucket_count"] += int(batch_meta.get("bucket_count", 0))
@@ -681,7 +727,7 @@ def estimate_flat_trial_capacity_for_memory(memory_gb, bound, dx, tmax, dt,
 
 def _evaluate_batch(result, observed_choice_left, no_choice, valid_for_loss, z,
                     mu_values, sigma, bound, decision_time, dt, dx, tmax,
-                    offset, solver):
+                    offset, solver, terminal_c=0.0):
     n_t = int(round(float(tmax) / float(dt)))
     # O6: factored time-varying mu skips the host-side coerce/expand path —
     # the solver consumes the factors object directly and computes mu_t on
@@ -726,7 +772,7 @@ def _evaluate_batch(result, observed_choice_left, no_choice, valid_for_loss, z,
 
     solver_result = solver.solve(
         z, mu_for_solve, sigma, valid_solver, bound, dt, dx, tmax,
-        decision_idx=decision_idx_full)
+        decision_idx=decision_idx_full, terminal_c=float(terminal_c))
     valid_idx = solver_result.valid_idx
     b = valid_idx.size
     metadata = solver_result.metadata
@@ -758,11 +804,15 @@ def _evaluate_batch(result, observed_choice_left, no_choice, valid_for_loss, z,
         lower_at_t_xp = solver_result.lower_at_decision_xp
         density_at_t_xp = xp.where(is_left_xp, upper_at_t_xp, lower_at_t_xp)
 
-        # No-choice trials contribute the survival mass at tmax. Trials that
-        # are valid_solver but have neither a valid decision nor are flagged
-        # no_choice fall through to LOGLIK_FLOOR.
+        # No-choice trials contribute the terminal no-decision mass at tmax
+        # (a function of `terminal_c`). With terminal_c → 1 this approaches
+        # the full survival mass — the legacy behavior. With terminal_c = 0
+        # only mass at exactly x = 0 stays; on a bin-centered grid that is
+        # zero, so no-choice likelihood collapses to LOGLIK_FLOOR.
+        # Trials that are valid_solver but have neither a valid decision nor
+        # are flagged no_choice fall through to LOGLIK_FLOOR.
         like_xp = xp.where(no_choice_xp,
-                           solver_result.survival_xp,
+                           solver_result.terminal_no_decision_mass_xp,
                            density_at_t_xp)
         like_xp = xp.where(no_choice_xp | valid_decision_xp,
                            like_xp,

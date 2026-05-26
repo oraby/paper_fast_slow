@@ -57,7 +57,8 @@ def runAndPlot(df, fig, axs, include_Q, include_RewardRate, biasFn, driftFn,
     keep_cols = ["Name", "SessId", "TrialNumber", "valid", "DVstr", "DV", "DVabs",
                  "ChoiceCorrect", "ChoiceLeft", "GUI_TimeOutIncorrectChoice",
                  "SimChoiceCorrect", "SimChoiceLeft", "calcStimulusTime", "SimRT",
-                 "SimStartingPoint"]
+                 "SimStartingPoint",
+                 "Date", "SessionNum"]
     # Keep RewardRate* columns
     keep_cols += [col for col in df.columns
                   if col.startswith("RewardRate") and col != "RewardRate"]
@@ -65,30 +66,34 @@ def runAndPlot(df, fig, axs, include_Q, include_RewardRate, biasFn, driftFn,
         keep_cols += ["Q_val", "Q_L", "Q_R"]
     if include_RewardRate:
         keep_cols += ["RewardRate"]
-    # df = df[keep_cols]
-    PROFILE = False
-    if PROFILE:
-        import cProfile
-        p = cProfile.Profile()
-        ret = p.runcall(makeOneRun, df, include_Q=include_Q, include_RewardRate=include_RewardRate,
-                        biasFn=biasFn,   biasFn_df_cols=biasFn_df_cols,   biasFn_kwargs=biasFn_kwargs,
-                        driftFn=driftFn, driftFn_df_cols=driftFn_df_cols, driftFn_kwargs=driftFn_kwargs,
-                        noiseFn=noiseFn, noiseFn_df_cols=noiseFn_df_cols, noiseFn_kwargs=noiseFn_kwargs,
-                        ALPHA=ALPHA, BETA=BETA, NON_DECISION_TIME=NON_DECISION_TIME,
-                        DRIFT_COEF=DRIFT_COEF, NOISE_SIGMA=NOISE_SIGMA,
-                        BOUND=BOUND, dt=dt, t_dur=t_dur, is_loss_no_dir=is_loss_no_dir,
-                        return_df=True)
-        # p.print_stats()
-        p.dump_stats("/home/main/OnedriveFloatingPersonal/caiman/TwoP/again/profile.prof")
-    else:
-        ret = makeOneRun(df, include_Q=include_Q, include_RewardRate=include_RewardRate,
-                        biasFn=biasFn,   biasFn_df_cols=biasFn_df_cols,   biasFn_kwargs=biasFn_kwargs,
-                        driftFn=driftFn, driftFn_df_cols=driftFn_df_cols, driftFn_kwargs=driftFn_kwargs,
-                        noiseFn=noiseFn, noiseFn_df_cols=noiseFn_df_cols, noiseFn_kwargs=noiseFn_kwargs,
-                        ALPHA=ALPHA, BETA=BETA, NON_DECISION_TIME=NON_DECISION_TIME,
-                        DRIFT_COEF=DRIFT_COEF, NOISE_SIGMA=NOISE_SIGMA,
-                        BOUND=BOUND, dt=dt, t_dur=t_dur, is_loss_no_dir=is_loss_no_dir, return_df=True)
-    loss, df = ret
+
+    df = df[df.RepeatIdx == 1]
+    loss = df.Loss.iloc[0]
+    df = df[keep_cols]
+    df = df.copy()
+    # PROFILE = False
+    # if PROFILE:
+    #     import cProfile
+    #     p = cProfile.Profile()
+    #     ret = p.runcall(makeOneRun, df, include_Q=include_Q, include_RewardRate=include_RewardRate,
+    #                     biasFn=biasFn,   biasFn_df_cols=biasFn_df_cols,   biasFn_kwargs=biasFn_kwargs,
+    #                     driftFn=driftFn, driftFn_df_cols=driftFn_df_cols, driftFn_kwargs=driftFn_kwargs,
+    #                     noiseFn=noiseFn, noiseFn_df_cols=noiseFn_df_cols, noiseFn_kwargs=noiseFn_kwargs,
+    #                     ALPHA=ALPHA, BETA=BETA, NON_DECISION_TIME=NON_DECISION_TIME,
+    #                     DRIFT_COEF=DRIFT_COEF, NOISE_SIGMA=NOISE_SIGMA,
+    #                     BOUND=BOUND, dt=dt, t_dur=t_dur, is_loss_no_dir=is_loss_no_dir,
+    #                     return_df=True)
+    #     # p.print_stats()
+    #     p.dump_stats("/home/main/OnedriveFloatingPersonal/caiman/TwoP/again/profile.prof")
+    # else:
+    #     ret = makeOneRun(df, include_Q=include_Q, include_RewardRate=include_RewardRate,
+    #                     biasFn=biasFn,   biasFn_df_cols=biasFn_df_cols,   biasFn_kwargs=biasFn_kwargs,
+    #                     driftFn=driftFn, driftFn_df_cols=driftFn_df_cols, driftFn_kwargs=driftFn_kwargs,
+    #                     noiseFn=noiseFn, noiseFn_df_cols=noiseFn_df_cols, noiseFn_kwargs=noiseFn_kwargs,
+    #                     ALPHA=ALPHA, BETA=BETA, NON_DECISION_TIME=NON_DECISION_TIME,
+    #                     DRIFT_COEF=DRIFT_COEF, NOISE_SIGMA=NOISE_SIGMA,
+    #                     BOUND=BOUND, dt=dt, t_dur=t_dur, is_loss_no_dir=is_loss_no_dir, return_df=True)
+    # loss, df = ret
     df = df[keep_cols].copy()
     if verbose:
         print("Loss:", loss)
@@ -412,7 +417,7 @@ def _plotHistCorrIncorr(df, ax : plt.Axes, t_dur, dt, legend=False):
 def _assignPrevTrial(df):
     df_tmp = df.copy()
     df_tmp["Date"] = df_tmp.SessId.str.split("_").str[-2]
-    df_tmp["SessionNum"] = df_tmp.SessId.str.split("_").str[-1].astype(int)
+    # df_tmp["SessionNum"] = df_tmp.SessId.str.split("_").str[-1].astype(int)
     df_tmp["LeftRewarded"] = df_tmp.DV > 0
 
     for col_prefix in ["", "Sim"]:

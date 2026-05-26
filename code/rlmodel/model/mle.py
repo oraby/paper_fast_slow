@@ -39,6 +39,7 @@ class MLEModelConfig:
     mle_gpu_memory_gb: float | None = None
     mle_use_batched_likelihood: bool = True
     mle_show_progress: bool = False
+    mle_terminal_c: float = 0.0
 
     @property
     def uses_q_bias(self):
@@ -108,6 +109,10 @@ def validate_mle_config(model_config):
             f"Expected {sorted(SUPPORTED_MLE_CUPY_FALLBACKS)}.")
     if model_config.mle_gpu_memory_gb is not None and model_config.mle_gpu_memory_gb <= 0:
         raise ValueError("mle_gpu_memory_gb must be positive")
+    c = float(model_config.mle_terminal_c)
+    if not (0.0 <= c < 1.0):
+        raise ValueError(
+            f"mle_terminal_c must satisfy 0 <= C < 1; got {c}.")
 
 
 def params_from_vector(x, params_names):
@@ -287,6 +292,7 @@ def objective_from_population(x_matrix, params_names, df, model_config):
         xp=backend.xp,
         normal_cdf=backend.normal_cdf,
         solver=solver,
+        terminal_c=float(model_config.mle_terminal_c),
     )
 
     # Phase 6: reshape (S_valid * N,) → (S_valid, N) and aggregate.
@@ -784,8 +790,16 @@ def _decaying_q_noise_array(q_rel_before, params, n_t):
     return np.where(q_rel_before[:, None] < 0, -decayed, decayed)
 
 
+MIN_POPULATION_CANDIDATES = 64
+
+
 def estimate_population_settings(model_config, n_trials, n_params, bound=1.0):
-    """Return candidate count and SciPy popsize from the memory ceiling."""
+    """Return candidate count and SciPy popsize from the memory ceiling.
+
+    Enforces a floor of ``MIN_POPULATION_CANDIDATES`` actual candidates so
+    DE has enough diversity to explore the parameter space even when the
+    memory budget would otherwise pick a smaller population.
+    """
     flat_capacity, memory_estimate = estimate_flat_trial_capacity_for_memory(
         model_config.mle_gpu_memory_gb, bound, model_config.dx,
         model_config.t_dur, model_config.dt)
@@ -795,7 +809,10 @@ def estimate_population_settings(model_config, n_trials, n_params, bound=1.0):
     else:
         target_candidates = max(int(flat_capacity) // max(int(n_trials), 1), 1)
     n_params = max(int(n_params), 1)
-    scipy_popsize = max(target_candidates // n_params, 1)
+    # SciPy's actual population is `scipy_popsize * n_params`. Round up so
+    # `actual_candidates >= MIN_POPULATION_CANDIDATES`.
+    min_popsize = -(-MIN_POPULATION_CANDIDATES // n_params)  # ceil division
+    scipy_popsize = max(target_candidates // n_params, min_popsize, 1)
     actual_candidates = scipy_popsize * n_params
     population_info = {
         "target_candidates": int(target_candidates),
@@ -891,6 +908,7 @@ def _evaluate_trial_likelihoods_batched(data, latents, params, model_config,
         xp=backend.xp,
         normal_cdf=backend.normal_cdf,
         solver=solver,
+        terminal_c=float(model_config.mle_terminal_c),
     )
     info = backend.metadata()
     info["likelihood_evaluator"] = "batched"

@@ -47,7 +47,7 @@ def runModel(df, bias_fn_str, drift_fn_str, noise_fn_str, is_loss_no_dir,
              fit_mode, evolve_res : dict = None, num_cpus=None,
              dry_run=False, mle_array_backend="numpy", mle_device_id=None,
              mle_cupy_fallback="error", mle_gpu_memory_gb=None,
-             mle_show_progress=False):
+             mle_show_progress=False, mle_terminal_c=0.0):
     biasFn = BIAS_FN_DICT[bias_fn_str]
     driftFn = DRIFT_FN_DICT[drift_fn_str]
     noiseFn = NOISE_FN_DICT[noise_fn_str]
@@ -72,7 +72,8 @@ def runModel(df, bias_fn_str, drift_fn_str, noise_fn_str, is_loss_no_dir,
                                      mle_device_id=mle_device_id,
                                      mle_cupy_fallback=mle_cupy_fallback,
                                      mle_gpu_memory_gb=mle_gpu_memory_gb,
-                                     mle_show_progress=mle_show_progress)
+                                     mle_show_progress=mle_show_progress,
+                                     mle_terminal_c=mle_terminal_c)
     evolve_res.update(evolve_res_res)
     return evolve_res
 
@@ -112,6 +113,16 @@ def main():
                         help="Show a transient tqdm progress bar for each "
                              "vectorized MLE diffusion solve. Enabled "
                              "automatically for --mle-backend GPU.")
+    parser.add_argument("--mle-terminal-c", type=float, default=0.0,
+                        help="Terminal-time no-decision band fraction C in "
+                             "[0, 1). At t=T_max, residual mass with |x| > "
+                             "C*B is reassigned to the closest choice; |x| "
+                             "<= C*B remains no-decision mass used as the "
+                             "no-choice likelihood. C=0 (default) forces "
+                             "all residual mass to a choice; C close to 1 "
+                             "reproduces the legacy survival-only "
+                             "behavior. Only honored by the batched MLE "
+                             "path (which is the default).")
     parser.add_argument("--test", action="store_true")
     parser.add_argument("--load-evolve", action="store_true")
     parser.add_argument("--remove-subject", type=str, default=None,
@@ -125,6 +136,9 @@ def main():
     # after parse_args so chisq users aren't forced to pass an unused flag.
     if args.fit_mode == "mle" and args.mle_backend is None:
         parser.error("--mle-backend {CPU,GPU} is required when --fit-mode mle")
+    if not (0.0 <= args.mle_terminal_c < 1.0):
+        parser.error(
+            f"--mle-terminal-c must satisfy 0 <= C < 1; got {args.mle_terminal_c}")
 
     # Translate the user-facing CPU/GPU knob into the two internal flags that
     # mle.MLEModelConfig + array_backend.resolve_array_backend understand:
@@ -171,7 +185,8 @@ def main():
                                   mle_device_id=args.mle_device_id,
                                   mle_cupy_fallback=mle_cupy_fallback,
                                   mle_gpu_memory_gb=args.mle_gpu_memory_gb,
-                                  mle_show_progress=mle_show_progress)
+                                  mle_show_progress=mle_show_progress,
+                                  mle_terminal_c=args.mle_terminal_c)
     else:
         runModel(df_behavior, bias_fn_str=args.bias, drift_fn_str=args.drift,
                  noise_fn_str=args.noise, num_cpus=args.num_cpus,
@@ -182,7 +197,8 @@ def main():
                  mle_device_id=args.mle_device_id,
                  mle_cupy_fallback=mle_cupy_fallback,
                  mle_gpu_memory_gb=args.mle_gpu_memory_gb,
-                 mle_show_progress=mle_show_progress)
+                 mle_show_progress=mle_show_progress,
+                 mle_terminal_c=args.mle_terminal_c)
 
 
 

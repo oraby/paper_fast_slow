@@ -54,8 +54,15 @@ def trial_choice_rt_loglik(observed_choice_left, observed_rt, z, mu, sigma,
     """Return the choice+RT log likelihood for one observed trial.
 
     ``observed_choice_left=1`` maps to the upper absorbing bound, matching the
-    existing simulation code. No-choice trials contribute the survival mass at
-    ``tmax``.
+    existing simulation code. No-choice trials contribute the full survival
+    mass at ``tmax``.
+
+    NOTE: this rowwise path does **not** honor ``mle_terminal_c`` — that
+    feature is only implemented for the batched path
+    (``BatchedDiffusionSolver`` + ``batched_choice_rt_loglik``). The rowwise
+    path is retained as a fallback/reference and is gated by
+    ``MLEModelConfig.mle_use_batched_likelihood``. See
+    ``mle_terminal_c_plan.md`` (Option B, deferred).
     """
     if not _is_valid_solver_input(z, mu, sigma, bound, dt, dx, tmax):
         return _floor_likelihood()

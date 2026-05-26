@@ -11,6 +11,13 @@ from .test_mle_smoke import _params_for, _small_df
 
 def _config(drift_name, bias_name, noise_name, include_q, include_rr,
             *, batched, backend="numpy"):
+    # mle_terminal_c=0.99 keeps the batched path's no-choice likelihood
+    # equal to the full survival mass (every bin center on the dx=0.1
+    # bound=1.0 grid satisfies |x| <= 0.95 < 0.99), which matches the
+    # rowwise reference path (which doesn't implement terminal_c).
+    # Without this, the new default terminal_c=0.0 would floor no-choice
+    # likelihoods in batched but not in rowwise — see
+    # rlmodel/model/mle_terminal_c_plan.md.
     return MLEModelConfig(
         drift_fn_str=drift_name,
         bias_fn_str=bias_name,
@@ -22,6 +29,7 @@ def _config(drift_name, bias_name, noise_name, include_q, include_rr,
         dx=0.1,
         mle_array_backend=backend,
         mle_use_batched_likelihood=batched,
+        mle_terminal_c=0.99,
     )
 
 
