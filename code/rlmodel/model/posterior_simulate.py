@@ -228,16 +228,24 @@ def _simulate_one_pass(df, fitted_params, model_config, seed):
         skip_loss=True,
         **logic_kwargs,
     )
-    return sim_df
+    return _loss, sim_df
 
 
 def _simulate_chisq_path(df, fitted_params, model_config, *, n_repeats, seed):
     pieces = []
     for r in range(n_repeats):
-        sim_df = _simulate_one_pass(
+        loss, sim_df = _simulate_one_pass(
             df, fitted_params, model_config, seed=seed + r)
         sim_df = sim_df.copy()
-        sim_df["Repeat"] = r
+        sim_df["RepeatIdx"] = r
+        sim_df["SessId"] = sim_df.apply(
+            lambda x: f"{x['Name']}_{x['Date']}_{x['SessionNum']}_{r}]",
+            axis=1)
+        sim_df["Seed"] = seed + r
+        sim_df["Loss"] = loss
+        sim_df["driftFn"] = model_config.drift_fn_str
+        sim_df["biasFn"] = model_config.bias_fn_str
+        sim_df["noiseFn"] = model_config.noise_fn_str
         pieces.append(sim_df)
     return pd.concat(pieces, ignore_index=True)
 
@@ -361,7 +369,7 @@ def _simulate_observed_history(df, fitted_params, model_config, *,
         correct[not_nan & (dv > 0) & (sim_choice_left == 0)] = 0.0
         correct[not_nan & (dv < 0) & (sim_choice_left == 1)] = 0.0
         sim_df["SimChoiceCorrect"] = correct
-        sim_df["Repeat"] = r
+        sim_df["RepeatIdx"] = r
         pieces.append(sim_df)
 
     return pd.concat(pieces, ignore_index=True)

@@ -108,8 +108,8 @@ def test_n_repeats_produces_stacked_rows():
     sim_df = result["sim_df"]
 
     assert len(sim_df) == 3 * len(df)
-    assert "Repeat" in sim_df.columns
-    assert set(sim_df["Repeat"].unique()) == {0, 1, 2}
+    assert "RepeatIdx" in sim_df.columns
+    assert set(sim_df["RepeatIdx"].unique()) == {0, 1, 2}
 
 
 def test_observed_history_mode_runs_and_has_sim_columns():
