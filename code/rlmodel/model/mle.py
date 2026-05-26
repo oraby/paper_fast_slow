@@ -9,6 +9,7 @@ from .array_backend import asnumpy, resolve_array_backend
 from .mle_batch import (
     BatchedLikelihoodResult,
     BatchedDiffusionSolver,
+    TimeVaryingMuFactors,
     batched_choice_rt_loglik,
     estimate_flat_trial_capacity_for_memory,
 )
@@ -254,7 +255,17 @@ def objective_from_population(x_matrix, params_names, df, model_config):
     flat_sigma = sigma_stack[valid_cand_idx].reshape(-1)
     flat_valid = valid_stack[valid_cand_idx].reshape(-1)
     flat_no_choice = no_choice_stack[valid_cand_idx].reshape(-1)
-    if is_time_varying:
+    if isinstance(mu_stack, TimeVaryingMuFactors):
+        # O6: factored time-varying mu — pass the factors object straight
+        # through. In the common case (`valid_cand_idx == arange(n_candidates)`)
+        # no subsetting is needed since the factor arrays were already built
+        # for the full population. If a future caller subsets candidates here,
+        # this branch needs a `select_valid_candidates` helper.
+        assert valid_cand_idx.size == n_candidates, (
+            "factored mu doesn't yet support per-candidate subsetting at this "
+            "level; ensure no candidates were dropped by upstream filters.")
+        flat_mu = mu_stack
+    elif is_time_varying:
         flat_mu = mu_stack[valid_cand_idx].reshape(-1, n_t)
     else:
         flat_mu = mu_stack[valid_cand_idx].reshape(-1)
@@ -489,17 +500,49 @@ def _compute_latent_population_equal_sessions(data, x_matrix, params_names,
     sigma = xp.empty_like(z)
     time_varying = model_config.uses_decay_q_drift or model_config.uses_decay_q_noise
     n_t = int(round(model_config.t_dur / model_config.dt))
+    # Per-candidate decay shapes that don't depend on the Q-state recurrence —
+    # safe to compute up front. Used by O6 factored mu (and also by the
+    # legacy time-varying branch where we still materialize the (..., n_t)
+    # tensor, gated below).
+    decay_form_per_cand = None
+    log_decay_per_cand = None
     if time_varying:
-        mu = xp.empty((n_candidates, n_sessions, trials_per_session, n_t),
-                      dtype=float)
         t_idx = xp.arange(n_t, dtype=float)
         decay_base = 1.0 - t_idx / float(n_t)
-        log_decay = 1.0 - (
-            q_decay_rate[:, None] * xp.log(t_idx[None, :] + 1.0)
-            / np.log(n_t + 1.0)
-        )
+        if model_config.uses_decay_q_drift:
+            decay_form_per_cand = decay_base[None, :] ** q_decay_rate[:, None]
+        if model_config.uses_decay_q_noise:
+            log_decay_per_cand = 1.0 - (
+                q_decay_rate[:, None] * xp.log(t_idx[None, :] + 1.0)
+                / np.log(n_t + 1.0)
+            )
+
+    # O6: for time-varying mu, accumulate ONLY the per-trial factors that the
+    # Q-state recurrence touches. The (n_candidates, n_sessions,
+    # trials_per_session, n_t) mu tensor is gone — it was ~7 GB on a typical
+    # population GPU fit, and per-step mu can be reconstructed cheaply from
+    # the (b,) per-trial scalars and the (n_candidates, n_t) decay shapes
+    # above.
+    if time_varying:
+        mu = None
+        q_drift_coef_pop = (
+            xp.empty((n_candidates, n_sessions, trials_per_session), dtype=float)
+            if model_config.uses_decay_q_drift else None)
+        q_abs_x_qcoef_pop = (
+            xp.empty((n_candidates, n_sessions, trials_per_session), dtype=float)
+            if model_config.uses_decay_q_noise else None)
+        q_sign_pop = (
+            xp.empty((n_candidates, n_sessions, trials_per_session), dtype=float)
+            if model_config.uses_decay_q_noise else None)
+        sigma_for_noise_pop = (
+            xp.empty((n_candidates, n_sessions, trials_per_session), dtype=float)
+            if model_config.uses_decay_q_noise else None)
     else:
         mu = xp.empty_like(z)
+        q_drift_coef_pop = None
+        q_abs_x_qcoef_pop = None
+        q_sign_pop = None
+        sigma_for_noise_pop = None
 
     for trial_pos in range(trials_per_session):
         q_left_clip = xp.clip(q_left, state_updates.LOG_CIEL, 1.0)
@@ -521,22 +564,25 @@ def _compute_latent_population_equal_sessions(data, x_matrix, params_names,
         sigma[:, :, trial_pos] = sigma_t
 
         if time_varying:
-            mu_t = xp.repeat(base_mu[:, :, None], n_t, axis=2)
+            # O6: store the per-trial Q-state-dependent factors. The (n_t,)
+            # decay shapes are per-candidate constants (computed once above);
+            # mu_t at any timestep is reconstructed cheaply by the solver
+            # from these factors + a column gather from decay_form_per_cand
+            # / log_decay_per_cand.
             if model_config.uses_decay_q_drift:
-                decay_form = decay_base[None, :] ** q_decay_rate[:, None]
+                assert q_drift_coef_pop is not None  # narrow for pyright
                 q_for_drift = xp.clip(q_rel + q_offset[:, None], -1.0, 1.0)
-                mu_t += (
-                    q_for_drift[:, :, None]
-                    * decay_form[:, None, :]
-                    * q_coef[:, None, None]
-                )
+                q_drift_coef_pop[:, :, trial_pos] = q_for_drift * q_coef[:, None]
             if model_config.uses_decay_q_noise:
-                q_abs = xp.abs(q_rel)[:, :, None] * q_coef[:, None, None]
-                decayed = xp.maximum(q_abs - log_decay[:, None, :], 0.0)
-                decayed = xp.where(q_rel[:, :, None] < 0.0, -decayed, decayed)
-                mu_t += sigma_t[:, :, None] * decayed / model_config.dt
-            mu[:, :, trial_pos, :] = mu_t
+                assert q_abs_x_qcoef_pop is not None
+                assert q_sign_pop is not None
+                assert sigma_for_noise_pop is not None
+                q_abs_x_qcoef_pop[:, :, trial_pos] = xp.abs(q_rel) * q_coef[:, None]
+                q_sign_pop[:, :, trial_pos] = xp.where(
+                    q_rel < 0.0, -1.0, 1.0)
+                sigma_for_noise_pop[:, :, trial_pos] = sigma_t
         else:
+            assert mu is not None
             mu[:, :, trial_pos] = base_mu
 
         valid_t = valid_for_loss_2d[None, :, trial_pos]
@@ -571,14 +617,50 @@ def _compute_latent_population_equal_sessions(data, x_matrix, params_names,
         no_choice_2d[None, :, :],
         (n_candidates, n_sessions, trials_per_session),
     ).reshape(flat_shape)
+
     if time_varying:
-        mu_out = mu.reshape(n_candidates, n_trials, n_t)
+        # O6 factored mu. base_mu is independent of the recurrence so we
+        # build it here in one shot rather than per trial_pos. Per-trial
+        # factor arrays are flattened to (n_candidates * n_trials,) so the
+        # solver can index by valid_idx directly.
+        base_mu_pop = drift_coef[:, None, None] * dv[None, :, :]
+        flat_n = n_candidates * n_trials
+        candidate_id_flat = np.broadcast_to(
+            np.arange(n_candidates, dtype=np.int64)[:, None],
+            (n_candidates, n_trials),
+        ).reshape(-1).copy()
+        mu_out = TimeVaryingMuFactors(
+            n_trials=int(flat_n),
+            n_t=int(n_t),
+            dt=float(model_config.dt),
+            base_mu=asnumpy(xp, base_mu_pop).reshape(-1).astype(float, copy=False),
+            candidate_id_per_trial=candidate_id_flat,
+            q_drift_coef_per_trial=(
+                None if q_drift_coef_pop is None
+                else asnumpy(xp, q_drift_coef_pop).reshape(-1).astype(float, copy=False)),
+            decay_form_per_cand=(
+                None if decay_form_per_cand is None
+                else asnumpy(xp, decay_form_per_cand).astype(float, copy=False)),
+            q_abs_x_qcoef_per_trial=(
+                None if q_abs_x_qcoef_pop is None
+                else asnumpy(xp, q_abs_x_qcoef_pop).reshape(-1).astype(float, copy=False)),
+            q_sign_per_trial=(
+                None if q_sign_pop is None
+                else asnumpy(xp, q_sign_pop).reshape(-1).astype(float, copy=False)),
+            sigma_per_trial=(
+                None if sigma_for_noise_pop is None
+                else asnumpy(xp, sigma_for_noise_pop).reshape(-1).astype(float, copy=False)),
+            log_decay_per_cand=(
+                None if log_decay_per_cand is None
+                else asnumpy(xp, log_decay_per_cand).astype(float, copy=False)),
+        )
     else:
-        mu_out = mu.reshape(flat_shape)
+        assert mu is not None
+        mu_out = asnumpy(xp, mu.reshape(flat_shape))
     return {
         "z": asnumpy(xp, z.reshape(flat_shape)),
         "sigma": asnumpy(xp, sigma.reshape(flat_shape)),
-        "mu": asnumpy(xp, mu_out),
+        "mu": mu_out,
         "valid_for_loss": asnumpy(xp, valid_flat).astype(bool),
         "no_choice": asnumpy(xp, no_choice_flat).astype(bool),
         "bounds": asnumpy(xp, bounds),
