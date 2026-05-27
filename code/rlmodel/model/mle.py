@@ -110,7 +110,7 @@ def validate_mle_config(model_config):
     if model_config.mle_gpu_memory_gb is not None and model_config.mle_gpu_memory_gb <= 0:
         raise ValueError("mle_gpu_memory_gb must be positive")
     c = float(model_config.mle_terminal_c)
-    if not (0.0 <= c < 1.0):
+    if not (0.0 <= c <= 1.0):
         raise ValueError(
             f"mle_terminal_c must satisfy 0 <= C < 1; got {c}.")
 
