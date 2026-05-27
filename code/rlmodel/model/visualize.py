@@ -199,6 +199,15 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
         biasFn = all_widgets["Bias Fn"].value
         driftFm = all_widgets["Drift Fn"].value
         noiseFn = all_widgets["Noise Fn"].value
+        print(f"Selected Drift Fn: {driftFm.__name__}, Bias Fn: {biasFn.__name__}, Noise Fn: {noiseFn.__name__}")
+        # Get string associated with each value
+        biasFn_str = [k for k, v in BIAS_FN_DICT.items() if v == biasFn][0]
+        driftFn_str = [k for k, v in DRIFT_FN_DICT.items() if v == driftFm][0]
+        noiseFn_str = [k for k, v in NOISE_FN_DICT.items() if v == noiseFn][0]
+        df = df[df.RepeatIdx == 1]
+        df = df[df.biasFn == biasFn_str]
+        df = df[df.driftFn == driftFn_str]
+        df = df[df.noiseFn == noiseFn_str]
 
         biasFn_df_cols, biasFn_kwargs_li = biasFnColsAndKwargs(biasFn)
         driftFn_df_cols, driftFn_kwargs_li = driftFnColsAndKwargs(driftFm)
@@ -293,7 +302,9 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
     #         _handleFigClickEvent(event)
     # fig.canvas.mpl_connect('button_press_event', figOnclick)
 
-    all_df = initDF(df, include_Q=True, include_RewardRate=True)
+    # all_df = initDF(df, include_Q=True, include_RewardRate=True)
+    all_df = df
+    all_df["GUI_TimeOutIncorrectChoice"] = 0
     # updateGUI(all_widgets["Update"])
 
 
