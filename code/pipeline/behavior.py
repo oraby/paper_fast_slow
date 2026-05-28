@@ -38,7 +38,7 @@ class CountContPrevOutcome(DFProcessor):
         for sess, sess_df in grpBySess(df):
             sess_df = self._processSession(sess_df)
             sess_dfs.append(sess_df)
-        return pd.concat(sess_dfs)
+        return _concat_preserving_empty_columns(sess_dfs)
 
     def _processSession(self, df):
         def count(prev_count, current_res, no_choice_as_incorrect):
@@ -131,7 +131,7 @@ class CountContPrevOutcome(DFProcessor):
         if single_trial:
             df = pd.DataFrame(trials_rows)
         else:
-            df = pd.concat(trials_dfs)
+            df = _concat_preserving_empty_columns(trials_dfs)
         return df
 
     def _processSession2(self, df):
@@ -186,10 +186,40 @@ class CountContPrevOutcome(DFProcessor):
                     trial_df[key] = val
                 prev_extra_counts = self._extraCountsFn(row)
             trials_dfs.append(trial_df)
-        return pd.concat(trials_dfs)
+        return _concat_preserving_empty_columns(trials_dfs)
 
     def descr(self) -> str:
         return "Counting the number continuous previous trials outcomes"
+
+
+def _concat_preserving_empty_columns(dfs):
+    """Concat frames while avoiding pandas all-NA dtype inference warnings."""
+    dfs = [df for df in dfs if not df.empty]
+    if not dfs:
+        return pd.DataFrame()
+
+    columns = _ordered_union_columns(dfs)
+    concat_dfs = []
+    for df in dfs:
+        all_na_cols = [col for col in df.columns if df[col].isna().all()]
+        concat_dfs.append(df.drop(columns=all_na_cols))
+
+    res = pd.concat(concat_dfs)
+    for col in columns:
+        if col not in res.columns:
+            res[col] = np.nan
+    return res.loc[:, columns]
+
+
+def _ordered_union_columns(dfs):
+    columns = []
+    seen = set()
+    for df in dfs:
+        for col in df.columns:
+            if col not in seen:
+                columns.append(col)
+                seen.add(col)
+    return columns
 
 class CreateCorrectIncorrectCopies(DFProcessor):
     '''Use just before ConcatEpochs() to have the same copy of your data except

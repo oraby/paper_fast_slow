@@ -431,13 +431,14 @@ def _assignPrevTrial(df):
         df_cur = Chain(CountContPrevOutcome()).run(df_cur)
         df_cur = df_cur.loc[old_idx]
         # display(df.head())
-        df_cur["PrevChoiceCorrect"] = df_cur["PrevOutcomeCount"] >= 1
-        df_cur["PrevChoiceLeft"] = df_cur.PrevDirectionIsLeftCount >= 1
+        # Convert to float to avoid bool dtype warning
+        df_cur["PrevChoiceCorrect"] = (df_cur["PrevOutcomeCount"] >= 1).astype(float)
+        df_cur["PrevChoiceLeft"] = (df_cur.PrevDirectionIsLeftCount >= 1).astype(float)
         df_cur.loc[df_cur.PrevOutcomeCount == 0, "PrevChoiceLeft"] = np.nan
-        df_cur["Stay"] = df_cur.ChoiceLeft == df_cur.PrevChoiceLeft
+        df_cur["Stay"] = (df_cur.ChoiceLeft == df_cur.PrevChoiceLeft).astype(float)
         df_cur.loc[df_cur.ChoiceLeft.isnull() | (df_cur.PrevOutcomeCount == 0), "Stay"] = np.nan
         # df_cur["PrevLefRewarded"] = df.PrevLeftRewardedCount >= 1
-        df_cur["StayBaseline"] = df_cur.LeftRewarded == df_cur.PrevChoiceLeft
+        df_cur["StayBaseline"] = (df_cur.LeftRewarded == df_cur.PrevChoiceLeft).astype(float)
         df_cur.loc[df_cur.PrevChoiceLeft.isnull(), "StayBaseline"] = np.nan
 
         # display(df.head())

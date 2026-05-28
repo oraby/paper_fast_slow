@@ -16,12 +16,14 @@ def calcSessionBias(sess_df, choice_left_col=_CHOICE_LEFT_COL):
 def calcSubjQuantileBias(subj_df, choice_left_col=_CHOICE_LEFT_COL,
                          groupby_cols=_GROUPBY_COLS):
     return subj_df.groupby(groupby_cols).apply(calcSessionBias,
-                                               choice_left_col=choice_left_col)
+                                               choice_left_col=choice_left_col,
+                                               include_groups=False)
 
 def calcBias(df, choice_left_col=_CHOICE_LEFT_COL, groupby_cols=_GROUPBY_COLS):
     return df.groupby("Name").apply(calcSubjQuantileBias,
                                     choice_left_col=choice_left_col,
-                                    groupby_cols=groupby_cols)
+                                    groupby_cols=groupby_cols,
+                                    include_groups=False)
 
 
 def plotBias(df, as_abs, plot_single_subjects, save_figs=False,

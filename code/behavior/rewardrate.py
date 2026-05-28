@@ -28,7 +28,8 @@ def calcAvgRewardRate(df, choice_cols=["ChoiceCorrect"], rr_postfixs=[""],
     # TrialNumber
     assert df.groupby(groupby_cols).apply(
                     lambda sess_df:sess_df.TrialNumber.diff()[1:].gt(0).all()
-                    or (display(sess_df.TrialNumber.diff()) is False)).all(), (
+                    or (display(sess_df.TrialNumber.diff()) is False),
+                    include_groups=False).all(), (
         "If not sorted by TrialNumber, how can we calculate the reward rate?")
     # Supress pandas warning
     groupby_cols_iter = groupby_cols[0] if len(groupby_cols) == 1 else groupby_cols
