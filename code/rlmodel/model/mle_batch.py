@@ -7,6 +7,7 @@ from typing import Optional
 import numpy as np
 
 from .array_backend import asnumpy
+from .initvals import MLE_TERMINAL_C
 from .mle_likelihood import LOGLIK_FLOOR
 
 
@@ -204,7 +205,7 @@ class BatchedDiffusionSolver:
         self.fft_n = _next_power_of_two(3 * n_x - 2)
 
     def solve(self, z, mu, sigma, valid_for_loss, bound, dt, dx, tmax,
-              decision_idx=None, terminal_c=0.0):
+              decision_idx=None, terminal_c=MLE_TERMINAL_C.Default):
         """Run the bucketed-FFT first-passage solver.
 
         Parameters
@@ -219,14 +220,19 @@ class BatchedDiffusionSolver:
             density is ever written and ``upper_at_decision_xp`` /
             ``lower_at_decision_xp`` come back as zeros — useful for callers
             that only need ``survival`` / ``upper_prob`` / ``lower_prob``.
-        terminal_c : float, default 0.0
-            Threshold C ∈ [0, 1) used to partition residual interior mass at
-            t = tmax into terminal_upper / terminal_lower / terminal_no_decision
-            buckets. See ``mle_terminal_c_plan.md``.
+        terminal_c : float, default ``MLE_TERMINAL_C.Default``
+            Threshold C ∈ [MLE_TERMINAL_C.Min, MLE_TERMINAL_C.Max] used to
+            partition residual interior mass at t = tmax into
+            terminal_upper / terminal_lower / terminal_no_decision
+            buckets. C=Max routes the entire interior mass to the
+            no-decision bucket (legacy survival behavior).
+            See ``mle_terminal_c_plan.md``.
         """
-        if not (0.0 <= float(terminal_c) < 1.0):
+        if not (MLE_TERMINAL_C.Min <= float(terminal_c) <= MLE_TERMINAL_C.Max):
             raise ValueError(
-                f"terminal_c must satisfy 0 <= C < 1; got {terminal_c}.")
+                f"terminal_c must satisfy "
+                f"{MLE_TERMINAL_C.Min} <= C <= {MLE_TERMINAL_C.Max}; "
+                f"got {terminal_c}.")
         n_trials = len(valid_for_loss)
         n_t = int(round(float(tmax) / float(dt)))
         n_x = int(round(2.0 * float(bound) / float(dx)))
@@ -630,16 +636,24 @@ class BatchedDiffusionSolver:
 def batched_choice_rt_loglik(observed_choice_left, observed_rt, no_choice,
                              valid_for_loss, z, mu_values, sigma, bound,
                              non_decision_time, dt, dx, tmax, *, xp=np,
-                             normal_cdf=None, solver=None, terminal_c=0.0):
+                             normal_cdf=None, solver=None,
+                             terminal_c=MLE_TERMINAL_C.Default,
+                             lapse_rate=0.0):
     """Evaluate choice/RT likelihoods for many trials on one array backend.
 
     Parameters
     ----------
-    terminal_c : float, default 0.0
-        Threshold C ∈ [0, 1) forwarded to the solver. No-choice trials use
-        ``terminal_no_decision_mass`` (with this threshold) as their
-        likelihood instead of the full survival mass. See
-        ``mle_terminal_c_plan.md``.
+    terminal_c : float, default ``MLE_TERMINAL_C.Default``
+        Threshold C ∈ [MLE_TERMINAL_C.Min, MLE_TERMINAL_C.Max] forwarded
+        to the solver. No-choice trials use ``terminal_no_decision_mass``
+        (with this threshold) as their likelihood instead of the full
+        survival mass. See ``mle_terminal_c_plan.md``.
+    lapse_rate : float | array-like of shape ``(n_trials,)``, default 0.0
+        Contamination / lapse mixture λ ∈ [0, 1). Per-trial likelihood
+        becomes ``(1-λ)·L_DDM + λ/(2·tmax)``. Accepts a scalar (broadcast
+        to all trials) or a per-trial array — the population objective
+        passes a per-candidate broadcast so each candidate's λ value is
+        used for its block of trials. See ``mle_lapse_rate_plan.md``.
     """
     _validate_global_params(bound, dt, dx, tmax)
     n_trials = len(valid_for_loss)
@@ -656,6 +670,11 @@ def batched_choice_rt_loglik(observed_choice_left, observed_rt, no_choice,
     sigma = _coerce_to_numpy(sigma).astype(float, copy=False)
     non_decision_time = _coerce_to_numpy(non_decision_time).astype(
         float, copy=False)
+    # ``lapse_rate`` may arrive as a CuPy array (population path uses
+    # ``backend.xp.repeat`` to build a per-candidate broadcast). NumPy
+    # refuses to implicitly convert CuPy arrays in recent versions
+    # — route through ``_coerce_to_numpy`` first, like the other inputs.
+    lapse_rate = _coerce_to_numpy(lapse_rate).astype(float, copy=False)
 
     decision_time = observed_rt - non_decision_time
     out.decision_time[:] = decision_time
@@ -689,6 +708,7 @@ def batched_choice_rt_loglik(observed_choice_left, observed_rt, no_choice,
         offset=0,
         solver=solver,
         terminal_c=float(terminal_c),
+        lapse_rate=lapse_rate,
     )
     batch_meta = out.metadata.pop("_last_batch", {})
     metadata["bucket_count"] += int(batch_meta.get("bucket_count", 0))
@@ -727,7 +747,8 @@ def estimate_flat_trial_capacity_for_memory(memory_gb, bound, dx, tmax, dt,
 
 def _evaluate_batch(result, observed_choice_left, no_choice, valid_for_loss, z,
                     mu_values, sigma, bound, decision_time, dt, dx, tmax,
-                    offset, solver, terminal_c=0.0):
+                    offset, solver, terminal_c=MLE_TERMINAL_C.Default,
+                    lapse_rate=0.0):
     n_t = int(round(float(tmax) / float(dt)))
     # O6: factored time-varying mu skips the host-side coerce/expand path —
     # the solver consumes the factors object directly and computes mu_t on
@@ -764,6 +785,22 @@ def _evaluate_batch(result, observed_choice_left, no_choice, valid_for_loss, z,
         & (decision_time > 0)
         & (decision_time <= tmax)
     )
+    # Choice trials where the observed RT is in the lapse window but the
+    # DDM can't reach the bound in time (RT ≤ T0 ⇒ decision_time ≤ 0).
+    # The DDM density is identically 0 here, but the lapse mixture term
+    # λ/(2·T_max) is well-defined, so we want them lapse-eligible instead
+    # of LOGLIK_FLOOR-pinned. Solver still receives decision_idx=-1 for
+    # these trials, so density_at_t_xp ends up 0 by construction. NaN RT
+    # propagates through ``decision_time`` so the ``isfinite`` clause
+    # excludes data-quality rejects; RT > tmax is already excluded by
+    # ``valid_solver`` upstream.
+    short_rt_choice_full = (
+        valid_solver
+        & ~no_choice
+        & np.isfinite(observed_choice_left)
+        & np.isfinite(decision_time)
+        & (decision_time <= 0)
+    )
     raw_decision_idx = np.ceil(
         np.where(valid_decision_full, decision_time, dt) / dt
     ).astype(np.int64) - 1
@@ -792,11 +829,13 @@ def _evaluate_batch(result, observed_choice_left, no_choice, valid_for_loss, z,
         choice_left_v = observed_choice_left[valid_idx]
         no_choice_v = no_choice[valid_idx]
         valid_decision_v = valid_decision_full[valid_idx]
+        short_rt_choice_v = short_rt_choice_full[valid_idx]
 
         xp = solver.xp
         is_left_xp = xp.asarray((choice_left_v == 1))
         no_choice_xp = xp.asarray(no_choice_v)
         valid_decision_xp = xp.asarray(valid_decision_v)
+        short_rt_choice_xp = xp.asarray(short_rt_choice_v)
 
         # Already-gathered densities on xp — (b,) each, populated by the
         # solver only at decision-time hits. No row indexing needed.
@@ -814,9 +853,27 @@ def _evaluate_batch(result, observed_choice_left, no_choice, valid_for_loss, z,
         like_xp = xp.where(no_choice_xp,
                            solver_result.terminal_no_decision_mass_xp,
                            density_at_t_xp)
-        like_xp = xp.where(no_choice_xp | valid_decision_xp,
-                           like_xp,
-                           LOGLIK_FLOOR)
+
+        # Lapse / contamination mixture: same formula for choice and no-
+        # choice trials per the user's design decision (see
+        # ``mle_lapse_rate_plan.md``). λ may be a scalar or a per-trial
+        # array; the population objective passes a per-candidate
+        # broadcast. λ=0 reproduces the pre-mixture likelihood exactly.
+        lapse_arr = np.broadcast_to(
+            np.asarray(lapse_rate, dtype=float),
+            (len(valid_for_loss),))
+        lapse_rate_xp = xp.asarray(lapse_arr[valid_idx])
+        lapse_density_xp = lapse_rate_xp / (2.0 * float(tmax))
+        like_xp = (1.0 - lapse_rate_xp) * like_xp + lapse_density_xp
+
+        # Lapse-eligible: no_choice, a valid (T0,T_max] decision, OR a
+        # choice trial with RT in (0,T0] (short_rt_choice). The third case
+        # lets the mixture term λ/(2·T_max) provide the floor instead of
+        # LOGLIK_FLOOR — the DDM is already 0 there by construction.
+        like_xp = xp.where(
+            no_choice_xp | valid_decision_xp | short_rt_choice_xp,
+            like_xp,
+            LOGLIK_FLOOR)
         # Clamp non-finite/non-positive likelihoods to the floor on xp.
         like_xp = xp.where(xp.isfinite(like_xp) & (like_xp > 0.0),
                            like_xp, LOGLIK_FLOOR)

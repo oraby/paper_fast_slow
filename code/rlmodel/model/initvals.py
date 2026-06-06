@@ -27,7 +27,7 @@ class InitVal(NamedTuple):
 @dataclass
 class InitVals:
     DRIFT_COEF : InitVal        = InitVal(0, 20, 1)
-    NOISE_SIGMA : InitVal       = InitVal(0, 100, 15)
+    NOISE_SIGMA : InitVal       = InitVal(0, 5, 1.5)
     BOUND : InitVal             = InitVal(1, 1, 1)
     BIAS_COEF : InitVal         = InitVal(0, 1, .95)
     BIAS_FIXED : InitVal        = InitVal(-1, 1, 0)
@@ -39,10 +39,32 @@ class InitVals:
     Q_VAL_DECAY_RATE : InitVal  = InitVal(.1, 30, 1)
     Q_VAL_COEF : InitVal        = InitVal(1, 100, 5)
     Q_VAL_OFFSET : InitVal      = InitVal(-1, 1, 0)
+    # MLE-only contamination / lapse mixture. λ ∈ [0, 1). Per-trial likelihood
+    # becomes (1-λ)·L_DDM + λ/(2·T_max). Default initial 0.02 floors per-trial
+    # loglik at log(0.02/(2·T_max)) ≈ -5.8 instead of LOGLIK_FLOOR's -691,
+    # so DE isn't dominated by a handful of anticipations / fast guesses.
+    # Disable for an experiment via `--init-val LAPSE_RATE=0,0,0`. Only used
+    # by the MLE path — the chisq fit silently ignores it.
+    LAPSE_RATE : InitVal        = InitVal(0.0, 1, 0.02)
 
     def __init__(self):
         self._extras = {}
         self._removed = {}
+
+    def override(self, name, init_val):
+        """Replace the (Min, Max, Default) tuple for a parameter.
+
+        Routes through ``_extras`` because ``toDict`` does
+        ``asdict(self) | self._extras`` (right side wins). That means the
+        override takes precedence over the dataclass default without us
+        having to mutate the class attribute. Name is case-insensitive but
+        stored uppercase to match the rest of the codebase's convention.
+        """
+        if not isinstance(init_val, InitVal):
+            raise TypeError(
+                f"override expects an InitVal NamedTuple; got "
+                f"{type(init_val).__name__}")
+        self._extras[str(name).upper()] = init_val
 
     def get(self, val):
         return (asdict(self) | self._extras).get(val)
@@ -63,3 +85,10 @@ class InitVals:
 DT = 0.005
 T_dur = 3
 NUM_CPUS = os.cpu_count()
+# Default + valid range for ``mle_terminal_c`` (the threshold C used to
+# partition residual interior mass at t = T_max). Lives outside the
+# ``InitVals`` dataclass because terminal_c is a model-config knob, not a
+# DE-fittable parameter. C = 1.0 IS allowed and is the canonical "legacy
+# survival" setting — routes the entire interior mass to the no-decision
+# bucket, matching the pre-terminal_c behavior.
+MLE_TERMINAL_C = InitVal(Min=0.0, Max=1.0, Default=0.0)

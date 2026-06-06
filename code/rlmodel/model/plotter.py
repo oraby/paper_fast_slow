@@ -44,6 +44,7 @@ def runAndPlot(df, fig, axs, include_Q, include_RewardRate, biasFn, driftFn,
                driftFn_df_cols=[], driftFn_kwargs={},
                noiseFn_df_cols=[], noiseFn_kwargs={},
                is_loss_no_dir=False, cached_subject_df=None,
+               mle_loss=None, mle_loss_source=None,
                verbose=True):
     # print("Updating plots")
 
@@ -114,7 +115,9 @@ def runAndPlot(df, fig, axs, include_Q, include_RewardRate, biasFn, driftFn,
 
 
     subject = df.Name.iloc[0]
-    fig.suptitle(f"{subject} - Loss: {loss:,.2f}")
+    fig.suptitle(_loss_title(
+        subject, chi_square_loss=loss, mle_loss=mle_loss,
+        mle_loss_source=mle_loss_source))
 
     global last_df
     last_df = df
@@ -125,6 +128,26 @@ def runAndPlot(df, fig, axs, include_Q, include_RewardRate, biasFn, driftFn,
     if verbose:
         print(f"Plotting time: {time.time() - time_now:.2f}"); time_now = time.time()
     return loss, df
+
+
+def _loss_title(subject, chi_square_loss, mle_loss=None, mle_loss_source=None):
+    chi_text = _format_loss_value(chi_square_loss)
+    mle_text = _format_loss_value(mle_loss)
+    if mle_loss_source:
+        mle_text = f"{mle_text} ({mle_loss_source})"
+    return (
+        f"{subject} - Chi-Square Loss: {chi_text}, "
+        f"MLE Loss: {mle_text}")
+
+
+def _format_loss_value(value):
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return "not run"
+    if not np.isfinite(value):
+        return "not run"
+    return f"{value:,.2f}"
 
 def plotPlots(df, axs, include_Q, include_RewardRate,
               plot_bias_dir, psych_plot : PsychometricPlot, BOUND,  t_dur, dt,
@@ -428,7 +451,7 @@ def _assignPrevTrial(df):
             df_cur["calcStimulusTime"] = df_tmp.SimRT
         # display(df.head())
         old_idx = df_cur.index
-        df_cur = Chain(CountContPrevOutcome()).run(df_cur)
+        df_cur = Chain(CountContPrevOutcome(), print_descr=False).run(df_cur)
         df_cur = df_cur.loc[old_idx]
         # display(df.head())
         # Convert to float to avoid bool dtype warning

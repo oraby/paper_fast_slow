@@ -101,8 +101,11 @@ def _params():
 
 # --- Validation ---------------------------------------------------------
 
-def test_validate_mle_config_rejects_terminal_c_one_or_more():
-    config = _config(terminal_c=1.0)
+def test_validate_mle_config_rejects_terminal_c_above_one():
+    """C > 1 has no mathematical meaning (threshold beyond the bound) and
+    must still be rejected even after the upper bound is relaxed to
+    include 1.0."""
+    config = _config(terminal_c=1.01)
     with pytest.raises(ValueError, match="mle_terminal_c"):
         validate_mle_config(config)
 
@@ -113,9 +116,12 @@ def test_validate_mle_config_rejects_terminal_c_negative():
         validate_mle_config(config)
 
 
-def test_validate_mle_config_accepts_terminal_c_zero_and_close_to_one():
+def test_validate_mle_config_accepts_terminal_c_zero_close_to_one_and_one():
+    """C = 1.0 IS valid — it routes the whole interior mass to the
+    no-decision bucket (the legacy survival behavior)."""
     validate_mle_config(_config(terminal_c=0.0))
     validate_mle_config(_config(terminal_c=0.999))
+    validate_mle_config(_config(terminal_c=1.0))
 
 
 # --- C = 0: no-choice likelihood should be LOGLIK_FLOOR ----------------
@@ -144,14 +150,15 @@ def test_c_zero_collapses_no_choice_likelihood_to_floor():
 # --- C close to 1: reproduces legacy survival behavior -----------------
 
 def test_c_close_to_one_reproduces_full_survival():
-    """When C is large enough that every bin center falls within `|x| <= C*B`,
-    terminal_no_decision_mass equals the full survival mass, and no-choice
-    log-likelihood matches log(survival_at_tmax) — the pre-feature behavior.
+    """When C = 1 the threshold equals the bound, so every interior bin
+    center automatically falls within ``|x| <= C·B`` and
+    ``terminal_no_decision_mass`` equals the full survival mass exactly.
+    Per-trial loglik for a no-choice trial matches ``log(survival_at_tmax)``.
     """
     df = _df_with_no_choice_trial()
-    # dx=0.1, bound=1 → bin centers at ±0.95, ±0.85, ..., ±0.05.
-    # C=0.99 makes the threshold 0.99, so 0.95 < 0.99 — every bin counts.
-    config = _config(terminal_c=0.99)
+    # bound=1, C=1 → threshold = 1, all bin centers strictly less than 1
+    # → no_decision_mask is all True → full survival mass.
+    config = _config(terminal_c=1.0)
     result = evaluate_neg_loglik(_params(), df, config, return_df=True)
     mle_df = result.mle_df
     no_choice_row = mle_df[mle_df["ChoiceLeft"].isna()]
@@ -168,7 +175,8 @@ def test_c_close_to_one_reproduces_full_survival():
 
 def test_terminal_masses_partition_survival():
     """terminal_upper + terminal_lower + terminal_no_decision == survival
-    inside the solver, for any C in [0, 1)."""
+    inside the solver, for any C in [0, 1] — including the boundary
+    C = 1 where the entire interior mass routes to no-decision."""
     from scipy.special import ndtr
 
     solver = BatchedDiffusionSolver(
@@ -185,7 +193,7 @@ def test_terminal_masses_partition_survival():
     sigma = np.array([1.0, 1.0, 1.0, 1.0])
     valid = np.array([True, True, True, True])
 
-    for c in [0.0, 0.25, 0.5, 0.99]:
+    for c in [0.0, 0.25, 0.5, 0.99, 1.0]:
         out = solver.solve(z, mu, sigma, valid, bound, dt, dx, tmax,
                            terminal_c=c)
         survival = np.asarray(out.survival_xp)

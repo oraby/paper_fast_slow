@@ -1,4 +1,4 @@
-from .model.initvals import NUM_CPUS, InitVals, DT, T_dur
+from .model.initvals import NUM_CPUS, InitVal, InitVals, MLE_TERMINAL_C, DT, T_dur
 from .model import fit
 from .model.drift import DRIFT_FN_DICT
 from .model.bias import BIAS_FN_DICT
@@ -17,8 +17,14 @@ def loadDF(min_valid_trials=0, accepts_subjects=[], df_fp=DF_FP):
     df_behavior = pd.read_pickle(df_fp)
     if "EarlyWithdrawal" in df_behavior.columns:
         df_ewd = df_behavior[df_behavior.EarlyWithdrawal == 1]
+        # Earlywithdrawl trials are never rewarded
+        df_behavior.loc[df_ewd.index, "ChoiceCorrect"] = 0
+        df_behavior.loc[df_ewd.index, "valid"] = False # Don't contribute to calculations
         # print(df_ewd.ChoiceCorrect.isnull().sum(), df_ewd.ChoiceLeft.notnull().sum())
-        df_behavior.loc[df_ewd.index, "ChoiceLeft"] = \
+        df_ewd_unknown_choices = df_behavior[df_behavior.index.isin(df_ewd.index) &
+                                             df_behavior.ChoiceLeft.isnull()]
+        # Assign them as random decisions directions
+        df_behavior.loc[df_ewd_unknown_choices.index, "ChoiceLeft"] = \
                         np.random.choice([0, 1], size=len(df_ewd), p=[0.5, 0.5])
     else:
         print("TODO: EarlyWithdrawal trials are not included, results may differ")
@@ -27,8 +33,9 @@ def loadDF(min_valid_trials=0, accepts_subjects=[], df_fp=DF_FP):
     print(f"Nullifying: {nullify_mask.sum():,}/{len(df_behavior):,} trials "
           f"with calcStimulusTime > {T_dur}s (of which "
           f"{df_behavior[nullify_mask].valid.sum():,} are valid trials)")
-    df_behavior.loc[nullify_mask, "ChoiceCorrect"] = np.nan # Treat as no choice
-    df_behavior.loc[nullify_mask, "calcStimulusTime"] = np.nan # Treat as no decision time
+    #df_behavior.loc[nullify_mask, "ChoiceCorrect"] = np.nan # Treat as no choice
+    #df_behavior.loc[nullify_mask, "calcStimulusTime"] = np.nan # Treat as no decision time
+    df_behavior.loc[nullify_mask, "valid"] = False # Don't contribute to calculations
     accepted_subjecteds = []
     for name, subject_df in df_behavior.groupby("Name"):
         subject_df_valid = subject_df[subject_df.valid]
@@ -43,11 +50,42 @@ def loadDF(min_valid_trials=0, accepts_subjects=[], df_fp=DF_FP):
     return df_behavior
 
 
+def _parse_init_val_overrides(specs):
+    """Parse repeated ``--init-val NAME=MIN,MAX[,DEFAULT]`` into a dict.
+
+    Returns ``{NAME_UPPERCASE: InitVal(Min, Max, Default)}``. Two-value form
+    fills DEFAULT with the midpoint of (MIN, MAX). Raises ValueError with a
+    pointed message on malformed entries so argparse can surface it.
+    """
+    overrides = {}
+    for spec in specs or []:
+        if "=" not in spec:
+            raise ValueError(
+                f"--init-val expects NAME=MIN,MAX[,DEFAULT]; got {spec!r}")
+        name, rhs = spec.split("=", 1)
+        parts = [p.strip() for p in rhs.split(",")]
+        if len(parts) not in (2, 3):
+            raise ValueError(
+                f"--init-val NAME=MIN,MAX[,DEFAULT] expects 2 or 3 comma-"
+                f"separated floats; got {len(parts)} in {spec!r}")
+        try:
+            nums = [float(p) for p in parts]
+        except ValueError as exc:
+            raise ValueError(
+                f"--init-val {spec!r}: could not parse as floats ({exc})"
+            ) from None
+        mn, mx = nums[0], nums[1]
+        default = nums[2] if len(nums) == 3 else 0.5 * (mn + mx)
+        overrides[name.strip().upper()] = InitVal(mn, mx, default)
+    return overrides
+
+
 def runModel(df, bias_fn_str, drift_fn_str, noise_fn_str, is_loss_no_dir,
              fit_mode, evolve_res : dict = None, num_cpus=None,
              dry_run=False, mle_array_backend="numpy", mle_device_id=None,
              mle_cupy_fallback="error", mle_gpu_memory_gb=None,
-             mle_show_progress=False, mle_terminal_c=0.0):
+             mle_show_progress=False, mle_terminal_c=MLE_TERMINAL_C.Default,
+             init_val_overrides=None):
     biasFn = BIAS_FN_DICT[bias_fn_str]
     driftFn = DRIFT_FN_DICT[drift_fn_str]
     noiseFn = NOISE_FN_DICT[noise_fn_str]
@@ -55,6 +93,11 @@ def runModel(df, bias_fn_str, drift_fn_str, noise_fn_str, is_loss_no_dir,
         evolve_res = {}
 
     init_vals = InitVals()
+    if init_val_overrides:
+        for name, iv in init_val_overrides.items():
+            init_vals.override(name, iv)
+            print(f"InitVals override: {name} -> (min={iv.Min}, "
+                  f"max={iv.Max}, default={iv.Default})")
     init_vals_dict = init_vals.toDict()
 
     evolve_res_res = fit.simulateDDM(df,
@@ -113,16 +156,28 @@ def main():
                         help="Show a transient tqdm progress bar for each "
                              "vectorized MLE diffusion solve. Enabled "
                              "automatically for --mle-backend GPU.")
-    parser.add_argument("--mle-terminal-c", type=float, default=0.0,
-                        help="Terminal-time no-decision band fraction C in "
-                             "[0, 1). At t=T_max, residual mass with |x| > "
-                             "C*B is reassigned to the closest choice; |x| "
-                             "<= C*B remains no-decision mass used as the "
-                             "no-choice likelihood. C=0 (default) forces "
-                             "all residual mass to a choice; C close to 1 "
-                             "reproduces the legacy survival-only "
-                             "behavior. Only honored by the batched MLE "
-                             "path (which is the default).")
+    parser.add_argument(
+        "--init-val", action="append", default=[],
+        metavar="NAME=MIN,MAX[,DEFAULT]",
+        help="Override the (min, max, default) tuple for a fittable "
+             "parameter from model/initvals.py. Repeatable. NAME is matched "
+             "case-insensitively. If DEFAULT is omitted, the midpoint of "
+             "(MIN, MAX) is used. Example: "
+             "--init-val NON_DECISION_TIME=0.0,0.4,0.1 "
+             "--init-val DRIFT_COEF=0,5")
+    parser.add_argument(
+        "--mle-terminal-c", type=float,
+        default=MLE_TERMINAL_C.Default,
+        help=(
+            "Terminal-time no-decision band fraction C in "
+            f"[{MLE_TERMINAL_C.Min}, {MLE_TERMINAL_C.Max}]. At t=T_max, "
+            "residual mass with |x| > C*B is reassigned to the closest "
+            "choice; |x| <= C*B remains no-decision mass used as the "
+            f"no-choice likelihood. C={MLE_TERMINAL_C.Default} (default) "
+            f"forces all residual mass to a choice; "
+            f"C={MLE_TERMINAL_C.Max} reproduces the legacy survival-only "
+            "behavior. Only honored by the batched MLE path (which is "
+            "the default)."))
     parser.add_argument("--test", action="store_true")
     parser.add_argument("--load-evolve", action="store_true")
     parser.add_argument("--remove-subject", type=str, default=None,
@@ -136,9 +191,15 @@ def main():
     # after parse_args so chisq users aren't forced to pass an unused flag.
     if args.fit_mode == "mle" and args.mle_backend is None:
         parser.error("--mle-backend {CPU,GPU} is required when --fit-mode mle")
-    if not (0.0 <= args.mle_terminal_c < 1.0):
+    if not (MLE_TERMINAL_C.Min <= args.mle_terminal_c <= MLE_TERMINAL_C.Max):
         parser.error(
-            f"--mle-terminal-c must satisfy 0 <= C < 1; got {args.mle_terminal_c}")
+            f"--mle-terminal-c must satisfy "
+            f"{MLE_TERMINAL_C.Min} <= C <= {MLE_TERMINAL_C.Max}; "
+            f"got {args.mle_terminal_c}")
+    try:
+        init_val_overrides = _parse_init_val_overrides(args.init_val)
+    except ValueError as exc:
+        parser.error(str(exc))
 
     # Translate the user-facing CPU/GPU knob into the two internal flags that
     # mle.MLEModelConfig + array_backend.resolve_array_backend understand:
@@ -186,7 +247,8 @@ def main():
                                   mle_cupy_fallback=mle_cupy_fallback,
                                   mle_gpu_memory_gb=args.mle_gpu_memory_gb,
                                   mle_show_progress=mle_show_progress,
-                                  mle_terminal_c=args.mle_terminal_c)
+                                  mle_terminal_c=args.mle_terminal_c,
+                                  init_val_overrides=init_val_overrides)
     else:
         runModel(df_behavior, bias_fn_str=args.bias, drift_fn_str=args.drift,
                  noise_fn_str=args.noise, num_cpus=args.num_cpus,
@@ -198,7 +260,8 @@ def main():
                  mle_cupy_fallback=mle_cupy_fallback,
                  mle_gpu_memory_gb=args.mle_gpu_memory_gb,
                  mle_show_progress=mle_show_progress,
-                 mle_terminal_c=args.mle_terminal_c)
+                 mle_terminal_c=args.mle_terminal_c,
+                 init_val_overrides=init_val_overrides)
 
 
 

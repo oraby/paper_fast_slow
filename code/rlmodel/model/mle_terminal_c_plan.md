@@ -9,12 +9,20 @@ to `LOGLIK_FLOOR`). The fitter therefore prefers parameters that leave a lot of
 residual interior mass when the subject made no choice — even though in real
 data a true *terminal* no-choice is rare.
 
-We add a configurable threshold `C ∈ [0, 1)` so that at `t = T_max` the leftover
+We add a configurable threshold `C ∈ [0, 1]` so that at `t = T_max` the leftover
 interior mass is partitioned by absolute position into three buckets:
 
 - `x >  C · B`  →  treated as a **left** choice (upper bound)
 - `x < -C · B`  →  treated as a **right** choice (lower bound)
 - `|x| ≤ C · B` →  remains genuine **no-decision** mass
+
+The valid range, default, and CLI/argparse parser all draw from a single
+source of truth: `MLE_TERMINAL_C = InitVal(0.0, 1.0, 0.0)` defined as a
+module-level constant in `rlmodel/model/initvals.py` (lives outside the
+`InitVals` dataclass because it's a model-config knob, not a DE-fittable
+parameter). Every site — `MLEModelConfig`, the batched solver, the CLI
+parser, the GUI slider — imports `MLE_TERMINAL_C` and uses its `.Default`,
+`.Min`, `.Max` fields, so changing the range or default is a one-line edit.
 
 Special cases (sanity checks):
 
@@ -22,10 +30,13 @@ Special cases (sanity checks):
                  The discrete grid uses bin centers at `±dx/2, ±3dx/2, …`,
                  so the no-decision bucket is empty and no-choice trials
                  collapse to `LOGLIK_FLOOR`.
-- `C → 1⁻`    →  threshold approaches the bound; only mass within the
-                 outer-most bins is redirected, the rest stays no-decision.
-                 Reproduces the current survival-only behavior arbitrarily
-                 closely.
+- `C = 1`     →  threshold equals the bound; every interior bin center
+                 falls in `|x| ≤ C · B`, so the no-decision band contains
+                 the entire interior mass and no-choice likelihood equals
+                 the full survival mass — exactly reproducing the legacy
+                 survival-only behavior (the upper bound was relaxed from
+                 `< 1` to `≤ 1` so this boundary is the canonical
+                 "legacy survival" setting).
 
 ## Scope
 

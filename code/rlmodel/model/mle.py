@@ -6,6 +6,7 @@ import pandas as pd
 
 from . import state_updates
 from .array_backend import asnumpy, resolve_array_backend
+from .initvals import MLE_TERMINAL_C
 from .mle_batch import (
     BatchedLikelihoodResult,
     BatchedDiffusionSolver,
@@ -39,7 +40,7 @@ class MLEModelConfig:
     mle_gpu_memory_gb: float | None = None
     mle_use_batched_likelihood: bool = True
     mle_show_progress: bool = False
-    mle_terminal_c: float = 0.0
+    mle_terminal_c: float = MLE_TERMINAL_C.Default
 
     @property
     def uses_q_bias(self):
@@ -110,9 +111,10 @@ def validate_mle_config(model_config):
     if model_config.mle_gpu_memory_gb is not None and model_config.mle_gpu_memory_gb <= 0:
         raise ValueError("mle_gpu_memory_gb must be positive")
     c = float(model_config.mle_terminal_c)
-    if not (0.0 <= c <= 1.0):
+    if not (MLE_TERMINAL_C.Min <= c <= MLE_TERMINAL_C.Max):
         raise ValueError(
-            f"mle_terminal_c must satisfy 0 <= C < 1; got {c}.")
+            f"mle_terminal_c must satisfy "
+            f"{MLE_TERMINAL_C.Min} <= C <= {MLE_TERMINAL_C.Max}; got {c}.")
 
 
 def params_from_vector(x, params_names):
@@ -222,6 +224,7 @@ def objective_from_population(x_matrix, params_names, df, model_config):
     no_choice_stack = pop_latents["no_choice"]
     bounds = pop_latents["bounds"]
     nondec = pop_latents["non_decision_time"]
+    lapse_per_cand = pop_latents["lapse_rate"]
 
     # Phase 2: solver requires uniform BOUND across the chunk (it sets up
     # x_grid from bound). In the default config BOUND is fixed at 1, so this
@@ -255,6 +258,9 @@ def objective_from_population(x_matrix, params_names, df, model_config):
         backend.xp, backend_arrays, "observed_rt_flat", n_valid)
     flat_nondec = backend.xp.repeat(
         backend.xp.asarray(nondec[valid_cand_idx], dtype=float), n_trials)
+    flat_lapse = backend.xp.repeat(
+        backend.xp.asarray(lapse_per_cand[valid_cand_idx], dtype=float),
+        n_trials)
 
     flat_z = z_stack[valid_cand_idx].reshape(-1)
     flat_sigma = sigma_stack[valid_cand_idx].reshape(-1)
@@ -293,6 +299,7 @@ def objective_from_population(x_matrix, params_names, df, model_config):
         normal_cdf=backend.normal_cdf,
         solver=solver,
         terminal_c=float(model_config.mle_terminal_c),
+        lapse_rate=flat_lapse,
     )
 
     # Phase 6: reshape (S_valid * N,) → (S_valid, N) and aggregate.
@@ -498,6 +505,8 @@ def _compute_latent_population_equal_sessions(data, x_matrix, params_names,
     q_coef = _param_population(theta, param_lookup, "Q_VAL_COEF", xp, 0.0)
     q_decay_rate = _param_population(
         theta, param_lookup, "Q_VAL_DECAY_RATE", xp, 1.0)
+    lapse_rate = _param_population(
+        theta, param_lookup, "LAPSE_RATE", xp, 0.0)
 
     q_left = xp.full((n_candidates, n_sessions), 0.5, dtype=float)
     q_right = xp.full((n_candidates, n_sessions), 0.5, dtype=float)
@@ -671,6 +680,7 @@ def _compute_latent_population_equal_sessions(data, x_matrix, params_names,
         "no_choice": asnumpy(xp, no_choice_flat).astype(bool),
         "bounds": asnumpy(xp, bounds),
         "non_decision_time": asnumpy(xp, nondec),
+        "lapse_rate": asnumpy(xp, lapse_rate),
     }
 
 
@@ -736,6 +746,7 @@ def _compute_latent_arrays(data, params, model_config):
         "q_left_after": q_left_after,
         "q_right_after": q_right_after,
         "reward_rate_after": reward_rate_after,
+        "lapse_rate": float(_param(params, "LAPSE_RATE", 0.0)),
     }
 
 
@@ -870,6 +881,7 @@ def _evaluate_trial_likelihoods_rowwise(data, latents, params, model_config):
             tmax=model_config.t_dur,
             diffusion_backend=model_config.diffusion_backend,
             no_choice=latents["no_choice"][i],
+            lapse_rate=latents["lapse_rate"],
         ))
     return likes, {
         "requested_backend": "rowwise",
@@ -909,6 +921,7 @@ def _evaluate_trial_likelihoods_batched(data, latents, params, model_config,
         normal_cdf=backend.normal_cdf,
         solver=solver,
         terminal_c=float(model_config.mle_terminal_c),
+        lapse_rate=float(latents["lapse_rate"]),
     )
     info = backend.metadata()
     info["likelihood_evaluator"] = "batched"
@@ -957,6 +970,7 @@ def _build_mle_df(data, latents, like_result):
         mu_display = mu
     else:
         mu_display = mu[:, 0]
+    n_rows = len(data.sorted_index)
     latent_df = pd.DataFrame({
         "_row_index": data.sorted_index,
         "mle_Q_left_before": latents["q_left_before"],
@@ -966,6 +980,8 @@ def _build_mle_df(data, latents, like_result):
         "mle_z": latents["z"],
         "mle_mu": mu_display,
         "mle_sigma": latents["sigma"],
+        "mle_lapse_rate": np.full(
+            n_rows, float(latents.get("lapse_rate", 0.0)), dtype=float),
         "mle_decision_time_observed": like_result.decision_time,
         "mle_choice_prob_or_density": like_result.choice_prob_or_density,
         "mle_loglik": like_result.loglik,

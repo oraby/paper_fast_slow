@@ -50,12 +50,20 @@ def _is_valid_solver_input(z, mu, sigma, bound, dt, dx, tmax):
 
 def trial_choice_rt_loglik(observed_choice_left, observed_rt, z, mu, sigma,
                            bound, non_decision_time, dt, dx, tmax, *,
-                           diffusion_backend="auto", no_choice=False):
+                           diffusion_backend="auto", no_choice=False,
+                           lapse_rate=0.0):
     """Return the choice+RT log likelihood for one observed trial.
 
     ``observed_choice_left=1`` maps to the upper absorbing bound, matching the
     existing simulation code. No-choice trials contribute the full survival
     mass at ``tmax``.
+
+    ``lapse_rate`` (λ, in [0, 1)) applies a uniform-RT, uniform-choice
+    contamination mixture: per-trial likelihood becomes
+    ``(1 - λ) * L_DDM + λ / (2 * tmax)``. Same formula for choice and
+    no-choice trials (user's design decision in
+    ``mle_lapse_rate_plan.md``). Default 0.0 reproduces the legacy
+    likelihood exactly.
 
     NOTE: this rowwise path does **not** honor ``mle_terminal_c`` — that
     feature is only implemented for the batched path
@@ -87,17 +95,33 @@ def trial_choice_rt_loglik(observed_choice_left, observed_rt, z, mu, sigma,
             return _floor_likelihood(decision_time=np.nan)
 
         decision_time = observed_rt - float(non_decision_time)
-        if decision_time <= 0 or decision_time > tmax:
+        if decision_time > tmax:
+            # RT outside the lapse support [0, tmax]; mixture would
+            # contribute 0 too, so floor unconditionally.
             return _floor_likelihood(decision_time=decision_time)
 
-        idx = int(np.ceil(decision_time / dt)) - 1
-        idx = min(max(idx, 0), len(result.times) - 1)
-        if int(observed_choice_left) == 1:
-            likelihood = float(np.asarray(result.f_upper)[idx])
+        if decision_time <= 0:
+            # RT ≤ T0: impossible under DDM, plausible under the lapse
+            # model (observed RT is in (0, T_max]). Set L_DDM = 0 so the
+            # mixture below contributes λ/(2·tmax); when λ=0 the floor
+            # clamp at the bottom catches it.
+            likelihood = 0.0
         else:
-            likelihood = float(np.asarray(result.f_lower)[idx])
+            idx = int(np.ceil(decision_time / dt)) - 1
+            idx = min(max(idx, 0), len(result.times) - 1)
+            if int(observed_choice_left) == 1:
+                likelihood = float(np.asarray(result.f_upper)[idx])
+            else:
+                likelihood = float(np.asarray(result.f_lower)[idx])
 
     likelihood = float(likelihood)
+    # Lapse / contamination mixture: (1-λ) * L_DDM + λ / (2*tmax). Same
+    # formula for choice and no-choice trials per the user's design
+    # decision (see ``mle_lapse_rate_plan.md``). λ=0 is a no-op.
+    lapse_rate = float(lapse_rate)
+    if lapse_rate != 0.0:
+        likelihood = ((1.0 - lapse_rate) * likelihood
+                      + lapse_rate / (2.0 * float(tmax)))
     if not np.isfinite(likelihood) or likelihood <= 0:
         likelihood = LOGLIK_FLOOR
     return TrialLikelihood(

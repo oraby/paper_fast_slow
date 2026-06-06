@@ -3,6 +3,7 @@ from .drift import DRIFT_FN_DICT
 from .noise import NOISE_FN_DICT
 from .logic import makeOneRun
 from .array_backend import assert_gpu_backend, resolve_array_backend
+from .initvals import MLE_TERMINAL_C
 from .mle import (
     MLEModelConfig,
     estimate_population_settings,
@@ -311,7 +312,7 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
                 dry_run=False, mle_array_backend="numpy",
                 mle_device_id=None, mle_cupy_fallback="error",
                 mle_gpu_memory_gb=None, mle_show_progress=False,
-                mle_terminal_c=0.0):
+                mle_terminal_c=MLE_TERMINAL_C.Default):
     global _pool
     if fit_mode != "chisq":
         if fit_mode != "mle":
@@ -394,6 +395,13 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
                                driftFn_kwargs_li, noiseFn_kwargs_li,
                                biasFn_kwargs_li)
                     for x in li}
+    # MLE-only fittable parameters: don't go through driftFn/biasFn/noiseFn or
+    # makeOneRun, so they wouldn't otherwise enter the fit vector. The chisq
+    # path silently ignores LAPSE_RATE; only the MLE objective consumes it.
+    mle_only_param_names = (
+        {"LAPSE_RATE"} if fit_mode == "mle" else set())
+    for mle_only in mle_only_param_names:
+        fit_params_li.add(assertInBoundsAndDefaults(mle_only))
     fit_params_li = list(fit_params_li)
     fit_params_names, fit_params_bounds, fit_params_init = zip(*fit_params_li)
     # Converto to lists
@@ -458,7 +466,13 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
       f"Unused (look TODO) fixed params: {fixed_params_names[unused_fix_idxs]}")
     used_fit_idxs = (set(logicFn_fit_idxs) | set(driftFn_fit_idxs) |
                      set(noiseFn_fit_idxs) | set(biasFn_fit_idxs))
-    unused_fit_idxs = list(set(range(len(fit_params_names))) - used_fit_idxs)
+    # MLE-only params (LAPSE_RATE) deliberately don't dispatch to any sub-fn
+    # — they're consumed by the MLE objective directly. Exclude them from
+    # the "every fit param is used by a dispatch table" assertion.
+    mle_only_fit_idxs = {i for i, n in enumerate(fit_params_names)
+                         if str(n).upper() in mle_only_param_names}
+    unused_fit_idxs = list(
+        set(range(len(fit_params_names))) - used_fit_idxs - mle_only_fit_idxs)
     assert not len(unused_fit_idxs), (
                       f"Unused fit params: {fit_params_names[unused_fit_idxs]}")
 
