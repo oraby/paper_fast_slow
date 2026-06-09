@@ -11,7 +11,7 @@ import pandas as pd
 from ..first_passage import first_passage_density
 from ..array_backend import resolve_array_backend
 from ..mle import _compute_mu, evaluate_neg_loglik
-from .data import MLEModelResult, fitted_params_from_result, result_key
+from .data import MLEModelResult, fitted_params_from_result
 
 
 @dataclass(frozen=True)
@@ -49,6 +49,23 @@ class DDMFrameData:
     requested_backend: str
     actual_backend: str
     backend_warning: str | None
+    # Contamination / lapse-mixture fields. Defaults preserve the legacy
+    # (no-mixture) interpretation so tests and callers that don't care
+    # about lapse keep working unchanged. ``lapse_baseline_density`` is
+    # ``λ/(2·tmax)`` — the per-time-unit floor on any (choice, RT) point.
+    # ``terminal_no_decision_likelihood`` is the post-mixture value used
+    # as the no-choice trial's per-trial likelihood:
+    # ``(1-λ)·terminal_no_decision_mass + λ/(2·tmax)``.
+    lapse_rate: float = 0.0
+    lapse_baseline_density: float = 0.0
+    terminal_no_decision_likelihood: float = 0.0
+    # Per-trial diagnostics surfaced in the figure title: the trial's
+    # stimulus DV, the likelihood ``L = mle_choice_prob_or_density`` and
+    # its log ``logL = mle_loglik``. NaN-defaulted so legacy fixtures
+    # without these columns still construct a frame.
+    dv: float = float("nan")
+    choice_prob_or_density: float = float("nan")
+    loglik: float = float("nan")
 
 
 @dataclass(frozen=True)
@@ -74,6 +91,14 @@ class DDMTrialBuffer:
     requested_backend: str
     actual_backend: str
     backend_warning: str | None
+    # See DDMFrameData for the semantics of these three fields.
+    lapse_rate: float = 0.0
+    lapse_baseline_density: float = 0.0
+    terminal_no_decision_likelihood: float = 0.0
+    # Per-trial diagnostics — see DDMFrameData.
+    dv: float = float("nan")
+    choice_prob_or_density: float = float("nan")
+    loglik: float = float("nan")
 
     def frame_at_step(self, current_step: int | None = None) -> DDMFrameData:
         n_steps = len(self.times)
@@ -107,6 +132,12 @@ class DDMTrialBuffer:
             requested_backend=self.requested_backend,
             actual_backend=self.actual_backend,
             backend_warning=self.backend_warning,
+            lapse_rate=self.lapse_rate,
+            lapse_baseline_density=self.lapse_baseline_density,
+            terminal_no_decision_likelihood=self.terminal_no_decision_likelihood,
+            dv=self.dv,
+            choice_prob_or_density=self.choice_prob_or_density,
+            loglik=self.loglik,
         )
 
 
@@ -194,6 +225,26 @@ def build_ddm_trial_buffer(
     terminal_upper, terminal_lower, terminal_no_decision = _terminal_masses(
         x_grid, p_at_tmax, bound, float(model_config.mle_terminal_c))
 
+    # Lapse / contamination mixture. The lapse parameter is fit by DE for
+    # MLE results, so it lives in the fitted params dict (and is also
+    # exposed per-trial in mle_df via _build_mle_df). Pre-compute the
+    # baseline density and the post-mixture no-choice likelihood once so
+    # the plotter doesn't repeat the math each frame.
+    tmax_val = float(model_config.t_dur)
+    lapse_rate = float(params.get("LAPSE_RATE", 0.0))
+    lapse_baseline_density = (
+        lapse_rate / (2.0 * tmax_val) if tmax_val > 0.0 else 0.0)
+    terminal_no_decision_likelihood = (
+        (1.0 - lapse_rate) * terminal_no_decision + lapse_baseline_density)
+
+    # Per-trial diagnostics for the figure title. ``DV`` is the trial's
+    # stimulus value, ``mle_choice_prob_or_density`` is the per-trial
+    # likelihood L, and ``mle_loglik`` is log(L). ``float(NaN)`` is NaN,
+    # so missing columns/values surface cleanly as ``nan`` in the title.
+    dv_value = float(row["DV"])
+    choice_prob_value = float(row.get("mle_choice_prob_or_density", np.nan))
+    loglik_value = float(row.get("mle_loglik", np.nan))
+
     return DDMTrialBuffer(
         times=np.asarray(fpr.times),
         upper_density=np.asarray(fpr.f_upper),
@@ -204,7 +255,7 @@ def build_ddm_trial_buffer(
         p_at_tmax=p_at_tmax,
         bound=bound,
         dt=float(model_config.dt),
-        tmax=float(model_config.t_dur),
+        tmax=tmax_val,
         terminal_c=float(model_config.mle_terminal_c),
         terminal_no_decision_mass=terminal_no_decision,
         terminal_upper_mass=terminal_upper,
@@ -216,6 +267,12 @@ def build_ddm_trial_buffer(
         requested_backend=backend.requested_backend,
         actual_backend=backend.actual_backend,
         backend_warning=backend.warning,
+        lapse_rate=lapse_rate,
+        lapse_baseline_density=lapse_baseline_density,
+        terminal_no_decision_likelihood=terminal_no_decision_likelihood,
+        dv=dv_value,
+        choice_prob_or_density=choice_prob_value,
+        loglik=loglik_value,
     )
 
 
@@ -274,6 +331,26 @@ def plot_ddm_frame(frame: DDMFrameData, ax=None):
                     color="C0", alpha=0.45, label="upper density")
     ax.fill_between(t, -frame.bound, -frame.bound - lower * scale,
                     color="C3", alpha=0.45, label="lower density")
+
+    # Lapse baseline overlay: a dashed reference at the mixture term
+    # ``λ/(2·T_max)`` on both density panels. Anything below this level
+    # is dominated by the lapse contribution rather than the DDM — moving
+    # the LAPSE_RATE slider up/down raises/lowers this line. Kept thin
+    # and dashed so it doesn't compete with the density fills visually.
+    if frame.lapse_rate > 0.0 and frame.lapse_baseline_density > 0.0:
+        baseline_height = frame.lapse_baseline_density * scale
+        ax.hlines(
+            y=frame.bound + baseline_height,
+            xmin=0, xmax=frame.tmax,
+            color="C0", lw=1.0, ls="--", alpha=0.55,
+            label=f"upper lapse floor (λ/(2·T)={frame.lapse_baseline_density:.3g})",
+        )
+        ax.hlines(
+            y=-frame.bound - baseline_height,
+            xmin=0, xmax=frame.tmax,
+            color="C3", lw=1.0, ls="--", alpha=0.55,
+            label="lower lapse floor",
+        )
     ax.plot(
         frame.current_time + frame.current_state_mass * internal_scale,
         frame.x_grid,
@@ -310,33 +387,71 @@ def plot_ddm_frame(frame: DDMFrameData, ax=None):
         alpha=0.65,
         label="terminal no-decision mass",
     )
+    # Annotate the terminal no-decision bar with the raw DDM mass and,
+    # when the lapse mixture is active, the post-mixture no-choice
+    # likelihood `(1-λ)·mass + λ/(2·T_max)`. The post-mixture value is
+    # what actually goes into the loss for no-choice trials, so this is
+    # the more useful number when comparing against ``mle_loglik``.
+    if frame.lapse_rate > 0.0:
+        terminal_label = (
+            f"mass={frame.terminal_no_decision_mass * 100:.1f}% → "
+            f"L={frame.terminal_no_decision_likelihood:.3g}")
+    else:
+        terminal_label = f"{frame.terminal_no_decision_mass * 100:.1f}%"
     ax.text(
         frame.tmax + terminal_bar_width + frame.dt,
         0,
-        f"{frame.terminal_no_decision_mass * 100:.1f}%",
+        terminal_label,
         va="center",
         ha="left",
         fontsize=8,
         color="0.2",
     )
-    if frame.observed_rt is not None:
+    if frame.observed_rt is not None and frame.observed_choice_left is not None:
         decision_time = frame.observed_rt - frame.non_decision_time
-        if decision_time >= 0:
-            color = "C0" if frame.observed_choice_left == 1 else (
-                "C3" if frame.observed_choice_left == 0 else "0.25")
-            ax.axvline(decision_time, color=color, ls="--", lw=1.5,
-                       label="selected RT")
+        choice = frame.observed_choice_left
+        # Anchor the dashed RT marker at the bound the observed choice
+        # actually crossed (upper bound for choice_left=1, lower for =0)
+        # and extend outward to the edge of the visible y-range. Matches
+        # the ylim below: ``[-bound*1.65, bound*1.65]``.
+        if decision_time >= 0 and choice in (0.0, 1.0):
+            if choice == 1.0:
+                color = "C0"
+                y_low, y_high = frame.bound, frame.bound * 1.65
+            else:
+                color = "C3"
+                y_low, y_high = -frame.bound * 1.65, -frame.bound
+            ax.vlines(
+                decision_time, y_low, y_high,
+                color=color, ls="--", lw=1.5,
+                label="selected RT")
 
     terminal_pad = _terminal_no_decision_bar_width(1.0, frame.tmax, frame.dt)
     ax.set_xlim(0, frame.tmax + terminal_pad + frame.dt * 8)
     ax.set_ylim(-frame.bound * 1.65, frame.bound * 1.65)
     ax.set_xlabel("decision time (s)")
     ax.set_ylabel("DDM state / density offset")
+    # Title: top line keeps the trial / step / time identifiers and adds
+    # the trial's stimulus ``DV``; bottom line surfaces the per-trial
+    # likelihood ``loss(L)`` and log-likelihood ``log loss(logL)`` so the
+    # user can see — at a glance — what number the MLE objective sees for
+    # this trial as they sweep sliders.
     ax.set_title(
-        f"trial={frame.trial_index} | step={frame.current_step} | "
-        f"t={frame.current_time:.4f}s")
-    ax.legend(loc="upper right", fontsize=8)
-    fig.tight_layout()
+        f"trial={frame.trial_index} | DV={frame.dv:.3g} | "
+        f"step={frame.current_step} | t={frame.current_time:.4f}s\n"
+        f"loss(L)={frame.choice_prob_or_density:.4g} | "
+        f"log loss(logL)={frame.loglik:.4g}",
+        fontsize=10,
+    )
+    # Legend lives outside the axes on the right so it never overlaps the
+    # density fills or terminal annotation. ``bbox_to_anchor=(1.02, 1)`` in
+    # axes-fraction coords puts the legend's upper-left corner just to the
+    # right of the axes; ``tight_layout(rect=...)`` reserves the matching
+    # strip on the figure so the legend isn't clipped.
+    ax.legend(
+        loc="upper left", bbox_to_anchor=(1.02, 1),
+        fontsize=8, borderaxespad=0)
+    fig.tight_layout(rect=(0, 0, 0.78, 1))
     return fig
 
 
@@ -375,9 +490,24 @@ def show_mle_ddm_viewer(
 
     if not results:
         raise ValueError("No MLE results loaded")
-    by_key = {result_key(item): item for item in results}
-    model_dropdown = widgets.Dropdown(options=sorted(by_key), description="Model")
-    trial_dropdown = widgets.Dropdown(description="Trial")
+    # Nest results as ``subject -> model_name -> MLEModelResult`` so the UI
+    # can offer a Subject dropdown and a per-subject Model dropdown. This
+    # also lets us preserve the SessId / TrialNumber selection when the
+    # user swaps between models for the same subject (the underlying
+    # subject_df — and therefore the SessId / TrialNumber namespace — is
+    # the same across that subject's model fits).
+    by_subject: dict[str, dict[str, MLEModelResult]] = {}
+    for item in results:
+        by_subject.setdefault(item.subject, {})[item.model_name] = item
+    subject_dropdown = widgets.Dropdown(
+        options=sorted(by_subject), description="Subject")
+    model_dropdown = widgets.Dropdown(description="Model")
+    # Two-level trial selector: pick a session (SessId), then a trial within
+    # that session (TrialNumber). The TrialNumber dropdown stores
+    # ``(label, dataframe_index)`` option tuples so its ``.value`` is still
+    # the row index needed by ``build_ddm_trial_buffer``.
+    sess_id_dropdown = widgets.Dropdown(description="SessId")
+    trial_number_dropdown = widgets.Dropdown(description="TrialNumber")
     realtime = widgets.Checkbox(value=False, description="Real-time update")
     run_button = widgets.Button(description="Run", button_style="primary")
     save_button = widgets.Button(description="Save TIFF")
@@ -391,7 +521,7 @@ def show_mle_ddm_viewer(
     terminal_c = widgets.FloatSlider(
         description="C",
         min=0.0,
-        max=0.999,
+        max=1.0,
         step=0.01,
         readout_format=".2f",
         continuous_update=False,
@@ -403,10 +533,88 @@ def show_mle_ddm_viewer(
     progress = widgets.HTML(value="Idle")
     fig, ax = plt.subplots(figsize=(9, 4.8))
 
-    state = SimpleNamespace(sliders={}, trial_buffer=None, buffer_key=None)
+    state = SimpleNamespace(
+        sliders={}, trial_buffer=None, buffer_key=None, valid_df=None)
 
     def selected_item():
-        return by_key[model_dropdown.value]
+        subject = subject_dropdown.value
+        model_name = model_dropdown.value
+        return by_subject[subject][model_name]
+
+    def _current_trial_label():
+        """Return the label of the currently-displayed TrialNumber option."""
+        value = trial_number_dropdown.value
+        if value is None:
+            return None
+        for label, idx in trial_number_dropdown.options:
+            if idx == value:
+                return label
+        return None
+
+    def set_trial_number_options(*_args):
+        """Repopulate TrialNumber dropdown for the currently selected SessId.
+
+        When called from a model swap within the same subject, the previous
+        TrialNumber label is preserved if it still exists in the new
+        model's valid trials — otherwise the first available trial is
+        selected. This keeps the user pinned to the same trial when they
+        only want to compare model fits.
+        """
+        valid_df = state.valid_df
+        sess_id = sess_id_dropdown.value
+        if valid_df is None or sess_id is None or "SessId" not in valid_df.columns:
+            trial_number_dropdown.options = []
+            return
+        prev_label = _current_trial_label()
+        rows = valid_df[valid_df["SessId"] == sess_id]
+        if "TrialNumber" in rows.columns:
+            rows = rows.sort_values("TrialNumber")
+            options = []
+            for idx, trial_no in zip(rows.index, rows["TrialNumber"]):
+                label = (
+                    str(int(trial_no)) if pd.notna(trial_no) and float(trial_no) == int(trial_no)
+                    else (f"{float(trial_no):g}" if pd.notna(trial_no) else str(idx)))
+                options.append((label, idx))
+        else:
+            options = [(str(idx), idx) for idx in rows.index]
+        trial_number_dropdown.options = options
+        if options:
+            target_idx = None
+            if prev_label is not None:
+                for label, idx in options:
+                    if label == prev_label:
+                        target_idx = idx
+                        break
+            trial_number_dropdown.value = (
+                target_idx if target_idx is not None else options[0][1])
+
+    def set_subject_models(*_args):
+        """Repopulate the Model dropdown for the currently selected Subject.
+
+        Preserves the previously-chosen model_name when it also exists for
+        the new subject. Always ensures ``set_model_controls`` runs once at
+        the end so the figure refreshes — even if the model name is
+        preserved (and therefore no ``model_dropdown.value`` change fires
+        the model observer).
+        """
+        subject = subject_dropdown.value
+        if subject is None or subject not in by_subject:
+            model_dropdown.options = []
+            return
+        models = sorted(by_subject[subject])
+        prev_model = model_dropdown.value
+        model_dropdown.options = models
+        if not models:
+            return
+        # Always explicitly assign .value: when the dropdown was empty
+        # (.value=None) some ipywidgets versions don't auto-promote to the
+        # first new option, which would leave .value=None and break
+        # selected_item(). When the new value matches the prior one this
+        # is a no-op; otherwise the model observer fires (idempotently
+        # before the explicit set_model_controls() below).
+        target_model = prev_model if prev_model in models else models[0]
+        model_dropdown.value = target_model
+        set_model_controls()
 
     def set_model_controls(*_args):
         item = selected_item()
@@ -414,10 +622,29 @@ def show_mle_ddm_viewer(
         tmax.value = float(cfg.t_dur)
         terminal_c.value = float(cfg.mle_terminal_c)
         df = item.result["mle_df"]
-        valid_idx = list(df.index[df["mle_valid_for_loss"]]) if df is not None else []
-        trial_dropdown.options = valid_idx
-        if valid_idx:
-            trial_dropdown.value = valid_idx[0]
+        if df is not None:
+            valid_df = df[df["mle_valid_for_loss"]]
+        else:
+            valid_df = None
+        state.valid_df = valid_df
+        if valid_df is not None and len(valid_df) and "SessId" in valid_df.columns:
+            sess_ids = sorted(valid_df["SessId"].dropna().unique().tolist())
+        else:
+            sess_ids = []
+        prev_sess_id = sess_id_dropdown.value
+        sess_id_dropdown.options = sess_ids
+        if sess_ids:
+            # Preserve the previous SessId when the new model fits the same
+            # subject (the common case for a model swap); otherwise fall
+            # back to the first session.
+            target_sess = prev_sess_id if prev_sess_id in sess_ids else sess_ids[0]
+            sess_id_dropdown.value = target_sess
+            # Setting .value to the SAME thing doesn't fire the observer,
+            # so call the cascade explicitly to ensure the TrialNumber
+            # options reflect the new model's valid trials.
+            set_trial_number_options()
+        else:
+            trial_number_dropdown.options = []
         state.sliders = {}
         children = []
         for spec in parameter_slider_specs(item.result):
@@ -449,7 +676,8 @@ def show_mle_ddm_viewer(
         rt_key = None if selected_rt is None else float(selected_rt)
         return (
             model_dropdown.value,
-            trial_dropdown.value,
+            sess_id_dropdown.value,
+            trial_number_dropdown.value,
             params_key,
             float(tmax.value),
             float(terminal_c.value),
@@ -478,7 +706,7 @@ def show_mle_ddm_viewer(
         state.trial_buffer = build_ddm_trial_buffer(
             item.result,
             params=params_from_sliders(),
-            trial_index=trial_dropdown.value,
+            trial_index=trial_number_dropdown.value,
             tmax=float(tmax.value),
             observed_choice_left=selected_choice,
             observed_rt=selected_rt,
@@ -505,7 +733,8 @@ def show_mle_ddm_viewer(
             warning = f"; {frame.backend_warning}" if frame.backend_warning else ""
             status.value = (
                 f"t={frame.current_time:.4f}s, trial={frame.trial_index}, "
-                f"C={frame.terminal_c:.2f}, backend={frame.actual_backend}{warning}")
+                f"C={frame.terminal_c:.2f}, λ={frame.lapse_rate:.4g}, "
+                f"backend={frame.actual_backend}{warning}")
         finally:
             progress.value = "Idle"
 
@@ -529,17 +758,26 @@ def show_mle_ddm_viewer(
         finally:
             progress.value = "Idle"
 
+    subject_dropdown.observe(set_subject_models, names="value")
     model_dropdown.observe(set_model_controls, names="value")
+    # SessId only cascades into TrialNumber options; the resulting
+    # trial_number_dropdown value change triggers maybe_update by itself,
+    # so we don't observe sess_id for maybe_update directly.
+    sess_id_dropdown.observe(set_trial_number_options, names="value")
     time_slider.observe(lambda change: redraw(), names="value")
-    for widget in (trial_dropdown, tmax, terminal_c, choice, rt):
+    for widget in (trial_number_dropdown, tmax, terminal_c, choice, rt):
         widget.observe(lambda change: maybe_update(), names="value")
     run_button.on_click(on_run)
     save_button.on_click(on_save)
-    set_model_controls()
+    set_subject_models()
     display(widgets.VBox([
-        widgets.HBox([model_dropdown, trial_dropdown, tmax, realtime, run_button]),
+        widgets.HBox([
+            subject_dropdown, model_dropdown,
+            sess_id_dropdown, trial_number_dropdown,
+            realtime, run_button,
+        ]),
         slider_box,
-        widgets.HBox([choice, rt, terminal_c]),
+        widgets.HBox([choice, rt, terminal_c, tmax]),
         time_slider,
         widgets.HBox([save_path, save_button]),
         widgets.HBox([widgets.HTML("Update status:"), progress, status]),

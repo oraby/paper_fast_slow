@@ -13,6 +13,13 @@ DEFAULT_LATENT_COLUMNS = {
     "Q-Left": "mle_Q_left_before",
     "Q-Right": "mle_Q_right_before",
     "R-Value": "mle_reward_rate_before",
+    # The lapse mixture and terminal-C threshold are constant within one
+    # fit but vary across the population (different subjects converge to
+    # different λ; users may explore different C settings). Surfacing
+    # them here lets the explorer histogram the cross-fit distribution
+    # alongside the per-trial latents.
+    "λ (lapse)": "mle_lapse_rate",
+    "C (terminal)": "mle_terminal_c",
 }
 FILTER_COLORS = ("orange", "green", "tab:red", "tab:purple", "tab:brown")
 

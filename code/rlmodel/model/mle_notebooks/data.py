@@ -35,23 +35,53 @@ def load_mle_population_results(
     *,
     attach_posterior: bool = True,
 ) -> list[MLEModelResult]:
-    """Load `mle_*.pkl` result files and optionally matching `pp_*.pkl` files."""
+    """Load every ``mle_*.pkl`` and (optionally) matching ``pp_*.pkl``.
+
+    Loading is intentionally permissive so the population explorer can
+    surface every result on disk — not just the "standard" model name
+    set:
+
+    - Any file matching ``mle_*.pkl`` is loaded, whatever its model name
+      stem. Non-standard variants (``mle_Classic_v2_…``, scratch fits,
+      etc.) show up as additional Model dropdown entries for the
+      affected subjects.
+    - The posterior pickle is optional: a missing ``pp_*.pkl`` is the
+      normal case and loading continues with ``posterior_result=None``.
+    - Per-file errors (corrupt pickle, schema mismatch, unreadable
+      posterior) are caught and reported via ``print`` — they do not
+      abort the rest of the load.
+    """
     result_dir = Path(result_dir) if result_dir is not None else default_result_dir()
     if not result_dir.exists():
         raise FileNotFoundError(f"MLE result directory not found: {result_dir}")
 
     loaded: list[MLEModelResult] = []
     for mle_path in sorted(result_dir.glob("mle_*.pkl")):
-        with mle_path.open("rb") as f:
-            mle_payload = pickle.load(f)
+        try:
+            with mle_path.open("rb") as f:
+                mle_payload = pickle.load(f)
+        except Exception as exc:  # noqa: BLE001 — surface every load failure
+            print(
+                f"Warning: skipping {mle_path.name} "
+                f"(failed to load MLE pickle: {exc})")
+            continue
 
         pp_path = mle_path.with_name(mle_path.name.replace("mle_", "pp_", 1))
         posterior_payload = None
+        pp_available = False
         if attach_posterior and pp_path.exists():
-            with pp_path.open("rb") as f:
-                posterior_payload = pickle.load(f)
+            try:
+                with pp_path.open("rb") as f:
+                    posterior_payload = pickle.load(f)
+                pp_available = True
+            except Exception as exc:  # noqa: BLE001
+                print(
+                    f"Warning: {pp_path.name} exists but failed to load "
+                    f"({exc}); continuing with MLE-only result.")
+                posterior_payload = None
 
         model_name = mle_path.stem.removeprefix("mle_")
+        posterior_path = pp_path if pp_available else None
         if _looks_like_subject_map(mle_payload):
             for subject, subject_result in mle_payload.items():
                 pp_subject = _posterior_for_subject(posterior_payload, subject)
@@ -61,7 +91,7 @@ def load_mle_population_results(
                     result=subject_result,
                     posterior_result=pp_subject,
                     mle_path=mle_path,
-                    posterior_path=pp_path if pp_path.exists() else None,
+                    posterior_path=posterior_path,
                 ))
         else:
             subject = str(_subject_from_result(mle_payload, fallback=mle_path.stem))
@@ -71,13 +101,21 @@ def load_mle_population_results(
                 result=mle_payload,
                 posterior_result=posterior_payload,
                 mle_path=mle_path,
-                posterior_path=pp_path if pp_path.exists() else None,
+                posterior_path=posterior_path,
             ))
     return loaded
 
 
 def flatten_mle_results(results: list[MLEModelResult]) -> pd.DataFrame:
-    """Concatenate all `mle_df` tables with subject/model metadata columns."""
+    """Concatenate all `mle_df` tables with subject/model metadata columns.
+
+    ``mle_lapse_rate`` is already a per-trial column inside each ``mle_df``
+    (constant within a fit; written by ``_build_mle_df`` in mle.py).
+    ``mle_terminal_c`` is not — it lives on the saved ``model_config`` — so
+    we attach it here as a per-row constant. Both columns then surface in
+    the population histogram explorer so the user can see the cross-fit
+    distribution of C / λ settings alongside per-trial latents.
+    """
     pieces = []
     for item in results:
         mle_df = item.result.get("mle_df")
@@ -86,6 +124,10 @@ def flatten_mle_results(results: list[MLEModelResult]) -> pd.DataFrame:
         df = mle_df.copy()
         df.insert(0, "mle_model_name", item.model_name)
         df.insert(1, "mle_subject", item.subject)
+        model_config = item.result.get("model_config")
+        if model_config is not None:
+            df["mle_terminal_c"] = float(
+                getattr(model_config, "mle_terminal_c", 0.0))
         pieces.append(df)
     if not pieces:
         return pd.DataFrame()
