@@ -41,14 +41,14 @@ def loadDF(min_valid_trials=0, accepts_subjects=[], df_fp=DF_FP):
     df_behavior.loc[nullify_mask, "valid"] = False # Don't contribute to calculations
     # Consider no choice as incorrect
     df_behavior.loc[null_stim_time_or_no_choice, "ChoiceCorrect"] = 0
-    accepted_subjecteds = []
+    accepted_subjects_li = []
     for name, subject_df in df_behavior.groupby("Name"):
         subject_df_valid = subject_df[subject_df.valid]
         if len(subject_df_valid) < min_valid_trials and name not in accepts_subjects:
             print(f"Removing: {name} with {len(subject_df):,} trials")
             continue
-        accepted_subjecteds.append(name)
-    df_behavior = df_behavior[df_behavior.Name.isin(accepted_subjecteds)]
+        accepted_subjects_li.append(name)
+    df_behavior = df_behavior[df_behavior.Name.isin(accepted_subjects_li)]
     # Make sure it"s correctly sorted
     df_behavior = df_behavior.sort_values(
                                by=["Name", "Date", "SessionNum", "TrialNumber"])
