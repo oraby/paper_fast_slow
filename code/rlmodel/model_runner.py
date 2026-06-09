@@ -35,7 +35,12 @@ def loadDF(min_valid_trials=0, accepts_subjects=[], df_fp=DF_FP):
           f"{df_behavior[nullify_mask].valid.sum():,} are valid trials)")
     #df_behavior.loc[nullify_mask, "ChoiceCorrect"] = np.nan # Treat as no choice
     #df_behavior.loc[nullify_mask, "calcStimulusTime"] = np.nan # Treat as no decision time
+    null_stim_time_or_no_choice = df_behavior.calcStimulusTime.isnull() | \
+                                  df_behavior.ChoiceLeft.isnull()
+    nullify_mask |= null_stim_time_or_no_choice
     df_behavior.loc[nullify_mask, "valid"] = False # Don't contribute to calculations
+    # Consider no choice as incorrect
+    df_behavior.loc[null_stim_time_or_no_choice, "ChoiceCorrect"] = 0
     accepted_subjecteds = []
     for name, subject_df in df_behavior.groupby("Name"):
         subject_df_valid = subject_df[subject_df.valid]
