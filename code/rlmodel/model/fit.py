@@ -312,7 +312,8 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
                 dry_run=False, mle_array_backend="numpy",
                 mle_device_id=None, mle_cupy_fallback="error",
                 mle_gpu_memory_gb=None, mle_show_progress=False,
-                mle_terminal_c=MLE_TERMINAL_C.Default):
+                mle_terminal_c=MLE_TERMINAL_C.Default,
+                bias_fn_str=None, drift_fn_str=None):
     global _pool
     if fit_mode != "chisq":
         if fit_mode != "mle":
@@ -376,6 +377,31 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
         extra_ignored_count += 1
     if not include_RewardRate:
         manually_passed_params.append("BETA")
+        extra_ignored_count += 1
+    # Asymmetric learning-rate gating. The new ALPHA_UNREWARDED /
+    # BETA_UNREWARDED parameters only enter the fit vector when the user
+    # selects the dedicated ``-asym`` model variants:
+    #   - ALPHA_UNREWARDED only when bias == "Q-Val-asym (Offset)".
+    #   - BETA_UNREWARDED only when drift startswith
+    #     "NoiseGain-RewardRate-asym".
+    # The canonical "Q-Val (Offset)" / "NoiseGain-RewardRate" names stay
+    # symmetric (legacy single-rate fits) so both variants can be fit
+    # side-by-side per subject. Freezing the asymmetric params via
+    # manually_passed_params makes _makeOneRunWrapper pass NaN to
+    # makeOneRun, which state_updates treats as "fall back to the
+    # symmetric rate" — keeping the legacy behavior bit-exact for every
+    # other model. Gating the names here is also enough to keep MLE in
+    # sync because the MLE optimizer consumes the same fit_params_names
+    # (see _processSubject's x_params_names=...).
+    include_Q_asym = include_Q and (bias_fn_str is not None and
+                                    "asym" in bias_fn_str )
+    include_RewardRate_asym = include_RewardRate and (drift_fn_str is not None and
+                                                      "asym" in drift_fn_str)
+    if not include_Q_asym:
+        manually_passed_params.append("ALPHA_UNREWARDED")
+        extra_ignored_count += 1
+    if not include_RewardRate_asym:
+        manually_passed_params.append("BETA_UNREWARDED")
         extra_ignored_count += 1
     makeOneRun_params_names = np.asarray([param for param in _makeOneRun_params_names
                                          if param not in manually_passed_params])
@@ -507,15 +533,36 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
     print("Skipping:", [subject for subject in all_subjects
                        if subject not in remaining_subjects])
 
-    reverse_DriftLookup = {v:k for k,v in DRIFT_FN_DICT.items()}
-    reverse_BiasLookup = {v:k for k,v in BIAS_FN_DICT.items()}
-    reverse_NoiseLookup = {v:k for k,v in NOISE_FN_DICT.items()}
+    # When multiple dict keys map to the same function object (e.g. the
+    # "-asym" aliases in BIAS_FN_DICT / DRIFT_FN_DICT point to the same
+    # ``_biasQVal`` / ``_noiseGainRewardRate``), a plain comprehension
+    # keeps the LAST key seen — which silently picks the asymmetric
+    # alias and enables the asymmetric LR for callers that thought they
+    # were fitting the legacy variant. Iterating in reverse means the
+    # FIRST (canonical) key wins, so the default reverse-lookup behavior
+    # is the safe symmetric one. Callers who actually want the
+    # asymmetric variant must pass it through the new ``bias_fn_str`` /
+    # ``drift_fn_str`` kwargs (overridden below).
+    reverse_DriftLookup = {v: k for k, v in reversed(DRIFT_FN_DICT.items())}
+    reverse_BiasLookup = {v: k for k, v in reversed(BIAS_FN_DICT.items())}
+    reverse_NoiseLookup = {v: k for k, v in reversed(NOISE_FN_DICT.items())}
     assert driftFn in reverse_DriftLookup
     assert biasFn in reverse_BiasLookup
     assert noiseFn in reverse_NoiseLookup
     driftFn_str = reverse_DriftLookup[driftFn]
     biasFn_str = reverse_BiasLookup[biasFn]
     noiseFn_str = reverse_NoiseLookup[noiseFn]
+    # Prefer the caller-supplied canonical names when available. The
+    # reverse_*Lookup picks the LAST dict key for a given function
+    # object, which the "-asym" aliases in BIAS_FN_DICT/DRIFT_FN_DICT
+    # (same fn, different key) hijack — without this override the user's
+    # "--bias 'Q-Val (Offset)'" silently turns into "Q-Val-asym (Offset)",
+    # which then fails validate_mle_config. Passing the str through
+    # runModel preserves the exact name the user / CLI provided.
+    if bias_fn_str is not None:
+        biasFn_str = bias_fn_str
+    if drift_fn_str is not None:
+        driftFn_str = drift_fn_str
     model_config = None
     if fit_mode == "mle":
         model_config = MLEModelConfig(

@@ -33,8 +33,19 @@ def compute_q_value(q_left, q_right, group_every=0):
     return q_value
 
 
-def update_q_values(q_left, q_right, observed_choice_left, observed_reward, alpha):
-    """Update only the chosen side; no-choice trials leave both Q values unchanged."""
+def update_q_values(q_left, q_right, observed_choice_left, observed_reward, alpha,
+                    alpha_unrewarded=None):
+    """Update only the chosen side; no-choice trials leave both Q values unchanged.
+
+    ``alpha_unrewarded`` defaults to ``alpha`` (symmetric) when omitted, when
+    ``None`` is passed, or when ``NaN`` is passed. The NaN-fallback matches
+    the sentinel Chisqr uses for frozen learning-rate params (see
+    ``fit.py::_makeOneRunWrapper``), so callers that don't fit the
+    asymmetric rate get the legacy single-alpha behavior automatically.
+    """
+    if alpha_unrewarded is None or (
+            isinstance(alpha_unrewarded, float) and np.isnan(alpha_unrewarded)):
+        alpha_unrewarded = alpha
     if observed_reward is None:
         observed_reward = 0
     else:
@@ -43,25 +54,42 @@ def update_q_values(q_left, q_right, observed_choice_left, observed_reward, alph
         observed_choice_left = np.nan
     choice_left = np.asarray(observed_choice_left, dtype=float)
     no_choice = np.isnan(choice_left)
+    learning_rate = np.where(
+        no_choice | (observed_reward == 0),
+        alpha_unrewarded,
+        alpha,
+    )
     new_q_left = np.where(
-        no_choice,
+        no_choice | (choice_left == 0),
         q_left,
-        q_left + alpha * (observed_reward - q_left) * choice_left,
+        # Previous trial was a left choice:
+        q_left + learning_rate * (observed_reward - q_left)
     )
     new_q_right = np.where(
-        no_choice,
+        no_choice | (choice_left == 1),
         q_right,
-        q_right + alpha * (observed_reward - q_right) * (1 - choice_left),
+        # Previous trial was a right choice:
+        q_right + learning_rate * (observed_reward - q_right)
     )
     return new_q_left, new_q_right
 
 
-def update_reward_rate(reward_rate, observed_reward, beta, group_every=0):
+def update_reward_rate(reward_rate, observed_reward, beta, beta_unrewarded=None,
+                       group_every=0):
+    """``beta_unrewarded`` defaults to ``beta`` when omitted, ``None``, or NaN.
+
+    NaN matches the Chisqr frozen-param sentinel; see ``update_q_values``.
+    """
+    if beta_unrewarded is None or (
+            isinstance(beta_unrewarded, float) and np.isnan(beta_unrewarded)):
+        beta_unrewarded = beta
     if observed_reward is None:
         observed_reward = 0
     else:
         observed_reward = np.nan_to_num(observed_reward, nan=0)
-    new_reward_rate = reward_rate + beta * (observed_reward - reward_rate)
+    learning_rate = np.where(observed_reward == 0, beta_unrewarded, beta)
+    new_reward_rate = reward_rate + \
+                      learning_rate * (observed_reward - reward_rate)
     if group_every != 0:
         new_reward_rate = np.round(new_reward_rate / group_every) * group_every
     return new_reward_rate

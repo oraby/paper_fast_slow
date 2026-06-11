@@ -17,21 +17,25 @@ def _calcQVal(Q_L, Q_R, group_every=0):#round_decimals=0):
     return state_updates.compute_q_value(Q_L, Q_R, group_every=group_every)
 
 
-def _updateNextQL_Q(cur_outcome, cur_choice_left, cur_q_L, cur_q_R, ALPHA):
+def _updateNextQL_Q(cur_outcome, cur_choice_left, cur_q_L, cur_q_R, ALPHA,
+                    ALPHA_UNREWARDED=None):
     '''Calculate the new Q_L and Q_R values'''
     return state_updates.update_q_values(
-        cur_q_L, cur_q_R, cur_choice_left, cur_outcome, ALPHA)
+        cur_q_L, cur_q_R, cur_choice_left, cur_outcome, ALPHA, ALPHA_UNREWARDED)
 
 
-def _updateNextRewardRate(cur_outcome, cur_reward_rate, BETA, group_every=0):
+def _updateNextRewardRate(cur_outcome, cur_reward_rate, BETA,
+                          BETA_UNREWARDED=None, group_every=0):
     '''Calculate the new reward rate'''
     return state_updates.update_reward_rate(
-        cur_reward_rate, cur_outcome, BETA, group_every=group_every)
+        cur_reward_rate, cur_outcome, BETA, BETA_UNREWARDED,
+        group_every=group_every)
 
 
 def processMultipleSess(mult_sess_df, alpha, beta, include_Q,
                         include_RewardRate, #round_decimals
-                        group_every, callBetweenTrialFn=None):
+                        group_every, callBetweenTrialFn=None,
+                        alpha_unrewarded=None, beta_unrewarded=None):
     min_trial_num = mult_sess_df.TrialNumber.min()
     max_trial_num = mult_sess_df.TrialNumber.max()
     num_sess = mult_sess_df.SessId.unique().shape[0]
@@ -159,7 +163,8 @@ def processMultipleSess(mult_sess_df, alpha, beta, include_Q,
         if include_Q:
             next_q_L, next_q_R = _updateNextQL_Q(cur_trials_outcome,
                                                  cur_trials_choice_left,
-                                                 cur_q_L, cur_q_R, alpha)
+                                                 cur_q_L, cur_q_R, alpha,
+                                                 ALPHA_UNREWARDED=alpha_unrewarded)
             # Make sure that we have no nans
             # print("Trial:", trial_idx, " - next_q_L:", next_q_L[0], " - next_q_R:", next_q_R[0])
             if DEBUG:
@@ -171,7 +176,9 @@ def processMultipleSess(mult_sess_df, alpha, beta, include_Q,
         if include_RewardRate:
             next_reward_rate = _updateNextRewardRate(cur_trials_outcome,
                                                      cur_reward_rate,
-                                                     beta, group_every)
+                                                     beta,
+                                                     BETA_UNREWARDED=beta_unrewarded,
+                                                     group_every=group_every)
             if DEBUG:
                 assert np.isnan(next_reward_rate).sum() == 0
             reward_rate_arr[cur_end_idx:next_trial_end_idx] = next_reward_rate
@@ -348,6 +355,7 @@ def simulateDDMMultipleSess(multi_sess_df, include_Q, include_RewardRate,
                             ALPHA, BETA, biasFn, driftFn, noiseFn,
                             NON_DECISION_TIME,  BOUND,
                             biasFn_df_cols={}, driftFn_df_cols=[], noiseFn_df_cols=[],
+                            ALPHA_UNREWARDED=np.nan, BETA_UNREWARDED=np.nan,
                             **ddm_trial_kwargs):
 
     global _last_PrevChoiceLeft, _last_PrevChoiceCorrect, _last_PrevDV
@@ -373,6 +381,8 @@ def simulateDDMMultipleSess(multi_sess_df, include_Q, include_RewardRate,
                                      **ddm_trial_kwargs)
 
     ret = processMultipleSess(multi_sess_df, alpha=ALPHA, beta=BETA,
+                              alpha_unrewarded=ALPHA_UNREWARDED,
+                              beta_unrewarded=BETA_UNREWARDED,
                               include_Q=include_Q, include_RewardRate=include_RewardRate,
                               group_every=0, callBetweenTrialFn=partialBetweenTrialsCb)
     multi_sess_df, in_place_modified, *_rest = ret
@@ -450,6 +460,7 @@ _last_df = None
 def makeOneRun(df, include_Q, include_RewardRate, biasFn, driftFn,
                noiseFn, NON_DECISION_TIME, BOUND, DRIFT_COEF, NOISE_SIGMA,
                dt, t_dur, ALPHA=np.nan, BETA=np.nan,
+               ALPHA_UNREWARDED=np.nan, BETA_UNREWARDED=np.nan,
                biasFn_df_cols=[],  biasFn_kwargs={},
                driftFn_df_cols=[], driftFn_kwargs={},
                noiseFn_df_cols=[], noiseFn_kwargs={},
@@ -547,6 +558,8 @@ def makeOneRun(df, include_Q, include_RewardRate, biasFn, driftFn,
                                            driftFn=driftFn, driftFn_df_cols=driftFn_df_cols,
                                            noiseFn=noiseFn, noiseFn_df_cols=noiseFn_df_cols,
                                            ALPHA=ALPHA, BETA=BETA,
+                                           ALPHA_UNREWARDED=ALPHA_UNREWARDED,
+                                           BETA_UNREWARDED=BETA_UNREWARDED,
                                            NON_DECISION_TIME=NON_DECISION_TIME,
                                            BOUND=BOUND, DRIFT_COEF=DRIFT_COEF,
                                            NOISE_SIGMA=NOISE_SIGMA, dt=dt,

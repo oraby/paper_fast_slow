@@ -81,13 +81,15 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
             values = options_str
         elif label == "Drift Fn":
             options_str = list(DRIFT_FN_DICT.keys())
-            values =      list(DRIFT_FN_DICT.values())
+            # Widget values are the registry KEY strings (not fn objects)
+            # so the GUI can distinguish "NoiseGain-RewardRate" from
+            # "NoiseGain-RewardRate-asym" — both alias to the same Python
+            # fn, which would collide if we stored the fn here.
+            values = options_str
             default_val_idx = options_str.index("NoiseGain-RewardRate")
-            # print("options_str:", options_str)
-            # print("values:", values)
         elif label == "Bias Fn":
             options_str = list(BIAS_FN_DICT.keys())
-            values =      list(BIAS_FN_DICT.values())
+            values = options_str
             default_val_idx = options_str.index("Q-Val (Offset)")
         elif label == "Psychometric":
             options_str = ["None", "All", "Slow/Fast"]
@@ -95,23 +97,32 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
             default_val_idx = 2
         elif label == "Noise Fn":
             options_str = list(NOISE_FN_DICT.keys())
-            values =      list(NOISE_FN_DICT.values())
+            values = options_str
         else:
             raise ValueError(f"Unknown label: {label}")
 
         options = zip(options_str, values)
-        try:
-            from inspect import isfunction
-            if isfunction(values[0]):
-                cached_value = gui_cache.get(label, values[default_val_idx])
-                print("cached_value:", cached_value)
-                val_idx = [v.__name__ for v in values].index(cached_value.__name__)
-            else:
-                cached_value = gui_cache.get(label, default_val_idx)
-                val_idx = [str(v) for v in values].index(str(cached_value))
-        except ValueError:
-            print(f"Couldn't find {cached_value} in {values}")
-            val_idx = default_val_idx
+        # Default to the per-label default. Only consult the cache if the
+        # label actually has an entry. The previous fallback of
+        # ``default_val_idx`` (an int) into ``values.index(str(...))``
+        # always missed when the cache was empty and printed a spurious
+        # "Couldn't find N in [...]" for every widget on first load.
+        val_idx = default_val_idx
+        cached_value = gui_cache.get(label, None) if gui_cache is not None else None
+        if cached_value is not None:
+            try:
+                from inspect import isfunction
+                if isfunction(values[0]):
+                    val_idx = [v.__name__ for v in values].index(
+                        cached_value.__name__)
+                else:
+                    val_idx = [str(v) for v in values].index(str(cached_value))
+            except (ValueError, AttributeError):
+                # The cached value is incompatible with the current option
+                # set (e.g. the widget setup switched from fn objects to
+                # registry-key strings — old caches reset to default here).
+                print(f"Couldn't find cached {label}={cached_value!r} in "
+                      f"options; falling back to default.")
         # print(f"Creating {label} with options: {options_str}")
         # print(f"Values: {values}")
         drop_down_widgets[label]  = widgets.Dropdown(options=options,
@@ -134,12 +145,17 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
                    **{label:widget for label, widget in zip(buttons_labels, button_widgets_li)}}
     # print("All widgets:", all_widgets)
     # Make three columns: parameters, conditions, and buttons/settings
+    # *_UNREWARDED sliders sit directly under their symmetric siblings
+    # so the asymmetric-LR variants are obvious in the GUI. Only the
+    # -asym model variants in DRIFT_FN_DICT / BIAS_FN_DICT actually
+    # consume them; for other variants the value is ignored.
     first_col = [drop_down_widgets.pop("Drift Fn"),
                  slider_widgets.pop("DRIFT_COEF"),
                  slider_widgets.pop("NOISE_SIGMA"),
                  slider_widgets.pop("BOUND"),
                  slider_widgets.pop("NON_DECISION_TIME"),
                  slider_widgets.pop("BETA"),
+                 slider_widgets.pop("BETA_UNREWARDED"),
                  #slider_widgets.pop("Drift RR Coef"),
                  ]
     second_col = [drop_down_widgets.pop("Bias Fn"),
@@ -147,7 +163,8 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
                   slider_widgets.pop("BIAS_FIXED"),
                   slider_widgets.pop("BIAS_MU"),
                   slider_widgets.pop("BIAS_SIGMA"),
-                  slider_widgets.pop("ALPHA"),]
+                  slider_widgets.pop("ALPHA"),
+                  slider_widgets.pop("ALPHA_UNREWARDED"),]
     third_col = [drop_down_widgets.pop("Subject"),
                  drop_down_widgets.pop("DV"),
                  drop_down_widgets.pop("Psychometric"),
@@ -213,14 +230,19 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
 
         # Continue with the update
         # If Drift Fn is "Classic" then disable RewardRate's BETA
-        biasFn = all_widgets["Bias Fn"].value
-        driftFm = all_widgets["Drift Fn"].value
-        noiseFn = all_widgets["Noise Fn"].value
-        print(f"Selected Drift Fn: {driftFm.__name__}, Bias Fn: {biasFn.__name__}, Noise Fn: {noiseFn.__name__}")
-        # Get string associated with each value
-        biasFn_str = [k for k, v in BIAS_FN_DICT.items() if v == biasFn][0]
-        driftFn_str = [k for k, v in DRIFT_FN_DICT.items() if v == driftFm][0]
-        noiseFn_str = [k for k, v in NOISE_FN_DICT.items() if v == noiseFn][0]
+        # Widget values are now the registry KEY strings (see the widget
+        # setup above) — they uniquely identify the model variant, which
+        # the underlying fn objects don't because the -asym aliases share
+        # them. ``biasFn`` etc. (the actual callables) are looked up
+        # explicitly when needed below.
+        biasFn_str = all_widgets["Bias Fn"].value
+        driftFn_str = all_widgets["Drift Fn"].value
+        noiseFn_str = all_widgets["Noise Fn"].value
+        biasFn = BIAS_FN_DICT[biasFn_str]
+        driftFm = DRIFT_FN_DICT[driftFn_str]
+        noiseFn = NOISE_FN_DICT[noiseFn_str]
+        print(f"Selected Drift Fn: {driftFn_str}, Bias Fn: {biasFn_str}, "
+              f"Noise Fn: {noiseFn_str}")
         if "RepeatIdx" in df.columns:
             df = df[df.RepeatIdx == 1]
         if "biasFn" in df.columns:
@@ -263,6 +285,15 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
             all_widgets["ALPHA"].disabled = True
         if not include_RewardRate:
             all_widgets["BETA"].disabled = True
+        # Asymmetric LR sliders track the same model-variant gates used by
+        # fit.py at fit time: ALPHA_UNREWARDED is consumed only by the
+        # "Q-Val-asym (Offset)" bias and BETA_UNREWARDED only by drifts
+        # that start with "NoiseGain-RewardRate-asym". Disable them
+        # otherwise so the GUI mirrors which params will actually be fit.
+        if biasFn_str != "Q-Val-asym (Offset)":
+            all_widgets["ALPHA_UNREWARDED"].disabled = True
+        if not driftFn_str.startswith("NoiseGain-RewardRate-asym"):
+            all_widgets["BETA_UNREWARDED"].disabled = True
 
         # Now we should have update the GUI, but dont continue unless the
         # real-time checkbox is checked or the update button is pressed
@@ -300,7 +331,9 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
             if widget.description in updatePlots_kwargs_li:
                 updatePlots_kwargs[widget.description] = widget.value
 
-        plot_bias_dir = "CorrIncorr" in biasFn.__name__
+        # Registry-key form of the previous ``"CorrIncorr" in biasFn.__name__``
+        # check — matches "Fixed (Corr/Incorr)" and "μ, σ (Corr/Incorr)".
+        plot_bias_dir = "Corr/Incorr" in biasFn_str
         mle_loss_key = _mle_loss_key(
             subject=cur_subject,
             driftFn_str=driftFn_str,
@@ -311,8 +344,8 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
             params=_mle_params_from_widgets(all_widgets),
         )
         fit_entry = _get_subject_fit_entry(
-            subjects_defaults, t_dur, noiseFn.__name__, biasFn.__name__,
-            driftFm.__name__, cur_subject)
+            subjects_defaults, t_dur, noiseFn_str, biasFn_str,
+            driftFn_str, cur_subject)
         stored_mle_loss = _stored_mle_loss_from_fit_entry(fit_entry)
         if stored_mle_loss is None:
             stored_mle_loss = _stored_mle_loss_from_df(df)
@@ -411,19 +444,18 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
     if save_figs and subjects_defaults is not None:
         real_time_cur_val = all_widgets["Real-time"].value
         all_widgets["Real-time"].value = False
-        _NOISE_FN_NAMES = {v.__name__:v for v in NOISE_FN_DICT.values()}
-        _BIAS_FN_NAMES = {v.__name__:v for v in BIAS_FN_DICT.values()}
-        _DRIFT_FN_NAMES = {v.__name__:v for v in DRIFT_FN_DICT.values()}
-        # [t_dur, noiseFn, biasFn, driftFm, subject]
+        # subjects_defaults is now keyed by registry KEY strings — the same
+        # strings the widgets accept — so no reverse map is needed.
+        # [t_dur, noiseFn, biasFn, driftFn, subject]
         tmp_t_dur = t_dur
         for cur_t_dur, t_dur_dict in subjects_defaults.items():
             t_dur = cur_t_dur
             for noiseFn, noiseFn_dict in t_dur_dict.items():
-                all_widgets["Noise Fn"].value = _NOISE_FN_NAMES[noiseFn]
+                all_widgets["Noise Fn"].value = noiseFn
                 for biasFn, biasFn_dict in noiseFn_dict.items():
-                    all_widgets["Bias Fn"].value = _BIAS_FN_NAMES[biasFn]
+                    all_widgets["Bias Fn"].value = biasFn
                     for driftFn, driftFn_dict in biasFn_dict.items():
-                        all_widgets["Drift Fn"].value = _DRIFT_FN_NAMES[driftFn]
+                        all_widgets["Drift Fn"].value = driftFn
                         # Now switch to real time to update the plots
                         all_widgets["Real-time"].value = True
                         fn = f"{noiseFn}{biasFn}{driftFn}_maxdur_{t_dur}s"
@@ -505,9 +537,9 @@ def _apply_fit_defaults(all_widgets, subjects_defaults, t_dur, subject, mode,
     entry = _get_subject_fit_entry(
         subjects_defaults,
         t_dur,
-        all_widgets["Noise Fn"].value.__name__,
-        all_widgets["Bias Fn"].value.__name__,
-        all_widgets["Drift Fn"].value.__name__,
+        all_widgets["Noise Fn"].value,
+        all_widgets["Bias Fn"].value,
+        all_widgets["Drift Fn"].value,
         subject,
     )
     fit_entry = _fit_entry_for_mode(entry, mode)
@@ -756,28 +788,34 @@ def _makeSaveFigTitle(fig, name, loss, driftFn_str, biasFn_str):
     return fig_title
 
 def _makeModelName(driftFn_str, biasFn_str):
-    if driftFn_str == "_driftClassic":
-        if biasFn_str == "_biasNone":
-            model_name = "Classic DDM (No Bias, z=0)"
-        elif biasFn_str == "_biasQVal":
-            model_name = "Classic DDM + Init Q-Value"
-        else:
-            model_name = f"Classic DDM + {biasFn_str}"
-    elif driftFn_str == "_decayQ_nondectime_Q_True":
-        if biasFn_str == "_biasNone":
-            model_name = "Classic DDM + Decaying Q"
-        else:
-            model_name = f"Classic DDM + Decaying Q + {biasFn_str}"
-    elif driftFn_str == "_noiseGainRewardRate":
-        if biasFn_str == "_biasNone":
-            model_name = "Noise*RewardRate (No Bias, z=0)"
-        elif biasFn_str == "_biasQVal":
-            model_name = "Noise*RewardRate + Init Q-Value"
-    elif driftFn_str == "_noiseGainDecayingQ_nondectime_Q_True":
-        if biasFn_str == "_biasNone":
-            model_name = "Noise*RewardRate + Decaying Q"
-        else:
-            model_name = f"Noise*RewardRate + Decaying Q + {biasFn_str}"
+    """Build a human-readable model name from registry key strings.
+
+    Inputs are the BIAS_FN_DICT / DRIFT_FN_DICT keys ("Classic",
+    "NoiseGain-RewardRate-asym", "Q-Val (Offset)", "None_", …), not
+    function ``__name__``s. The earlier ``__name__``-based implementation
+    is dead since the GUI was switched to registry-key widget values.
+    """
+    if biasFn_str == "None_":
+        bias_label = "No Bias, z=0"
+    elif biasFn_str == "Q-Val":
+        bias_label = "Init Q-Value"
+    elif biasFn_str == "Q-Val (Offset)":
+        bias_label = "Init Q-Value (Offset)"
+    elif biasFn_str == "Q-Val-asym (Offset)":
+        bias_label = "Init Q-Value (Offset, asym α)"
     else:
-        model_name = f"{driftFn_str} + {biasFn_str}"
-    return model_name
+        bias_label = biasFn_str
+
+    if driftFn_str == "Classic":
+        drift_label = "Classic DDM"
+    elif driftFn_str.startswith("Decay Q"):
+        drift_label = f"Classic DDM + Decaying Q ({driftFn_str})"
+    elif driftFn_str == "NoiseGain-RewardRate":
+        drift_label = "Noise*RewardRate"
+    elif driftFn_str == "NoiseGain-RewardRate-asym":
+        drift_label = "Noise*RewardRate (asym β)"
+    elif driftFn_str.startswith("NoiseGain-RewardRate"):
+        drift_label = f"Noise*RewardRate + Decaying Q ({driftFn_str})"
+    else:
+        drift_label = driftFn_str
+    return f"{drift_label} + {bias_label}"

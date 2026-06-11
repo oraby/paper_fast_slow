@@ -17,7 +17,12 @@ from .mle_batch import (
 from .mle_likelihood import trial_choice_rt_loglik
 
 
-SUPPORTED_MLE_BIASES = {"None_", "Q-Val", "Q-Val (Offset)"}
+# "Q-Val-asym (Offset)" enables asymmetric ALPHA via the gating in
+# fit.py:simulateDDM. Mathematically the bias is identical to
+# "Q-Val (Offset)" — only the Q-update side branches on reward, not the
+# starting-point bias — so uses_q_bias also accepts the -asym variant.
+SUPPORTED_MLE_BIASES = {
+    "None_", "Q-Val", "Q-Val (Offset)", "Q-Val-asym (Offset)"}
 SUPPORTED_MLE_ARRAY_BACKENDS = {"auto", "numpy", "cupy"}
 SUPPORTED_MLE_CUPY_FALLBACKS = {"numpy", "error"}
 _PREPARED_SESSION_BACKEND_CACHE = {}
@@ -44,7 +49,7 @@ class MLEModelConfig:
 
     @property
     def uses_q_bias(self):
-        return self.bias_fn_str in {"Q-Val", "Q-Val (Offset)"}
+        return "Q-Val" in self.bias_fn_str
 
     @property
     def uses_decay_q_drift(self):
@@ -500,6 +505,16 @@ def _compute_latent_population_equal_sessions(data, x_matrix, params_names,
     nondec = _param_population(theta, param_lookup, "NON_DECISION_TIME", xp, 0.0)
     alpha = _param_population(theta, param_lookup, "ALPHA", xp, np.nan)
     beta = _param_population(theta, param_lookup, "BETA", xp, np.nan)
+    # Asymmetric rates fall back to the symmetric ones when missing — see
+    # _compute_latent_arrays for the matching scalar contract. Direct
+    # lookup avoids _param_population because the symmetric arrays are
+    # per-candidate (xp arrays), not scalar defaults.
+    alpha_unrewarded = (
+        theta[param_lookup["ALPHA_UNREWARDED"]]
+        if "ALPHA_UNREWARDED" in param_lookup else alpha)
+    beta_unrewarded = (
+        theta[param_lookup["BETA_UNREWARDED"]]
+        if "BETA_UNREWARDED" in param_lookup else beta)
     bias_coef = _param_population(theta, param_lookup, "BIAS_COEF", xp, 0.0)
     q_offset = _param_population(theta, param_lookup, "Q_VAL_OFFSET", xp, 0.0)
     q_coef = _param_population(theta, param_lookup, "Q_VAL_COEF", xp, 0.0)
@@ -603,23 +618,33 @@ def _compute_latent_population_equal_sessions(data, x_matrix, params_names,
         valid_t = valid_for_loss_2d[None, :, trial_pos]
         reward_t = xp.nan_to_num(reward_arr[None, :, trial_pos], nan=0.0)
         choice_t = choice[None, :, trial_pos]
+        # Pick rewarded vs unrewarded rate per (candidate, session). Mirrors
+        # the scalar branch in _compute_latent_arrays — when reward == 1 use
+        # alpha/beta, otherwise alpha_unrewarded/beta_unrewarded. When the
+        # asymmetric param isn't fit, the fallback arrays above equal the
+        # symmetric ones, so this collapses to the legacy single-rate code.
+        rewarded_t = reward_t == 1
+        q_alpha_t = xp.where(
+            rewarded_t, alpha[:, None], alpha_unrewarded[:, None])
+        r_beta_t = xp.where(
+            rewarded_t, beta[:, None], beta_unrewarded[:, None])
         if model_config.include_Q:
             left_mask = valid_t & (choice_t == 1)
             right_mask = valid_t & (choice_t == 0)
             q_left = xp.where(
                 left_mask,
-                q_left + alpha[:, None] * (reward_t - q_left),
+                q_left + q_alpha_t * (reward_t - q_left),
                 q_left,
             )
             q_right = xp.where(
                 right_mask,
-                q_right + alpha[:, None] * (reward_t - q_right),
+                q_right + q_alpha_t * (reward_t - q_right),
                 q_right,
             )
         if model_config.include_RewardRate:
             reward_rate = xp.where(
                 valid_t,
-                reward_rate + beta[:, None] * (reward_t - reward_rate),
+                reward_rate + r_beta_t * (reward_t - reward_rate),
                 reward_rate,
             )
 
@@ -696,6 +721,12 @@ def _compute_latent_arrays(data, params, model_config):
 
     alpha = _param(params, "ALPHA", np.nan)
     beta = _param(params, "BETA", np.nan)
+    # Asymmetric learning rates default to their symmetric counterparts when
+    # the param isn't in the fit vector — same gating contract as
+    # state_updates.update_q_values/update_reward_rate, so MLE matches
+    # Chisqr byte-for-byte under the same params.
+    alpha_unrewarded = _param(params, "ALPHA_UNREWARDED", alpha)
+    beta_unrewarded = _param(params, "BETA_UNREWARDED", beta)
     finite_dv = np.isfinite(data.dv)
     valid_for_loss = data.valid & finite_dv
 
@@ -715,13 +746,20 @@ def _compute_latent_arrays(data, params, model_config):
             if valid_for_loss[i]:
                 reward = 0.0 if np.isnan(data.reward[i]) else float(data.reward[i])
                 choice_left = data.choice_left[i]
+                # Pick the rewarded vs unrewarded rate. state_updates uses
+                # ``reward == 0 | no_choice`` for the unrewarded branch;
+                # mirror that here. no_choice is handled by the outer
+                # ``not np.isnan(choice_left)`` guard, so inside that block
+                # only reward matters.
+                q_alpha = alpha if reward == 1 else alpha_unrewarded
+                r_beta = beta if reward == 1 else beta_unrewarded
                 if model_config.include_Q and not np.isnan(choice_left):
                     if int(choice_left) == 1:
-                        next_q_left = q_left + alpha * (reward - q_left)
+                        next_q_left = q_left + q_alpha * (reward - q_left)
                     else:
-                        next_q_right = q_right + alpha * (reward - q_right)
+                        next_q_right = q_right + q_alpha * (reward - q_right)
                 if model_config.include_RewardRate:
-                    next_reward_rate = reward_rate + beta * (reward - reward_rate)
+                    next_reward_rate = reward_rate + r_beta * (reward - reward_rate)
                 q_left = float(next_q_left)
                 q_right = float(next_q_right)
                 reward_rate = float(next_reward_rate)

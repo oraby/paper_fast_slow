@@ -111,3 +111,127 @@ def test_trial_mu_returns_scalar_or_time_grid_array():
     time_grid = np.array([0.0, 0.1, 0.2])
     mu = state_updates.compute_trial_mu(0.4, 3.0, time_grid=time_grid)
     np.testing.assert_allclose(mu, np.array([1.2, 1.2, 1.2]))
+
+
+def test_q_update_asymmetric_uses_alpha_unrewarded_when_unrewarded():
+    # Reward == 0 on a left-choice trial: the asymmetric branch should
+    # apply alpha_unrewarded (0.5) to Q_L, leaving Q_R untouched.
+    q_left, q_right = state_updates.update_q_values(
+        q_left=0.5,
+        q_right=0.25,
+        observed_choice_left=1.0,
+        observed_reward=0.0,
+        alpha=0.2,
+        alpha_unrewarded=0.5,
+    )
+
+    assert np.isclose(q_left, 0.25)  # 0.5 + 0.5 * (0 - 0.5)
+    assert q_right == 0.25
+
+
+def test_q_update_asymmetric_uses_alpha_when_rewarded():
+    # Reward == 1: the rewarded rate fires regardless of the asymmetric value.
+    q_left, q_right = state_updates.update_q_values(
+        q_left=0.5,
+        q_right=0.25,
+        observed_choice_left=1.0,
+        observed_reward=1.0,
+        alpha=0.2,
+        alpha_unrewarded=0.9,
+    )
+
+    assert np.isclose(q_left, 0.6)  # 0.5 + 0.2 * (1 - 0.5)
+    assert q_right == 0.25
+
+
+def test_q_update_asymmetric_none_falls_back_to_symmetric():
+    # Explicit None on alpha_unrewarded behaves like the legacy single-rate
+    # call. Same result whether reward == 0 or 1.
+    q_left, q_right = state_updates.update_q_values(
+        q_left=0.5,
+        q_right=0.25,
+        observed_choice_left=1.0,
+        observed_reward=0.0,
+        alpha=0.2,
+        alpha_unrewarded=None,
+    )
+
+    assert np.isclose(q_left, 0.4)  # 0.5 + 0.2 * (0 - 0.5)
+    assert q_right == 0.25
+
+
+def test_q_update_asymmetric_nan_falls_back_to_symmetric():
+    # Chisqr passes NaN as the frozen-param sentinel — must also collapse
+    # to the symmetric branch.
+    q_left, q_right = state_updates.update_q_values(
+        q_left=0.5,
+        q_right=0.25,
+        observed_choice_left=1.0,
+        observed_reward=0.0,
+        alpha=0.2,
+        alpha_unrewarded=float("nan"),
+    )
+
+    assert np.isclose(q_left, 0.4)
+    assert q_right == 0.25
+
+
+def test_q_update_asymmetric_no_choice_picks_unrewarded():
+    # no-choice currently leaves Q values unchanged regardless of which
+    # learning rate would be selected. Still pin the no-change invariant
+    # to make sure asymmetric wiring didn't perturb it.
+    q_left, q_right = state_updates.update_q_values(
+        q_left=0.5,
+        q_right=0.25,
+        observed_choice_left=np.nan,
+        observed_reward=np.nan,
+        alpha=0.2,
+        alpha_unrewarded=0.9,
+    )
+
+    assert q_left == 0.5
+    assert q_right == 0.25
+
+
+def test_reward_rate_update_asymmetric_uses_beta_unrewarded_when_unrewarded():
+    reward_rate = state_updates.update_reward_rate(
+        reward_rate=0.5,
+        observed_reward=0.0,
+        beta=0.2,
+        beta_unrewarded=0.5,
+    )
+
+    assert np.isclose(reward_rate, 0.25)  # 0.5 + 0.5 * (0 - 0.5)
+
+
+def test_reward_rate_update_asymmetric_uses_beta_when_rewarded():
+    reward_rate = state_updates.update_reward_rate(
+        reward_rate=0.5,
+        observed_reward=1.0,
+        beta=0.2,
+        beta_unrewarded=0.9,
+    )
+
+    assert np.isclose(reward_rate, 0.6)  # 0.5 + 0.2 * (1 - 0.5)
+
+
+def test_reward_rate_update_asymmetric_none_falls_back_to_symmetric():
+    reward_rate = state_updates.update_reward_rate(
+        reward_rate=0.5,
+        observed_reward=0.0,
+        beta=0.2,
+        beta_unrewarded=None,
+    )
+
+    assert np.isclose(reward_rate, 0.4)
+
+
+def test_reward_rate_update_asymmetric_nan_falls_back_to_symmetric():
+    reward_rate = state_updates.update_reward_rate(
+        reward_rate=0.5,
+        observed_reward=0.0,
+        beta=0.2,
+        beta_unrewarded=float("nan"),
+    )
+
+    assert np.isclose(reward_rate, 0.4)

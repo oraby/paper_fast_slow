@@ -121,7 +121,9 @@ def runModel(df, bias_fn_str, drift_fn_str, noise_fn_str, is_loss_no_dir,
                                      mle_cupy_fallback=mle_cupy_fallback,
                                      mle_gpu_memory_gb=mle_gpu_memory_gb,
                                      mle_show_progress=mle_show_progress,
-                                     mle_terminal_c=mle_terminal_c)
+                                     mle_terminal_c=mle_terminal_c,
+                                     bias_fn_str=bias_fn_str,
+                                     drift_fn_str=drift_fn_str)
     evolve_res.update(evolve_res_res)
     return evolve_res
 
