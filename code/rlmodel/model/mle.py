@@ -46,6 +46,14 @@ class MLEModelConfig:
     mle_use_batched_likelihood: bool = True
     mle_show_progress: bool = False
     mle_terminal_c: float = MLE_TERMINAL_C.Default
+    # Asymmetric-LR opt-in flags. When True, the corresponding
+    # ALPHA_UNREWARDED / BETA_UNREWARDED param MUST be in the params
+    # dict at evaluate-time — strict access, KeyError on miss (loud
+    # failure over silent fallback). Defaulted False so old pickles
+    # whose saved MLEModelConfig predates these fields still load and
+    # behave as symmetric (legacy) fits.
+    uses_asymmetric_alpha: bool = False
+    uses_asymmetric_beta: bool = False
 
     @property
     def uses_q_bias(self):
@@ -501,25 +509,30 @@ def _compute_latent_population_equal_sessions(data, x_matrix, params_names,
 
     drift_coef = _param_population(theta, param_lookup, "DRIFT_COEF", xp)
     noise_sigma = _param_population(theta, param_lookup, "NOISE_SIGMA", xp)
+    # BOUND / NON_DECISION_TIME defaults documented at the call site —
+    # 1.0 / 0.0 are identity / no-shift settings, not silent fallbacks.
     bounds = _param_population(theta, param_lookup, "BOUND", xp, 1.0)
     nondec = _param_population(theta, param_lookup, "NON_DECISION_TIME", xp, 0.0)
-    alpha = _param_population(theta, param_lookup, "ALPHA", xp, np.nan)
-    beta = _param_population(theta, param_lookup, "BETA", xp, np.nan)
-    # Asymmetric rates fall back to the symmetric ones when missing — see
-    # _compute_latent_arrays for the matching scalar contract. Direct
-    # lookup avoids _param_population because the symmetric arrays are
-    # per-candidate (xp arrays), not scalar defaults.
-    alpha_unrewarded = (
-        theta[param_lookup["ALPHA_UNREWARDED"]]
-        if "ALPHA_UNREWARDED" in param_lookup else alpha)
-    beta_unrewarded = (
-        theta[param_lookup["BETA_UNREWARDED"]]
-        if "BETA_UNREWARDED" in param_lookup else beta)
+    # Flag-gated strict access: when include_Q / asymmetric flags are
+    # True, the param MUST exist; KeyError on miss. None propagates to
+    # state_updates.update_q_values which interprets it as "use the
+    # symmetric rate / skip the update". Pre-shape with `[:, None]` so
+    # the population (n_candidates, n_sessions) broadcast happens
+    # naturally inside update_q_values / update_reward_rate.
+    def _gated(name, gate):
+        return theta[param_lookup[name]][:, None] if gate else None
+    alpha = _gated("ALPHA", model_config.include_Q)
+    alpha_unrewarded = _gated(
+        "ALPHA_UNREWARDED", model_config.uses_asymmetric_alpha)
+    beta = _gated("BETA", model_config.include_RewardRate)
+    beta_unrewarded = _gated(
+        "BETA_UNREWARDED", model_config.uses_asymmetric_beta)
     bias_coef = _param_population(theta, param_lookup, "BIAS_COEF", xp, 0.0)
     q_offset = _param_population(theta, param_lookup, "Q_VAL_OFFSET", xp, 0.0)
     q_coef = _param_population(theta, param_lookup, "Q_VAL_COEF", xp, 0.0)
     q_decay_rate = _param_population(
         theta, param_lookup, "Q_VAL_DECAY_RATE", xp, 1.0)
+    # LAPSE_RATE: 0.0 reproduces the no-mixture likelihood exactly.
     lapse_rate = _param_population(
         theta, param_lookup, "LAPSE_RATE", xp, 0.0)
 
@@ -575,13 +588,15 @@ def _compute_latent_population_equal_sessions(data, x_matrix, params_names,
         sigma_for_noise_pop = None
 
     for trial_pos in range(trials_per_session):
-        q_left_clip = xp.clip(q_left, state_updates.LOG_CIEL, 1.0)
-        q_right_clip = xp.clip(q_right, state_updates.LOG_CIEL, 1.0)
-        q_rel = xp.log(q_left_clip / q_right_clip) / state_updates.LOG_CEIL_MAX
-
+        # Delegate Q-value normalization + starting-point bias to
+        # state_updates (same math as the scalar path).
+        q_rel = state_updates.compute_q_value(q_left, q_right, xp=xp)
         if model_config.uses_q_bias:
-            z_t = xp.clip(
-                bias_coef[:, None] * q_rel + q_offset[:, None], -1.0, 1.0)
+            z_t = state_updates.compute_starting_point_z(
+                q_left, q_right,
+                delta=bias_coef[:, None],
+                offset=q_offset[:, None],
+                include_Q=True, xp=xp)
         else:
             z_t = xp.zeros_like(q_rel)
         sigma_t = (
@@ -618,35 +633,27 @@ def _compute_latent_population_equal_sessions(data, x_matrix, params_names,
         valid_t = valid_for_loss_2d[None, :, trial_pos]
         reward_t = xp.nan_to_num(reward_arr[None, :, trial_pos], nan=0.0)
         choice_t = choice[None, :, trial_pos]
-        # Pick rewarded vs unrewarded rate per (candidate, session). Mirrors
-        # the scalar branch in _compute_latent_arrays — when reward == 1 use
-        # alpha/beta, otherwise alpha_unrewarded/beta_unrewarded. When the
-        # asymmetric param isn't fit, the fallback arrays above equal the
-        # symmetric ones, so this collapses to the legacy single-rate code.
-        rewarded_t = reward_t == 1
-        q_alpha_t = xp.where(
-            rewarded_t, alpha[:, None], alpha_unrewarded[:, None])
-        r_beta_t = xp.where(
-            rewarded_t, beta[:, None], beta_unrewarded[:, None])
+        # Delegate the rewarded/unrewarded branching to state_updates so
+        # the population path uses the same math as the scalar path. The
+        # gated alpha / beta / *_unrewarded above are already pre-shaped
+        # ``[:, None]`` so update_q_values' broadcasts hit
+        # (n_candidates, n_sessions) cleanly. ``alpha_unrewarded=None``
+        # collapses to the symmetric rate inside state_updates.
         if model_config.include_Q:
-            left_mask = valid_t & (choice_t == 1)
-            right_mask = valid_t & (choice_t == 0)
-            q_left = xp.where(
-                left_mask,
-                q_left + q_alpha_t * (reward_t - q_left),
-                q_left,
-            )
-            q_right = xp.where(
-                right_mask,
-                q_right + q_alpha_t * (reward_t - q_right),
-                q_right,
-            )
+            new_q_left, new_q_right = state_updates.update_q_values(
+                q_left, q_right, choice_t, reward_t, alpha,
+                alpha_unrewarded=alpha_unrewarded, xp=xp)
+            # update_q_values doesn't know about per-trial validity;
+            # mask invalid positions here so they keep their previous
+            # Q-state (matches the scalar path which guards with
+            # ``if valid_for_loss[i]``).
+            q_left = xp.where(valid_t, new_q_left, q_left)
+            q_right = xp.where(valid_t, new_q_right, q_right)
         if model_config.include_RewardRate:
-            reward_rate = xp.where(
-                valid_t,
-                reward_rate + r_beta_t * (reward_t - reward_rate),
-                reward_rate,
-            )
+            new_rr = state_updates.update_reward_rate(
+                reward_rate, reward_t, beta,
+                beta_unrewarded=beta_unrewarded, xp=xp)
+            reward_rate = xp.where(valid_t, new_rr, reward_rate)
 
     flat_shape = (n_candidates, n_trials)
     valid_flat = xp.broadcast_to(
@@ -710,6 +717,22 @@ def _compute_latent_population_equal_sessions(data, x_matrix, params_names,
 
 
 def _compute_latent_arrays(data, params, model_config):
+    """Scalar per-trial Q / reward-rate / z / sigma / mu recompute.
+
+    Thin orchestration around ``state_updates`` — the actual math (Q
+    update, reward-rate update, asymmetric branching, no-choice
+    handling, Q-value normalization) lives there. This function is the
+    scalar single-subject path; the (n_candidates × n_sessions)
+    vectorized counterpart is ``_compute_latent_population_equal_sessions``,
+    which calls the same ``state_updates`` functions with
+    ``xp=backend.xp``.
+
+    Strict access on flag-gated params: if ``model_config.include_Q``
+    is True, ``params["ALPHA"]`` must exist; same for BETA,
+    ALPHA_UNREWARDED, BETA_UNREWARDED. Loud KeyError on miss is the
+    contract per the consolidation plan — silently inventing a
+    fallback rate is exactly what we want to prevent.
+    """
     n = data.n_trials
     q_left_before = np.full(n, 0.5, dtype=float)
     q_right_before = np.full(n, 0.5, dtype=float)
@@ -719,50 +742,42 @@ def _compute_latent_arrays(data, params, model_config):
     q_right_after = np.full(n, 0.5, dtype=float)
     reward_rate_after = np.full(n, 0.5, dtype=float)
 
-    alpha = _param(params, "ALPHA", np.nan)
-    beta = _param(params, "BETA", np.nan)
-    # Asymmetric learning rates default to their symmetric counterparts when
-    # the param isn't in the fit vector — same gating contract as
-    # state_updates.update_q_values/update_reward_rate, so MLE matches
-    # Chisqr byte-for-byte under the same params.
-    alpha_unrewarded = _param(params, "ALPHA_UNREWARDED", alpha)
-    beta_unrewarded = _param(params, "BETA_UNREWARDED", beta)
-    finite_dv = np.isfinite(data.dv)
-    valid_for_loss = data.valid & finite_dv
+    # Strict access when the flag says the param MUST exist. When the
+    # flag is False the rate is unused — pass None into state_updates,
+    # which treats None as "fall back to the symmetric / no-update rate".
+    alpha = params["ALPHA"] if model_config.include_Q else None
+    alpha_unrewarded = (
+        params["ALPHA_UNREWARDED"]
+        if model_config.uses_asymmetric_alpha else None)
+    beta = params["BETA"] if model_config.include_RewardRate else None
+    beta_unrewarded = (
+        params["BETA_UNREWARDED"]
+        if model_config.uses_asymmetric_beta else None)
 
+    valid_for_loss = data.valid & np.isfinite(data.dv)
     for start, stop in data.session_slices:
-        q_left = 0.5
-        q_right = 0.5
-        reward_rate = 0.5
+        q_left, q_right, reward_rate = 0.5, 0.5, 0.5
         for i in range(start, stop):
             q_left_before[i] = q_left
             q_right_before[i] = q_right
-            q_rel = float(state_updates.compute_q_value(q_left, q_right))
-            q_rel_before[i] = q_rel
+            q_rel_before[i] = float(
+                state_updates.compute_q_value(q_left, q_right))
             reward_rate_before[i] = reward_rate
-            next_q_left = q_left
-            next_q_right = q_right
-            next_reward_rate = reward_rate
             if valid_for_loss[i]:
                 reward = 0.0 if np.isnan(data.reward[i]) else float(data.reward[i])
                 choice_left = data.choice_left[i]
-                # Pick the rewarded vs unrewarded rate. state_updates uses
-                # ``reward == 0 | no_choice`` for the unrewarded branch;
-                # mirror that here. no_choice is handled by the outer
-                # ``not np.isnan(choice_left)`` guard, so inside that block
-                # only reward matters.
-                q_alpha = alpha if reward == 1 else alpha_unrewarded
-                r_beta = beta if reward == 1 else beta_unrewarded
-                if model_config.include_Q and not np.isnan(choice_left):
-                    if int(choice_left) == 1:
-                        next_q_left = q_left + q_alpha * (reward - q_left)
-                    else:
-                        next_q_right = q_right + q_alpha * (reward - q_right)
+                if model_config.include_Q:
+                    q_left, q_right = state_updates.update_q_values(
+                        q_left, q_right, choice_left, reward, alpha,
+                        alpha_unrewarded=alpha_unrewarded)
+                    # update_q_values returns 0-D arrays; downcast so
+                    # subsequent loop iterations stay scalar.
+                    q_left = float(q_left)
+                    q_right = float(q_right)
                 if model_config.include_RewardRate:
-                    next_reward_rate = reward_rate + r_beta * (reward - reward_rate)
-                q_left = float(next_q_left)
-                q_right = float(next_q_right)
-                reward_rate = float(next_reward_rate)
+                    reward_rate = float(state_updates.update_reward_rate(
+                        reward_rate, reward, beta,
+                        beta_unrewarded=beta_unrewarded))
             q_left_after[i] = q_left
             q_right_after[i] = q_right
             reward_rate_after[i] = reward_rate
@@ -784,6 +799,8 @@ def _compute_latent_arrays(data, params, model_config):
         "q_left_after": q_left_after,
         "q_right_after": q_right_after,
         "reward_rate_after": reward_rate_after,
+        # LAPSE_RATE remains a documented optional with a meaningful
+        # zero default (0.0 reproduces the pre-mixture likelihood).
         "lapse_rate": float(_param(params, "LAPSE_RATE", 0.0)),
     }
 
@@ -1034,6 +1051,12 @@ def _build_mle_df(data, latents, like_result):
     return data.df.copy().join(latent_df, how="left")
 
 
+# Per-trial scalar helpers used by external callers
+# (``posterior_simulate``, ``mle_visualize``, ``ddm_viewer``) to
+# reconstruct mu / z for a single trial from already-fitted params.
+# Not used by the MLE objective itself (the population-shaped versions
+# ``_compute_z_array`` / ``_compute_mu_array`` cover that path).
+
 def _compute_z(state, params, model_config, q_rel_before):
     if not model_config.uses_q_bias:
         return 0.0
@@ -1076,47 +1099,3 @@ def _decaying_q_noise(q_rel_before, params, n_t):
         decayed = -decayed
     return decayed
 
-
-def _row_record(row_idx, state, q_rel_before, reward_rate_before, z, mu, sigma,
-                trial_like, valid_for_loss, q_left_after, q_right_after,
-                reward_rate_after):
-    if trial_like is None:
-        decision_time = np.nan
-        choice_prob_or_density = np.nan
-        loglik = np.nan
-        survival = np.nan
-        upper_prob = np.nan
-        lower_prob = np.nan
-    else:
-        decision_time = trial_like.decision_time
-        choice_prob_or_density = trial_like.choice_prob_or_density
-        loglik = trial_like.loglik
-        survival = trial_like.survival_at_tmax
-        upper_prob = trial_like.upper_hit_prob_tmax
-        lower_prob = trial_like.lower_hit_prob_tmax
-
-    if np.isscalar(mu):
-        mu_value = float(mu)
-    else:
-        mu_value = float(np.asarray(mu)[0])
-
-    return {
-        "_row_index": row_idx,
-        "mle_Q_left_before": state.q_left,
-        "mle_Q_right_before": state.q_right,
-        "mle_Q_rel_before": q_rel_before,
-        "mle_reward_rate_before": reward_rate_before,
-        "mle_z": z,
-        "mle_mu": mu_value,
-        "mle_sigma": sigma,
-        "mle_decision_time_observed": decision_time,
-        "mle_choice_prob_or_density": choice_prob_or_density,
-        "mle_loglik": loglik,
-        "mle_valid_for_loss": valid_for_loss,
-        "mle_survival_at_tmax": survival,
-        "mle_upper_hit_prob_tmax": upper_prob,
-        "mle_lower_hit_prob_tmax": lower_prob,
-        "mle_Q_left_after": q_left_after,
-        "mle_Q_right_after": q_right_after,
-        "mle_reward_rate_after": reward_rate_after,
-    }

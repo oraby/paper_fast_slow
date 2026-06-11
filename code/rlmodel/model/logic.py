@@ -355,7 +355,7 @@ def simulateDDMMultipleSess(multi_sess_df, include_Q, include_RewardRate,
                             ALPHA, BETA, biasFn, driftFn, noiseFn,
                             NON_DECISION_TIME,  BOUND,
                             biasFn_df_cols={}, driftFn_df_cols=[], noiseFn_df_cols=[],
-                            ALPHA_UNREWARDED=np.nan, BETA_UNREWARDED=np.nan,
+                            ALPHA_UNREWARDED=None, BETA_UNREWARDED=None,
                             **ddm_trial_kwargs):
 
     global _last_PrevChoiceLeft, _last_PrevChoiceCorrect, _last_PrevDV
@@ -460,7 +460,7 @@ _last_df = None
 def makeOneRun(df, include_Q, include_RewardRate, biasFn, driftFn,
                noiseFn, NON_DECISION_TIME, BOUND, DRIFT_COEF, NOISE_SIGMA,
                dt, t_dur, ALPHA=np.nan, BETA=np.nan,
-               ALPHA_UNREWARDED=np.nan, BETA_UNREWARDED=np.nan,
+               ALPHA_UNREWARDED=None, BETA_UNREWARDED=None,
                biasFn_df_cols=[],  biasFn_kwargs={},
                driftFn_df_cols=[], driftFn_kwargs={},
                noiseFn_df_cols=[], noiseFn_kwargs={},

@@ -24,10 +24,16 @@ import pickle
 
 
 
+# Discover makeOneRun's full kwarg surface — needed by the downstream
+# index-bookkeeping in simulateDDM, which subsets BOTH the fit-param
+# vector AND the fixed_params dict against this set. Discovery (not
+# fit-eligibility) is the job here; flag-driven fittability lives in
+# the ``_PARAM_FIT_GATES`` declarative table inside ``simulateDDM``.
 _NON_FITTABLE_MAKEONERUN_PARAMS = {"seed", "skip_loss"}
 _makeOneRun_params_names = inspect.signature(makeOneRun).parameters.keys()
-_makeOneRun_params_names = np.asanyarray([p for p in _makeOneRun_params_names
-                                          if p not in _NON_FITTABLE_MAKEONERUN_PARAMS])
+_makeOneRun_params_names = np.asanyarray([
+    p for p in _makeOneRun_params_names
+    if p not in _NON_FITTABLE_MAKEONERUN_PARAMS])
 
 def _makeOneRunWrapper(x, x_params_names, fixed_params_names, fixed_params_vals,
                        logicFn_x_idxs, logicFn_fix_idxs,
@@ -55,10 +61,17 @@ def _makeOneRunWrapper(x, x_params_names, fixed_params_names, fixed_params_vals,
 
     include_Q = logicFn_kwargs["include_Q"]
     include_RewardRate = logicFn_kwargs["include_RewardRate"]
+    # Frozen-rate sentinels: ALPHA / BETA stay NaN (makeOneRun asserts
+    # ``~np.isnan(ALPHA) if include_Q`` — NaN here means "Q-learning is
+    # off, this is a placeholder"). The asymmetric *_UNREWARDED params
+    # propagate as None, which state_updates interprets as "fall back to
+    # the symmetric rate" — no sentinel value special-case.
     if not include_Q:
         logicFn_kwargs["ALPHA"] = np.nan
     if not include_RewardRate:
         logicFn_kwargs["BETA"] = np.nan
+    logicFn_kwargs.setdefault("ALPHA_UNREWARDED", None)
+    logicFn_kwargs.setdefault("BETA_UNREWARDED", None)
     DEBUG = False
     if DEBUG:
         print("LogicFn kwargs:", logicFn_kwargs)
@@ -368,41 +381,33 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
     # for fix_param_name, fix_param_val in zip(fixed_params_names, fixed_params_vals):
     #     print(fix_param_name, "=", fix_param_val)
 
-    # Remove Params we are going to pass manually
+    # Asymmetric learning-rate gating: only the dedicated ``-asym``
+    # model variants opt into the new ALPHA_UNREWARDED /
+    # BETA_UNREWARDED params. The canonical "Q-Val (Offset)" /
+    # "NoiseGain-RewardRate" names stay symmetric (legacy single-rate
+    # fits) so both variants can be fit side-by-side per subject.
+    include_Q_asym = include_Q and (
+        bias_fn_str is not None and "asym" in bias_fn_str)
+    include_RewardRate_asym = include_RewardRate and (
+        drift_fn_str is not None and "asym" in drift_fn_str)
+
+    # Declarative per-param gating table — the single place that says
+    # "this param enters the fit vector iff <flag>". Params for which
+    # the gate fires False get appended to ``manually_passed_params``,
+    # so _makeOneRunWrapper passes the documented sentinel
+    # (NaN for ALPHA/BETA, None for the *_UNREWARDED pair) to makeOneRun.
+    # Adding a new flag-gated param is one entry here, no new if-block.
+    _PARAM_FIT_GATES = {
+        "ALPHA":            include_Q,
+        "BETA":             include_RewardRate,
+        "ALPHA_UNREWARDED": include_Q_asym,
+        "BETA_UNREWARDED":  include_RewardRate_asym,
+    }
     manually_passed_params = ["driftFn_kwargs", "noiseFn_kwargs",
                               "biasFn_kwargs", "is_loss_no_dir"]
-    extra_ignored_count = 0
-    if not include_Q:
-        manually_passed_params.append("ALPHA")
-        extra_ignored_count += 1
-    if not include_RewardRate:
-        manually_passed_params.append("BETA")
-        extra_ignored_count += 1
-    # Asymmetric learning-rate gating. The new ALPHA_UNREWARDED /
-    # BETA_UNREWARDED parameters only enter the fit vector when the user
-    # selects the dedicated ``-asym`` model variants:
-    #   - ALPHA_UNREWARDED only when bias == "Q-Val-asym (Offset)".
-    #   - BETA_UNREWARDED only when drift startswith
-    #     "NoiseGain-RewardRate-asym".
-    # The canonical "Q-Val (Offset)" / "NoiseGain-RewardRate" names stay
-    # symmetric (legacy single-rate fits) so both variants can be fit
-    # side-by-side per subject. Freezing the asymmetric params via
-    # manually_passed_params makes _makeOneRunWrapper pass NaN to
-    # makeOneRun, which state_updates treats as "fall back to the
-    # symmetric rate" — keeping the legacy behavior bit-exact for every
-    # other model. Gating the names here is also enough to keep MLE in
-    # sync because the MLE optimizer consumes the same fit_params_names
-    # (see _processSubject's x_params_names=...).
-    include_Q_asym = include_Q and (bias_fn_str is not None and
-                                    "asym" in bias_fn_str )
-    include_RewardRate_asym = include_RewardRate and (drift_fn_str is not None and
-                                                      "asym" in drift_fn_str)
-    if not include_Q_asym:
-        manually_passed_params.append("ALPHA_UNREWARDED")
-        extra_ignored_count += 1
-    if not include_RewardRate_asym:
-        manually_passed_params.append("BETA_UNREWARDED")
-        extra_ignored_count += 1
+    for name, gate in _PARAM_FIT_GATES.items():
+        if not gate:
+            manually_passed_params.append(name)
     makeOneRun_params_names = np.asarray([param for param in _makeOneRun_params_names
                                          if param not in manually_passed_params])
     def assertInBoundsAndDefaults(x):
@@ -481,8 +486,13 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
     used_fix_idxs = (set(logicFn_fix_idxs) | set(driftFn_fix_idxs) |
                      set(noiseFn_fix_idxs) | set(biasFn_fix_idxs))
     unused_fix_idxs = list(set(range(len(fixed_params_names))) - used_fix_idxs)
-    # ALPHA and BETA has default values so they dont show up if not used
-    unused_fix_idxs += [np.nan] * extra_ignored_count # Just to keep the same length
+    # Flag-gated params (ALPHA, BETA, ALPHA_UNREWARDED, BETA_UNREWARDED)
+    # have defaults on makeOneRun, so when the gate is False they never
+    # appear in either x or fixed_params — they're just absent. Pad the
+    # unused-count with sentinels so the assert below still balances out
+    # against ``len(manually_passed_params)``.
+    flag_gated_count = sum(1 for g in _PARAM_FIT_GATES.values() if not g)
+    unused_fix_idxs += [np.nan] * flag_gated_count
     len_manual_params = len(manually_passed_params)
     # TODO: Remove the manual params from the unused_fix_idxs so we get a
     # filtered list of unused params
@@ -579,7 +589,24 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
             mle_gpu_memory_gb=mle_gpu_memory_gb,
             mle_show_progress=mle_show_progress,
             mle_terminal_c=float(mle_terminal_c),
+            # The flag-gated asymmetric-LR contract on MLEModelConfig
+            # (see mle.py:_compute_latent_arrays). True ⇒ ALPHA_UNREWARDED
+            # / BETA_UNREWARDED MUST be in the params dict at eval time —
+            # strict access, KeyError on miss.
+            uses_asymmetric_alpha=include_Q_asym,
+            uses_asymmetric_beta=include_RewardRate_asym,
         )
+        # Pre-flight: the gate table + fit-param list must agree, else
+        # the MLE objective hits KeyError mid-DE rather than failing
+        # loudly here.
+        if model_config.uses_asymmetric_alpha:
+            assert "ALPHA_UNREWARDED" in fit_params_names, (
+                "uses_asymmetric_alpha=True but ALPHA_UNREWARDED is not in "
+                "fit_params_names; check _PARAM_FIT_GATES and bias_fn_str")
+        if model_config.uses_asymmetric_beta:
+            assert "BETA_UNREWARDED" in fit_params_names, (
+                "uses_asymmetric_beta=True but BETA_UNREWARDED is not in "
+                "fit_params_names; check _PARAM_FIT_GATES and drift_fn_str")
     evolve_dump_FP = evolveFP(driftFn_str, biasFn_str, noiseFn_str, t_dur, dt,
                               is_loss_no_dir, fit_mode)
 

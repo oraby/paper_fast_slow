@@ -160,22 +160,6 @@ def test_q_update_asymmetric_none_falls_back_to_symmetric():
     assert q_right == 0.25
 
 
-def test_q_update_asymmetric_nan_falls_back_to_symmetric():
-    # Chisqr passes NaN as the frozen-param sentinel — must also collapse
-    # to the symmetric branch.
-    q_left, q_right = state_updates.update_q_values(
-        q_left=0.5,
-        q_right=0.25,
-        observed_choice_left=1.0,
-        observed_reward=0.0,
-        alpha=0.2,
-        alpha_unrewarded=float("nan"),
-    )
-
-    assert np.isclose(q_left, 0.4)
-    assert q_right == 0.25
-
-
 def test_q_update_asymmetric_no_choice_picks_unrewarded():
     # no-choice currently leaves Q values unchanged regardless of which
     # learning rate would be selected. Still pin the no-change invariant
@@ -226,12 +210,65 @@ def test_reward_rate_update_asymmetric_none_falls_back_to_symmetric():
     assert np.isclose(reward_rate, 0.4)
 
 
-def test_reward_rate_update_asymmetric_nan_falls_back_to_symmetric():
-    reward_rate = state_updates.update_reward_rate(
-        reward_rate=0.5,
-        observed_reward=0.0,
-        beta=0.2,
-        beta_unrewarded=float("nan"),
-    )
+# --- xp=np vectorized tests pinning the population-shape semantics ---
+# The MLE population path calls these functions with
+# ``xp=backend.xp`` and (n_candidates, n_sessions) shaped Q-state +
+# (1, n_sessions) shaped trial inputs. Pin the broadcast semantics so
+# the population path stays compatible when state_updates evolves.
 
-    assert np.isclose(reward_rate, 0.4)
+
+def test_q_update_vectorized_broadcasts_population_shape():
+    # 2 candidates × 3 sessions of Q-state, one trial of (1, 3) inputs.
+    q_left = np.array([[0.5, 0.5, 0.5], [0.5, 0.5, 0.5]])
+    q_right = np.array([[0.25, 0.25, 0.25], [0.25, 0.25, 0.25]])
+    # Session 0: rewarded left; session 1: unrewarded left; session 2: no choice.
+    observed_choice_left = np.array([[1.0, 1.0, np.nan]])
+    observed_reward = np.array([[1.0, 0.0, np.nan]])
+    # Per-candidate broadcast: candidate 0 fast learner, candidate 1 slow.
+    alpha = np.array([[0.5], [0.1]])
+    alpha_unrewarded = np.array([[0.8], [0.2]])
+
+    new_q_left, new_q_right = state_updates.update_q_values(
+        q_left, q_right, observed_choice_left, observed_reward,
+        alpha, alpha_unrewarded=alpha_unrewarded, xp=np)
+
+    # Candidate 0, session 0: rewarded ⇒ 0.5 + 0.5*(1-0.5) = 0.75
+    # Candidate 0, session 1: unrewarded ⇒ 0.5 + 0.8*(0-0.5) = 0.1
+    # Candidate 0, session 2: no choice ⇒ 0.5 unchanged
+    np.testing.assert_allclose(new_q_left[0], [0.75, 0.1, 0.5])
+    # Candidate 1: slower rates.
+    np.testing.assert_allclose(new_q_left[1], [0.55, 0.4, 0.5])
+    # q_right is unchanged everywhere (left was chosen / no choice).
+    np.testing.assert_allclose(new_q_right, q_right)
+
+
+def test_compute_q_value_vectorized_matches_inlined_formula():
+    # Population shape Q-state.
+    q_left = np.array([[0.8, 0.2], [0.5, 0.5]])
+    q_right = np.array([[0.2, 0.8], [0.5, 0.5]])
+    result = state_updates.compute_q_value(q_left, q_right, xp=np)
+
+    # Manual formula (replicates the pre-refactor inlined block):
+    LOG_CIEL, LOG_CEIL_MAX = state_updates.LOG_CIEL, state_updates.LOG_CEIL_MAX
+    expected = np.log(
+        np.clip(q_left, LOG_CIEL, 1) / np.clip(q_right, LOG_CIEL, 1)
+    ) / LOG_CEIL_MAX
+    np.testing.assert_allclose(result, expected)
+
+
+def test_compute_starting_point_z_returns_zero_without_q_array_form():
+    # include_Q=False short-circuits to scalar 0 regardless of input shape.
+    z = state_updates.compute_starting_point_z(
+        np.array([0.8, 0.2]), np.array([0.2, 0.8]),
+        delta=1.0, offset=0.0, include_Q=False, xp=np)
+    assert z == 0.0
+
+
+def test_compute_starting_point_z_clipped_array_form():
+    z = state_updates.compute_starting_point_z(
+        np.array([1.0, 1.0]), np.array([0.01, 0.01]),
+        delta=2.0, offset=0.0, include_Q=True, xp=np)
+    # Both entries clip to 1.0 (positive q_value × delta=2 saturates).
+    np.testing.assert_allclose(z, [1.0, 1.0])
+
+

@@ -636,6 +636,13 @@ def _evaluate_mle_loss_for_gui(df, params, driftFn_str, biasFn_str, noiseFn_str,
         _scalar_column_value(df, "mle_dx", default=0.02)
         if fit_config is None
         else getattr(fit_config, "dx", 0.02))
+    # Mirror fit.py's gating: ``-asym`` model variants enable the
+    # asymmetric LR. When True, evaluate_neg_loglik strictly reads
+    # params["ALPHA_UNREWARDED"] / "BETA_UNREWARDED" — the GUI sliders
+    # already populate them when those models are selected
+    # (createWidget enables the *_UNREWARDED widgets via the same gate).
+    uses_asymmetric_alpha = include_Q and "asym" in biasFn_str
+    uses_asymmetric_beta = include_RewardRate and "asym" in driftFn_str
     config = MLEModelConfig(
         drift_fn_str=driftFn_str,
         bias_fn_str=biasFn_str,
@@ -648,6 +655,8 @@ def _evaluate_mle_loss_for_gui(df, params, driftFn_str, biasFn_str, noiseFn_str,
         mle_array_backend="numpy",
         mle_cupy_fallback="numpy",
         mle_terminal_c=float(terminal_c),
+        uses_asymmetric_alpha=uses_asymmetric_alpha,
+        uses_asymmetric_beta=uses_asymmetric_beta,
     )
     return evaluate_neg_loglik(params, df, config, return_df=False).neg_loglik
 
