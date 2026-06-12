@@ -30,9 +30,14 @@ combos=(
     #"NoiseGain-RewardRate|None_|Normal(0, 1)|"
     #"NoiseGain-RewardRate|Q-Val (Offset)|Normal(0, 1)|"
     # --- asym opt-ins (orthogonal: --asym-q / --asym-rr) ---
-    "Classic|Q-Val (Offset)|Normal(0, 1)|--asym-q"
-    "NoiseGain-RewardRate|None_|Normal(0, 1)|--asym-rr"
-    "NoiseGain-RewardRate|Q-Val (Offset)|Normal(0, 1)|--asym-q --asym-rr"
+    "Classic|Q-Val (Offset)|Normal(0, 1)|"
+    #"Classic|Q-Val (Offset)|Normal(0, 1)|--asym-q"
+    #
+    "NoiseGain-RewardRate|None_|Normal(0, 1)|"
+    #"NoiseGain-RewardRate|None_|Normal(0, 1)|--asym-rr"
+    #
+    "NoiseGain-RewardRate|Q-Val (Offset)|Normal(0, 1)|"
+    #"NoiseGain-RewardRate|Q-Val (Offset)|Normal(0, 1)|--asym-q --asym-rr"
     # --- Decay-Q + asym-q (newly possible under the orthogonal design) ---
     #"Decay Q (Offset)|None_|Normal(0, 1)|--asym-q"
     #"NoiseGain-RewardRate Decay Q (Offset)|None_|Normal(0, 1)|--asym-q --asym-rr"
