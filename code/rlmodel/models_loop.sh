@@ -13,19 +13,29 @@
 # ``cd`` into ``code/rlmodel/`` before running — the import path would
 # break.
 #
-# To pick which combinations to run, edit the ``combos`` array below. Each
-# entry uses ``|`` as the field separator so values can contain spaces,
-# parentheses, and dashes (e.g. ``NoiseGain-RewardRate Decay Q (Offset)``).
+# To pick which combinations to run, edit the ``combos`` array below.
+# Each entry uses ``|`` as the field separator so values can contain
+# spaces, parentheses, and dashes (e.g. ``NoiseGain-RewardRate Decay Q
+# (Offset)``). An OPTIONAL fourth ``|``-separated field carries extra
+# CLI args to append for that combo (e.g. ``--asym-q --asym-rr``) —
+# this lets a single canonical model name pair with multiple asym
+# opt-ins side-by-side.
 
 set -uo pipefail
 
 combos=(
-    "Classic|None_|Normal(0, 1)"
-    "Classic|Q-Val (Offset)|Normal(0, 1)"
-    # "Decay Q (Offset)|None_|Normal(0, 1)"
-    "NoiseGain-RewardRate|None_|Normal(0, 1)"
-    "NoiseGain-RewardRate|Q-Val (Offset)|Normal(0, 1)"
-    # "NoiseGain-RewardRate Decay Q (Offset)|None_|Normal(0, 1)"
+    # --- symmetric baselines ---
+    #"Classic|None_|Normal(0, 1)|"
+    #"Classic|Q-Val (Offset)|Normal(0, 1)|"
+    #"NoiseGain-RewardRate|None_|Normal(0, 1)|"
+    #"NoiseGain-RewardRate|Q-Val (Offset)|Normal(0, 1)|"
+    # --- asym opt-ins (orthogonal: --asym-q / --asym-rr) ---
+    "Classic|Q-Val (Offset)|Normal(0, 1)|--asym-q"
+    "NoiseGain-RewardRate|None_|Normal(0, 1)|--asym-rr"
+    "NoiseGain-RewardRate|Q-Val (Offset)|Normal(0, 1)|--asym-q --asym-rr"
+    # --- Decay-Q + asym-q (newly possible under the orthogonal design) ---
+    #"Decay Q (Offset)|None_|Normal(0, 1)|--asym-q"
+    #"NoiseGain-RewardRate Decay Q (Offset)|None_|Normal(0, 1)|--asym-q --asym-rr"
 )
 
 PY=${PYTHON:-python}
@@ -35,15 +45,19 @@ total=${#combos[@]}
 i=0
 for combo in "${combos[@]}"; do
     i=$((i + 1))
-    IFS='|' read -r drift bias noise <<< "$combo"
+    IFS='|' read -r drift bias noise extra <<< "$combo"
+    extra=${extra:-}
     echo
     echo "=================================================================="
-    echo "[$i/$total] drift='$drift'  bias='$bias'  noise='$noise'"
+    echo "[$i/$total] drift='$drift'  bias='$bias'  noise='$noise'  extra='$extra'"
     echo "=================================================================="
+    # Word-split ``extra`` so flags like "--asym-q --asym-rr" become
+    # two separate argv entries to argparse.
     if "$PY" -m code.rlmodel.model_runner \
         --drift "$drift" \
         --bias "$bias" \
         --noise "$noise" \
+        $extra \
         "$@"; then
         echo "[$i/$total] OK"
     else

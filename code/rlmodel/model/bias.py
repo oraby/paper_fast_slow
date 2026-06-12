@@ -57,5 +57,4 @@ BIAS_FN_DICT = {
     "μ, σ (Corr/Incorr)":_biasMeanCorrIncorr,
     "Q-Val":partialWithNames(_biasQVal, Q_VAL_OFFSET=0.0),
     "Q-Val (Offset)":_biasQVal,
-    "Q-Val-asym (Offset)":_biasQVal,
 }

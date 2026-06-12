@@ -39,7 +39,8 @@ def _small_df():
     return pd.DataFrame(rows)
 
 
-def _run_dry(bias_name, drift_name="Classic", noise_name="Normal(0, 1)"):
+def _run_dry(bias_name, drift_name="Classic", noise_name="Normal(0, 1)",
+             uses_asym_q=False, uses_asym_rr=False):
     return fit.simulateDDM(
         _small_df(),
         bounds_and_defaults=InitVals().toDict(),
@@ -55,62 +56,82 @@ def _run_dry(bias_name, drift_name="Classic", noise_name="Normal(0, 1)"):
         dry_run=True,
         bias_fn_str=bias_name,
         drift_fn_str=drift_name,
+        uses_asym_q=uses_asym_q,
+        uses_asym_rr=uses_asym_rr,
     )
 
 
-def test_alpha_unrewarded_fit_only_when_bias_is_q_val_asym_offset():
-    # The -asym bias variant enables asymmetric ALPHA.
-    result = _run_dry(bias_name="Q-Val-asym (Offset)")
+def test_alpha_unrewarded_fit_only_when_asym_q_set_and_q_learning_present():
+    # --asym-q on a Q-learning bias enables ALPHA_UNREWARDED.
+    result = _run_dry(bias_name="Q-Val (Offset)", uses_asym_q=True)
     names = [str(n).upper() for n in result["S1"]["params_names"]]
     assert "ALPHA_UNREWARDED" in names
     assert "BETA_UNREWARDED" not in names
 
-    # Canonical Q-Val (Offset) STAYS SYMMETRIC — it is the legacy fit
-    # used as the reference against the -asym variant in side-by-side
-    # comparisons.
+    # Same model without the flag stays SYMMETRIC.
     result = _run_dry(bias_name="Q-Val (Offset)")
     names = [str(n).upper() for n in result["S1"]["params_names"]]
     assert "ALPHA_UNREWARDED" not in names
 
-    # Q-Val (no offset) bias → no asymmetric LR.
-    result = _run_dry(bias_name="Q-Val")
+    # Q-Val (no offset) bias + --asym-q: also valid (Q-learning active).
+    result = _run_dry(bias_name="Q-Val", uses_asym_q=True)
+    names = [str(n).upper() for n in result["S1"]["params_names"]]
+    assert "ALPHA_UNREWARDED" in names
+
+    # No bias at all + --asym-q: no Q-learning ⇒ flag is a no-op here.
+    # (The CLI pre-flight in model_runner.py rejects this combo with a
+    # helpful error before reaching simulateDDM; simulateDDM itself
+    # silently drops the unused param. Both layers are tested.)
+    result = _run_dry(bias_name="None_", uses_asym_q=True)
     names = [str(n).upper() for n in result["S1"]["params_names"]]
     assert "ALPHA_UNREWARDED" not in names
 
-    # No bias at all → no asymmetric LR.
-    result = _run_dry(bias_name="None_")
-    names = [str(n).upper() for n in result["S1"]["params_names"]]
-    assert "ALPHA_UNREWARDED" not in names
 
-
-def test_beta_unrewarded_fit_only_when_drift_is_noisegain_reward_rate_asym():
-    # The -asym drift variant enables asymmetric BETA.
+def test_beta_unrewarded_fit_only_when_asym_rr_set_and_rr_learning_present():
+    # --asym-rr on a RewardRate drift enables BETA_UNREWARDED.
     result = _run_dry(
-        bias_name="None_", drift_name="NoiseGain-RewardRate-asym")
+        bias_name="None_", drift_name="NoiseGain-RewardRate", uses_asym_rr=True)
     names = [str(n).upper() for n in result["S1"]["params_names"]]
     assert "BETA_UNREWARDED" in names
     assert "ALPHA_UNREWARDED" not in names
 
-    # Canonical NoiseGain-RewardRate STAYS SYMMETRIC.
+    # Same model without the flag stays SYMMETRIC.
     result = _run_dry(bias_name="None_", drift_name="NoiseGain-RewardRate")
     names = [str(n).upper() for n in result["S1"]["params_names"]]
     assert "BETA_UNREWARDED" not in names
 
-    # Classic drift → no asymmetric LR.
-    result = _run_dry(bias_name="None_", drift_name="Classic")
+    # Classic drift + --asym-rr: no reward-rate ⇒ no-op at simulateDDM.
+    result = _run_dry(
+        bias_name="None_", drift_name="Classic", uses_asym_rr=True)
     names = [str(n).upper() for n in result["S1"]["params_names"]]
     assert "BETA_UNREWARDED" not in names
 
 
-def test_both_gates_active_when_both_asym_variants_selected():
-    # Combine Q-Val-asym (Offset) bias with NoiseGain-RewardRate-asym drift
-    # → both asymmetric params enter the fit vector.
+def test_both_asym_flags_compose_with_any_compatible_model():
+    # Q-Val (Offset) + NoiseGain-RewardRate + both flags → both
+    # *_UNREWARDED params in the fit vector.
     result = _run_dry(
-        bias_name="Q-Val-asym (Offset)",
-        drift_name="NoiseGain-RewardRate-asym")
+        bias_name="Q-Val (Offset)",
+        drift_name="NoiseGain-RewardRate",
+        uses_asym_q=True,
+        uses_asym_rr=True,
+    )
     names = [str(n).upper() for n in result["S1"]["params_names"]]
     assert "ALPHA_UNREWARDED" in names
     assert "BETA_UNREWARDED" in names
+
+
+def test_decay_q_drift_supports_asym_q():
+    """Orthogonality regression: under the old design, only the
+    dedicated ``Q-Val-asym (Offset)`` bias could enable asym ALPHA.
+    Now any Q-learning model — including the Decay-Q drift family
+    that learns Q-values through the time-varying drift — can opt
+    in via --asym-q."""
+    result = _run_dry(
+        bias_name="None_", drift_name="Decay Q (Offset)", uses_asym_q=True)
+    names = [str(n).upper() for n in result["S1"]["params_names"]]
+    assert "ALPHA_UNREWARDED" in names
+    assert "BETA_UNREWARDED" not in names
 
 
 def test_mle_latent_recompute_matches_state_updates_for_asymmetric_alpha():
@@ -120,12 +141,14 @@ def test_mle_latent_recompute_matches_state_updates_for_asymmetric_alpha():
     df = _small_df()
     config = MLEModelConfig(
         drift_fn_str="Classic",
-        bias_fn_str="Q-Val-asym (Offset)",
+        bias_fn_str="Q-Val (Offset)",
         noise_fn_str="Normal(0, 1)",
         include_Q=True,
         include_RewardRate=True,
-        # Flags are required to enable strict access to *_UNREWARDED
-        # params (loud failure over silent fallback).
+        # Asym flags are orthogonal to bias / drift / noise identity
+        # (set by --asym-q / --asym-rr at the CLI). Both True here so
+        # _compute_latent_arrays strictly reads ALPHA_UNREWARDED /
+        # BETA_UNREWARDED from params (loud KeyError on miss).
         uses_asymmetric_alpha=True,
         uses_asymmetric_beta=True,
         dt=0.01,
@@ -239,7 +262,7 @@ def test_mle_latent_recompute_raises_keyerror_when_asymmetric_param_missing():
     df = _small_df()
     config = MLEModelConfig(
         drift_fn_str="Classic",
-        bias_fn_str="Q-Val-asym (Offset)",
+        bias_fn_str="Q-Val (Offset)",
         noise_fn_str="Normal(0, 1)",
         include_Q=True,
         include_RewardRate=False,
@@ -262,3 +285,93 @@ def test_mle_latent_recompute_raises_keyerror_when_asymmetric_param_missing():
     }
     with pytest.raises(KeyError, match="ALPHA_UNREWARDED"):
         _compute_latent_arrays(data, params_missing_unrewarded, config)
+
+
+def test_evolveFP_filename_suffix_per_flag_combination():
+    """The orthogonal asym opt-ins surface as a filename suffix so
+    symmetric and asym fits of the same model coexist on disk."""
+    base_args = dict(
+        drift_fn_str="Classic",
+        bias_fn_str="Q-Val (Offset)",
+        noise_fn_str="Normal(0, 1)",
+        t_dur=3.0,
+        dt=0.005,
+        is_loss_no_dir=False,
+        fit_mode="mle",
+    )
+    # Symmetric (both flags False) → no suffix; existing files on disk
+    # load under exactly this path.
+    p = fit.evolveFP(**base_args)
+    assert p.name.endswith("3.0s_dt0.005.pkl"), p.name
+    # Asym Q only.
+    p = fit.evolveFP(uses_asym_q=True, **base_args)
+    assert p.name.endswith("3.0s_dt0.005_asymQ.pkl"), p.name
+    # Asym RR only.
+    p = fit.evolveFP(uses_asym_rr=True, **base_args)
+    assert p.name.endswith("3.0s_dt0.005_asymRR.pkl"), p.name
+    # Both.
+    p = fit.evolveFP(uses_asym_q=True, uses_asym_rr=True, **base_args)
+    assert p.name.endswith("3.0s_dt0.005_asymQRR.pkl"), p.name
+
+
+def test_asym_q_flag_against_non_q_learning_model_is_no_op_at_simulateDDM():
+    """The CLI pre-flight in model_runner.py rejects --asym-q against
+    a non-Q-learning model. ``simulateDDM`` itself doesn't run that
+    pre-flight (it's CLI-only) — it silently drops the unused flag.
+    Pin both layers so a future refactor can't accidentally surface
+    a silent fallback at the simulateDDM layer."""
+    # Classic / None_ / Normal: no Q-learning. --asym-q is a no-op
+    # here: the simulateDDM layer just skips ALPHA_UNREWARDED.
+    result = _run_dry(bias_name="None_", uses_asym_q=True)
+    names = [str(n).upper() for n in result["S1"]["params_names"]]
+    assert "ALPHA_UNREWARDED" not in names
+
+    # The CLI is the friendly error layer (tested separately by
+    # invoking the runner; see test_asym_cli_preflight_rejects_*).
+
+
+def test_asym_cli_preflight_rejects_asym_q_without_q_learning():
+    """``model_runner --asym-q`` against Classic / None_ exits with
+    ``parser.error`` (exit code 2) and a message naming the missing
+    prerequisite."""
+    import subprocess
+    import sys
+    proc = subprocess.run(
+        [sys.executable, "-m", "code.rlmodel.model_runner",
+         "--drift", "Classic",
+         "--bias", "None_",
+         "--noise", "Normal(0, 1)",
+         "--fit-mode", "mle",
+         "--mle-backend", "CPU",
+         "--asym-q",
+         "--dry-run"],
+        capture_output=True, text=True, timeout=60,
+        cwd=str(__import__("pathlib").Path(__file__).resolve().parents[4]),
+    )
+    assert proc.returncode == 2, (
+        f"expected argparse error (exit 2); got {proc.returncode}\n"
+        f"stdout: {proc.stdout!r}\nstderr: {proc.stderr!r}")
+    assert "--asym-q requires" in proc.stderr, proc.stderr
+
+
+def test_asym_cli_preflight_rejects_asym_rr_without_rr_learning():
+    """``model_runner --asym-rr`` against Classic exits with
+    ``parser.error`` and a helpful message."""
+    import subprocess
+    import sys
+    proc = subprocess.run(
+        [sys.executable, "-m", "code.rlmodel.model_runner",
+         "--drift", "Classic",
+         "--bias", "None_",
+         "--noise", "Normal(0, 1)",
+         "--fit-mode", "mle",
+         "--mle-backend", "CPU",
+         "--asym-rr",
+         "--dry-run"],
+        capture_output=True, text=True, timeout=60,
+        cwd=str(__import__("pathlib").Path(__file__).resolve().parents[4]),
+    )
+    assert proc.returncode == 2, (
+        f"expected argparse error (exit 2); got {proc.returncode}\n"
+        f"stdout: {proc.stdout!r}\nstderr: {proc.stderr!r}")
+    assert "--asym-rr requires" in proc.stderr, proc.stderr

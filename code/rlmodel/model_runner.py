@@ -90,7 +90,8 @@ def runModel(df, bias_fn_str, drift_fn_str, noise_fn_str, is_loss_no_dir,
              dry_run=False, mle_array_backend="numpy", mle_device_id=None,
              mle_cupy_fallback="error", mle_gpu_memory_gb=None,
              mle_show_progress=False, mle_terminal_c=MLE_TERMINAL_C.Default,
-             init_val_overrides=None):
+             init_val_overrides=None,
+             uses_asym_q=False, uses_asym_rr=False):
     biasFn = BIAS_FN_DICT[bias_fn_str]
     driftFn = DRIFT_FN_DICT[drift_fn_str]
     noiseFn = NOISE_FN_DICT[noise_fn_str]
@@ -123,7 +124,9 @@ def runModel(df, bias_fn_str, drift_fn_str, noise_fn_str, is_loss_no_dir,
                                      mle_show_progress=mle_show_progress,
                                      mle_terminal_c=mle_terminal_c,
                                      bias_fn_str=bias_fn_str,
-                                     drift_fn_str=drift_fn_str)
+                                     drift_fn_str=drift_fn_str,
+                                     uses_asym_q=uses_asym_q,
+                                     uses_asym_rr=uses_asym_rr)
     evolve_res.update(evolve_res_res)
     return evolve_res
 
@@ -185,6 +188,19 @@ def main():
             f"C={MLE_TERMINAL_C.Max} reproduces the legacy survival-only "
             "behavior. Only honored by the batched MLE path (which is "
             "the default)."))
+    parser.add_argument(
+        "--asym-q", action="store_true", default=False,
+        help=(
+            "Fit a separate ALPHA_UNREWARDED rate for Q-value updates on "
+            "unrewarded / no-choice trials. Requires the selected model to "
+            "actually learn Q-values (Q-Val bias or Decay-Q drift); the "
+            "runner fails fast at startup otherwise."))
+    parser.add_argument(
+        "--asym-rr", action="store_true", default=False,
+        help=(
+            "Fit a separate BETA_UNREWARDED rate for reward-rate updates on "
+            "unrewarded trials. Requires the model to actually learn a "
+            "reward rate (NoiseGain-RewardRate drift family)."))
     parser.add_argument("--test", action="store_true")
     parser.add_argument("--load-evolve", action="store_true")
     parser.add_argument("--remove-subject", type=str, default=None,
@@ -203,6 +219,33 @@ def main():
             f"--mle-terminal-c must satisfy "
             f"{MLE_TERMINAL_C.Min} <= C <= {MLE_TERMINAL_C.Max}; "
             f"got {args.mle_terminal_c}")
+    # Pre-flight on --asym-q / --asym-rr: each flag requires the
+    # underlying learning quantity to actually exist in the selected
+    # model. Use the same auto-detection that fit.py:simulateDDM uses
+    # (cols pulled by *ColsAndKwargs from each fn's signature) so the
+    # check matches what the fitter will see.
+    if args.asym_q or args.asym_rr:
+        from .model.util import (
+            biasFnColsAndKwargs, driftFnColsAndKwargs, noiseFnColsAndKwargs)
+        bias_cols, _ = biasFnColsAndKwargs(BIAS_FN_DICT[args.bias])
+        drift_cols, _ = driftFnColsAndKwargs(DRIFT_FN_DICT[args.drift])
+        noise_cols, _ = noiseFnColsAndKwargs(NOISE_FN_DICT[args.noise])
+        learns_q = ("Q_val" in bias_cols or "Q_val" in drift_cols
+                    or "Q_val" in noise_cols)
+        learns_rr = ("RewardRate" in bias_cols or "RewardRate" in drift_cols
+                     or "RewardRate" in noise_cols)
+        if args.asym_q and not learns_q:
+            parser.error(
+                f"--asym-q requires a model that learns Q-values "
+                f"(Q-Val bias or Decay-Q drift); got "
+                f"bias={args.bias!r}, drift={args.drift!r}, "
+                f"noise={args.noise!r}.")
+        if args.asym_rr and not learns_rr:
+            parser.error(
+                f"--asym-rr requires a model that learns a reward rate "
+                f"(NoiseGain-RewardRate drift family); got "
+                f"bias={args.bias!r}, drift={args.drift!r}, "
+                f"noise={args.noise!r}.")
     try:
         init_val_overrides = _parse_init_val_overrides(args.init_val)
     except ValueError as exc:
@@ -232,7 +275,9 @@ def main():
         load_evolve_fp = fit.evolveFP(args.drift, args.bias, args.noise,
                                       t_dur=T_dur, dt=DT,
                                       is_loss_no_dir=args.loss_no_dir,
-                                      fit_mode=args.fit_mode)
+                                      fit_mode=args.fit_mode,
+                                      uses_asym_q=args.asym_q,
+                                      uses_asym_rr=args.asym_rr)
         assert load_evolve_fp.exists(), f"File not found: {load_evolve_fp}"
         with open(load_evolve_fp, "rb") as f:
             evolve_res = pickle.load(f)
@@ -255,7 +300,9 @@ def main():
                                   mle_gpu_memory_gb=args.mle_gpu_memory_gb,
                                   mle_show_progress=mle_show_progress,
                                   mle_terminal_c=args.mle_terminal_c,
-                                  init_val_overrides=init_val_overrides)
+                                  init_val_overrides=init_val_overrides,
+                                  uses_asym_q=args.asym_q,
+                                  uses_asym_rr=args.asym_rr)
     else:
         runModel(df_behavior, bias_fn_str=args.bias, drift_fn_str=args.drift,
                  noise_fn_str=args.noise, num_cpus=args.num_cpus,
@@ -268,7 +315,9 @@ def main():
                  mle_gpu_memory_gb=args.mle_gpu_memory_gb,
                  mle_show_progress=mle_show_progress,
                  mle_terminal_c=args.mle_terminal_c,
-                 init_val_overrides=init_val_overrides)
+                 init_val_overrides=init_val_overrides,
+                 uses_asym_q=args.asym_q,
+                 uses_asym_rr=args.asym_rr)
 
 
 

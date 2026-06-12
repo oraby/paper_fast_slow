@@ -311,11 +311,28 @@ def _evolveFPSubject(evolveFP : pathlib.Path, subject):
     return pathlib.Path(evolve_subj_FP)
 
 def evolveFP(drift_fn_str, bias_fn_str, noise_fn_str, t_dur, dt,
-            is_loss_no_dir, fit_mode):
+            is_loss_no_dir, fit_mode,
+            uses_asym_q=False, uses_asym_rr=False):
+    """Build the saved-fit pickle path.
+
+    The optional ``_asymQ`` / ``_asymRR`` / ``_asymQRR`` suffix carries
+    the asymmetric-LR opt-ins orthogonally to the bias / drift / noise
+    model identity. Symmetric fits (both flags False) keep the original
+    filename format unchanged — backwards-compat for every existing
+    pickle on disk.
+    """
     loss_no_dir_str = "" if not is_loss_no_dir else "_loss_no_dir"
+    if uses_asym_q and uses_asym_rr:
+        asym_suffix = "_asymQRR"
+    elif uses_asym_q:
+        asym_suffix = "_asymQ"
+    elif uses_asym_rr:
+        asym_suffix = "_asymRR"
+    else:
+        asym_suffix = ""
     main_str = (f"data/RLModel/{fit_mode}_{drift_fn_str}_"
                 f"bias{bias_fn_str}_{noise_fn_str}"
-                f"{loss_no_dir_str}_{t_dur}s_dt{dt}.pkl")
+                f"{loss_no_dir_str}_{t_dur}s_dt{dt}{asym_suffix}.pkl")
     return pathlib.Path(main_str)
 
 
@@ -326,7 +343,8 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
                 mle_device_id=None, mle_cupy_fallback="error",
                 mle_gpu_memory_gb=None, mle_show_progress=False,
                 mle_terminal_c=MLE_TERMINAL_C.Default,
-                bias_fn_str=None, drift_fn_str=None):
+                bias_fn_str=None, drift_fn_str=None,
+                uses_asym_q=False, uses_asym_rr=False):
     global _pool
     if fit_mode != "chisq":
         if fit_mode != "mle":
@@ -381,15 +399,14 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
     # for fix_param_name, fix_param_val in zip(fixed_params_names, fixed_params_vals):
     #     print(fix_param_name, "=", fix_param_val)
 
-    # Asymmetric learning-rate gating: only the dedicated ``-asym``
-    # model variants opt into the new ALPHA_UNREWARDED /
-    # BETA_UNREWARDED params. The canonical "Q-Val (Offset)" /
-    # "NoiseGain-RewardRate" names stay symmetric (legacy single-rate
-    # fits) so both variants can be fit side-by-side per subject.
-    include_Q_asym = include_Q and (
-        bias_fn_str is not None and "asym" in bias_fn_str)
-    include_RewardRate_asym = include_RewardRate and (
-        drift_fn_str is not None and "asym" in drift_fn_str)
+    # Asymmetric learning-rate gating: orthogonal to model identity.
+    # The two explicit ``uses_asym_*`` flags (set by the CLI / GUI /
+    # caller) are the only source. They're combined with the
+    # auto-detected ``include_Q`` / ``include_RewardRate`` so a flag
+    # against an incompatible model surfaces as a no-op here — the
+    # CLI pre-flight in model_runner.py is the friendly error layer.
+    include_Q_asym = include_Q and uses_asym_q
+    include_RewardRate_asym = include_RewardRate and uses_asym_rr
 
     # Declarative per-param gating table — the single place that says
     # "this param enters the fit vector iff <flag>". Params for which
@@ -608,7 +625,9 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
                 "uses_asymmetric_beta=True but BETA_UNREWARDED is not in "
                 "fit_params_names; check _PARAM_FIT_GATES and drift_fn_str")
     evolve_dump_FP = evolveFP(driftFn_str, biasFn_str, noiseFn_str, t_dur, dt,
-                              is_loss_no_dir, fit_mode)
+                              is_loss_no_dir, fit_mode,
+                              uses_asym_q=uses_asym_q,
+                              uses_asym_rr=uses_asym_rr)
 
     IS_PARALLEL_EXECUTION_ENABLED = False
     is_gpu_mle = fit_mode == "mle" and model_config.requires_gpu

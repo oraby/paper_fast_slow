@@ -33,7 +33,17 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
     drop_downs_labels = ["Subject", "DV", "Drift Fn", "Bias Fn",
                          "Psychometric", "Noise Fn"]
 
-    checkboxes_labels = {"Real-time": gui_cache.get("Real-time", True)}
+    # The two asym checkboxes are orthogonal to the bias / drift / noise
+    # dropdown selection — they enable ALPHA_UNREWARDED / BETA_UNREWARDED
+    # fitting on top of whatever Q-learning / RewardRate-learning the
+    # selected model already does. updateGUI grays them out (via
+    # widget.disabled) when the active model doesn't actually learn
+    # Q-values or a reward rate.
+    checkboxes_labels = {
+        "Real-time": gui_cache.get("Real-time", True),
+        "Asymmetric Q-update":  gui_cache.get("Asymmetric Q-update", False),
+        "Asymmetric RR-update": gui_cache.get("Asymmetric RR-update", False),
+    }
     chi2_reset_label = "Reset to Chi\u00b2"
     buttons_labels = ["Reset to MLE defaults", chi2_reset_label, "Update", "Run MLE"]
 
@@ -145,16 +155,17 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
                    **{label:widget for label, widget in zip(buttons_labels, button_widgets_li)}}
     # print("All widgets:", all_widgets)
     # Make three columns: parameters, conditions, and buttons/settings
-    # *_UNREWARDED sliders sit directly under their symmetric siblings
-    # so the asymmetric-LR variants are obvious in the GUI. Only the
-    # -asym model variants in DRIFT_FN_DICT / BIAS_FN_DICT actually
-    # consume them; for other variants the value is ignored.
+    # *_UNREWARDED sliders sit directly under their symmetric siblings,
+    # gated by the matching asym checkbox. Asym is now orthogonal to the
+    # bias / drift / noise selection — any Q-learning model can use
+    # ALPHA_UNREWARDED, any RewardRate model can use BETA_UNREWARDED.
     first_col = [drop_down_widgets.pop("Drift Fn"),
                  slider_widgets.pop("DRIFT_COEF"),
                  slider_widgets.pop("NOISE_SIGMA"),
                  slider_widgets.pop("BOUND"),
                  slider_widgets.pop("NON_DECISION_TIME"),
                  slider_widgets.pop("BETA"),
+                 checkbox_widgets.pop("Asymmetric RR-update"),
                  slider_widgets.pop("BETA_UNREWARDED"),
                  #slider_widgets.pop("Drift RR Coef"),
                  ]
@@ -164,6 +175,7 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
                   slider_widgets.pop("BIAS_MU"),
                   slider_widgets.pop("BIAS_SIGMA"),
                   slider_widgets.pop("ALPHA"),
+                  checkbox_widgets.pop("Asymmetric Q-update"),
                   slider_widgets.pop("ALPHA_UNREWARDED"),]
     third_col = [drop_down_widgets.pop("Subject"),
                  drop_down_widgets.pop("DV"),
@@ -285,14 +297,19 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
             all_widgets["ALPHA"].disabled = True
         if not include_RewardRate:
             all_widgets["BETA"].disabled = True
-        # Asymmetric LR sliders track the same model-variant gates used by
-        # fit.py at fit time: ALPHA_UNREWARDED is consumed only by the
-        # "Q-Val-asym (Offset)" bias and BETA_UNREWARDED only by drifts
-        # that start with "NoiseGain-RewardRate-asym". Disable them
-        # otherwise so the GUI mirrors which params will actually be fit.
-        if biasFn_str != "Q-Val-asym (Offset)":
+        # Asymmetric-LR gating is now orthogonal to the model identity:
+        # the checkbox is the source of truth. The checkbox itself is
+        # disabled when the active model wouldn't learn the matching
+        # quantity (no Q-learning → no asym Q, no reward-rate → no asym
+        # RR); the *_UNREWARDED slider follows both the checkbox state
+        # and the include_* flag.
+        asym_q_cb  = all_widgets["Asymmetric Q-update"]
+        asym_rr_cb = all_widgets["Asymmetric RR-update"]
+        asym_q_cb.disabled  = not include_Q
+        asym_rr_cb.disabled = not include_RewardRate
+        if not (include_Q and asym_q_cb.value):
             all_widgets["ALPHA_UNREWARDED"].disabled = True
-        if not driftFn_str.startswith("NoiseGain-RewardRate-asym"):
+        if not (include_RewardRate and asym_rr_cb.value):
             all_widgets["BETA_UNREWARDED"].disabled = True
 
         # Now we should have update the GUI, but dont continue unless the
@@ -368,6 +385,10 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
                     fit_entry=fit_entry,
                     terminal_c_override=float(
                         all_widgets["MLE_TERMINAL_C"].value),
+                    uses_asym_q=bool(
+                        all_widgets["Asymmetric Q-update"].value),
+                    uses_asym_rr=bool(
+                        all_widgets["Asymmetric RR-update"].value),
                 )
                 last_mle_loss_source = "current"
             except Exception as exc:
@@ -619,7 +640,8 @@ def _stored_mle_loss_from_fit_entry(fit_entry):
 
 def _evaluate_mle_loss_for_gui(df, params, driftFn_str, biasFn_str, noiseFn_str,
                                include_Q, include_RewardRate, dt, t_dur,
-                               fit_entry=None, terminal_c_override=None):
+                               fit_entry=None, terminal_c_override=None,
+                               uses_asym_q=False, uses_asym_rr=False):
     fit_config = _fit_entry_mle_config(fit_entry)
     if terminal_c_override is not None:
         # GUI slider value wins over both the saved fit-config and the
@@ -636,13 +658,13 @@ def _evaluate_mle_loss_for_gui(df, params, driftFn_str, biasFn_str, noiseFn_str,
         _scalar_column_value(df, "mle_dx", default=0.02)
         if fit_config is None
         else getattr(fit_config, "dx", 0.02))
-    # Mirror fit.py's gating: ``-asym`` model variants enable the
-    # asymmetric LR. When True, evaluate_neg_loglik strictly reads
-    # params["ALPHA_UNREWARDED"] / "BETA_UNREWARDED" — the GUI sliders
-    # already populate them when those models are selected
-    # (createWidget enables the *_UNREWARDED widgets via the same gate).
-    uses_asymmetric_alpha = include_Q and "asym" in biasFn_str
-    uses_asymmetric_beta = include_RewardRate and "asym" in driftFn_str
+    # Mirror fit.py's gating: the explicit asym flags (sourced from
+    # the GUI checkboxes by the caller) are the only signal. Combined
+    # with include_Q / include_RewardRate so a checkbox ticked against
+    # an incompatible model surfaces as a no-op here — the GUI
+    # createWidget loop disables the checkbox itself in that case.
+    uses_asymmetric_alpha = include_Q and uses_asym_q
+    uses_asymmetric_beta  = include_RewardRate and uses_asym_rr
     config = MLEModelConfig(
         drift_fn_str=driftFn_str,
         bias_fn_str=biasFn_str,

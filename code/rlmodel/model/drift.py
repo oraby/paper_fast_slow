@@ -174,7 +174,6 @@ def _noiseGainRewardRate(starting_point : npt.NDArray,
 DRIFT_FN_DICT = {
     "Classic": _driftClassic,
     "NoiseGain-RewardRate": _noiseGainRewardRate,
-    "NoiseGain-RewardRate-asym": _noiseGainRewardRate,
     "Decay Q": partialWithNames(_decayQ, nondectime_Q=True, Q_VAL_OFFSET=0),
     "Decay Q (Offset)": partialWithNames(_decayQ, nondectime_Q=True),
     "NoiseGain-RewardRate Decay Q": partialWithNames(_noiseGainDecayingQ, nondectime_Q=True, Q_VAL_OFFSET=0),

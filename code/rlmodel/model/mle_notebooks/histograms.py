@@ -20,6 +20,11 @@ DEFAULT_LATENT_COLUMNS = {
     # alongside the per-trial latents.
     "λ (lapse)": "mle_lapse_rate",
     "C (terminal)": "mle_terminal_c",
+    # Asymmetric-LR opt-ins. Boolean across the whole dataset (the
+    # histogram displays as a 0/1 bar pair) so cross-fit filtering
+    # by asym variant works the same way as filtering by λ or C.
+    "asym α": "mle_uses_asymmetric_alpha",
+    "asym β": "mle_uses_asymmetric_beta",
 }
 FILTER_COLORS = ("orange", "green", "tab:red", "tab:purple", "tab:brown")
 
