@@ -26,6 +26,49 @@ import os
 _MLE_ONLY_SLIDER_NAMES = {"LAPSE_RATE", "MLE_TERMINAL_C"}
 
 
+def _asym_mode_suffix(all_widgets):
+    """Return the asym suffix that matches the current checkbox state.
+
+    Matches ``fit.evolveFP``'s filename convention so the GUI can look up
+    ``subjects_defaults[...][subject]["mle_asymQ"]`` etc. when the
+    relevant checkbox is ticked. Returns ``""`` when neither checkbox is
+    set so symmetric fits load as before.
+    """
+    asym_q = (
+        "Asymmetric Q-update" in all_widgets
+        and bool(all_widgets["Asymmetric Q-update"].value))
+    asym_rr = (
+        "Asymmetric RR-update" in all_widgets
+        and bool(all_widgets["Asymmetric RR-update"].value))
+    if asym_q and asym_rr:
+        return "_asymQRR"
+    if asym_q:
+        return "_asymQ"
+    if asym_rr:
+        return "_asymRR"
+    return ""
+
+
+def _preferred_modes_for(base_mode, all_widgets):
+    """Build the preferred-mode fallback chain for the current checkbox state.
+
+    The asym-suffixed key (``mle_asymQ`` / ``mle_asymRR`` / ``mle_asymQRR``)
+    is tried first when the relevant checkbox is ticked. Both ``mle`` and
+    ``chisq`` symmetric defaults remain as fallbacks so the user gets
+    *something* even when the requested asym variant hasn't been fit.
+    """
+    suffix = _asym_mode_suffix(all_widgets)
+    preferred = []
+    if suffix and base_mode in ("mle", "chisq"):
+        preferred.append(f"{base_mode}{suffix}")
+    preferred.append(base_mode)
+    # On the auto-apply path the caller passes base_mode="mle" and still
+    # wants chisq as a last resort if no MLE fit exists for the subject.
+    if base_mode == "mle" and "chisq" not in preferred:
+        preferred.append("chisq")
+    return tuple(preferred)
+
+
 def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
                  is_small_fig_mode, subjects_defaults=None, save_figs=False,
                  save_ovewrite=True):
@@ -212,6 +255,7 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
     last_driftFn = None
     last_biasFn = None
     last_noiseFn = None
+    last_asym_suffix = None
     last_loss = None
     last_mle_loss = None
     last_mle_loss_source = None
@@ -219,22 +263,32 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
     def updateGUI(force_update=False, run_mle=False):
         nonlocal all_widgets, include_Q, include_RewardRate, checkbox_last_val, fig, last_loss
         nonlocal last_subject, last_driftFn, last_biasFn, last_noiseFn
+        nonlocal last_asym_suffix
         nonlocal last_mle_loss, last_mle_loss_source, last_mle_loss_key
         # print("Updating GUI:", "Update:", all_widgets["Real-time"].value)
 
         cur_subject = all_widgets["Subject"].value
         df = all_df[all_df.Name == cur_subject]
         # print("0")
+        # Treat an asym-checkbox toggle as a "load defaults" trigger —
+        # ticking the box should pull the matching ``mle_asymQ`` /
+        # ``mle_asymRR`` / ``mle_asymQRR`` fit's params straight into the
+        # sliders if that fit exists for the subject. Falls back to the
+        # symmetric ``mle`` (and finally ``chisq``) entry otherwise.
+        cur_asym_suffix = _asym_mode_suffix(all_widgets)
         if ((last_subject != cur_subject) or (last_driftFn != all_widgets["Drift Fn"].value) or
             (last_biasFn != all_widgets["Bias Fn"].value) or
-            (last_noiseFn != all_widgets["Noise Fn"].value)) and subjects_defaults is not None:
+            (last_noiseFn != all_widgets["Noise Fn"].value) or
+            (last_asym_suffix != cur_asym_suffix)) and subjects_defaults is not None:
             _try_apply_fit_defaults(
                 all_widgets, subjects_defaults, t_dur, cur_subject,
-                preferred_modes=("mle", "chisq"), required=False)
+                preferred_modes=_preferred_modes_for("mle", all_widgets),
+                required=False, quiet=True)
 
         last_subject = cur_subject
         last_driftFn = all_widgets["Drift Fn"].value
         last_biasFn = all_widgets["Bias Fn"].value
+        last_asym_suffix = cur_asym_suffix
         last_noiseFn = all_widgets["Noise Fn"].value
         # We can't do the DV filtering here, because we need all subsequent
         # trials to build Q values abd RewardRate. So we will rather do
@@ -451,12 +505,19 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
         updateGUI()
         # return updateGUI()
 
+    # The Reset buttons consult the asym checkboxes so the variant the
+    # user is sweeping in the GUI (Q-update / RR-update) gets its own
+    # saved defaults loaded. Falls back through the preferred-modes
+    # chain to symmetric ``mle`` (and ``chisq`` for the MLE button) if
+    # the asym fit isn't on disk yet.
     all_widgets["Reset to MLE defaults"].on_click(
         lambda _button: _reset_defaults_and_update(
-            all_widgets, subjects_defaults, t_dur, "mle", updateGUI))
+            all_widgets, subjects_defaults, t_dur,
+            _preferred_modes_for("mle", all_widgets), updateGUI))
     all_widgets[chi2_reset_label].on_click(
         lambda _button: _reset_defaults_and_update(
-            all_widgets, subjects_defaults, t_dur, "chisq", updateGUI))
+            all_widgets, subjects_defaults, t_dur,
+            _preferred_modes_for("chisq", all_widgets), updateGUI))
     all_widgets["Run MLE"].on_click(
         lambda _button: updateGUI(force_update=True, run_mle=True))
     out = widgets.interactive_output(outHandler, all_widgets_wo_btns)
@@ -531,20 +592,30 @@ def _mle_params_from_widgets(all_widgets):
     }
 
 
-def _reset_defaults_and_update(all_widgets, subjects_defaults, t_dur, mode,
-                               update_fn):
+def _reset_defaults_and_update(all_widgets, subjects_defaults, t_dur,
+                               preferred_modes, update_fn):
+    """Apply the first available fit from ``preferred_modes``.
+
+    The button handlers pass a tuple like
+    ``("mle_asymQ", "mle", "chisq")`` — the asym-suffixed key is tried
+    first when the checkbox is ticked, with symmetric variants as
+    fallbacks. ``required=False`` so a missing asym fit just silently
+    falls through instead of raising — the GUI shouldn't crash because
+    the user hasn't run that variant yet.
+    """
     subject = all_widgets["Subject"].value
-    _apply_fit_defaults(
-        all_widgets, subjects_defaults, t_dur, subject, mode=mode)
+    _try_apply_fit_defaults(
+        all_widgets, subjects_defaults, t_dur, subject,
+        preferred_modes=preferred_modes, required=False)
     update_fn(force_update=True)
 
 
 def _try_apply_fit_defaults(all_widgets, subjects_defaults, t_dur, subject,
-                            preferred_modes, required=False):
+                            preferred_modes, required=False, quiet=False):
     for mode in preferred_modes:
         if _apply_fit_defaults(
                 all_widgets, subjects_defaults, t_dur, subject, mode=mode,
-                required=False):
+                required=False, quiet=quiet):
             return mode
     if required:
         raise KeyError(
@@ -554,7 +625,19 @@ def _try_apply_fit_defaults(all_widgets, subjects_defaults, t_dur, subject,
 
 
 def _apply_fit_defaults(all_widgets, subjects_defaults, t_dur, subject, mode,
-                        required=True):
+                        required=True, quiet=False):
+    """Apply a saved fit's params to the GUI sliders.
+
+    ``quiet=True`` suppresses the "Setting X defaults" log line AND
+    short-circuits when the (subject, mode, model) tuple matches the
+    last successful apply. ipywidgets fires updateGUI multiple times
+    per user action (one per traitlet update inside the dropdown
+    change), so the auto-apply path passes ``quiet=True`` to avoid
+    spamming stdout + re-running the per-widget assign/restore dance
+    when nothing has actually changed. Explicit Reset button presses
+    pass the default ``quiet=False`` so the user gets feedback on
+    every click, even if they're clicking the same button.
+    """
     entry = _get_subject_fit_entry(
         subjects_defaults,
         t_dur,
@@ -569,6 +652,16 @@ def _apply_fit_defaults(all_widgets, subjects_defaults, t_dur, subject, mode,
             raise KeyError(
                 f"No {mode} defaults found for subject={subject!r}")
         return False
+    if quiet:
+        log_key = (
+            subject, mode,
+            all_widgets["Noise Fn"].value,
+            all_widgets["Bias Fn"].value,
+            all_widgets["Drift Fn"].value,
+        )
+        if getattr(_apply_fit_defaults, "_last_log_key", None) == log_key:
+            return True
+        _apply_fit_defaults._last_log_key = log_key
     params = _fit_entry_params(fit_entry)
     print(f"Setting {mode.upper()} defaults for:", subject)
     for val_name, val in params.items():
@@ -698,10 +791,18 @@ def _fit_entries_by_mode(entry):
     if entry is None:
         return {}
     if isinstance(entry, dict):
-        if "mle" in entry or "chisq" in entry:
-            return {
-                mode: fit_entry for mode, fit_entry in entry.items()
-                if mode in {"mle", "chisq"}}
+        # The notebook now keys asym variants as ``mle_asymQ`` /
+        # ``mle_asymRR`` / ``mle_asymQRR`` (and the same for chisq if
+        # ever produced) so symmetric and asym fits of the same model
+        # coexist. Accept any key that starts with the recognized base
+        # modes — the lookup chain elsewhere (preferred_modes) picks
+        # exactly which variant to apply.
+        recognized = {k for k in entry.keys()
+                      if k == "mle" or k == "chisq"
+                      or k.startswith("mle_asym")
+                      or k.startswith("chisq_asym")}
+        if recognized:
+            return {mode: entry[mode] for mode in recognized}
         if _is_params_dict(entry):
             return {"mle": entry, "chisq": entry}
         inferred = _infer_fit_entry_mode(entry)
