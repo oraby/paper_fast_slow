@@ -120,17 +120,29 @@ def update_reward_rate(reward_rate, observed_reward, beta, beta_unrewarded=None,
     return new_reward_rate
 
 
-def compute_starting_point_z(q_left, q_right, delta, offset, include_Q, *, xp=np):
-    """Return normalized starting point z in current bound units, [-1, 1].
+def compute_starting_point_z(q_left, q_right, delta, offset, include_Q,
+                              *, xp=np, bound=None):
+    """Return normalized starting point z.
 
-    If include_Q is False, returns 0 unconditionally. Classic and R-only MLE
-    variants have no starting-point bias; offset is only meaningful when
-    include_Q is True.
+    Default (``bound=None``): legacy semantic. ``z`` lives in ``[-1, 1]``,
+    interpreted as a fraction of the absorbing bound. Classic and R-only
+    MLE variants have no starting-point bias; offset is only meaningful
+    when ``include_Q`` is True.
+
+    Absolute mode (``bound`` provided): ``z = clip(delta*q + offset,
+    -bound, +bound)`` — bias is interpreted in absolute DDM-state units
+    and clipped to the active bound directly. Used by ``--scale-bound``
+    fits (where BOUND varies per candidate) so the bias contribution
+    doesn't implicitly track the bound. ``bound`` may be a scalar or
+    a broadcast-compatible array.
     """
     if not include_Q:
         return 0.0
     q_value = compute_q_value(q_left, q_right, xp=xp)
-    return xp.clip(delta * q_value + offset, -1, 1)
+    z = delta * q_value + offset
+    if bound is None:
+        return xp.clip(z, -1, 1)
+    return xp.clip(z, -bound, bound)
 
 
 def compute_trial_mu(coherence, drift_coef, time_grid=None, *, xp=np):

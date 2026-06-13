@@ -41,6 +41,18 @@ combos=(
     # --- Decay-Q + asym-q (newly possible under the orthogonal design) ---
     #"Decay Q (Offset)|None_|Normal(0, 1)|--asym-q"
     #"NoiseGain-RewardRate Decay Q (Offset)|None_|Normal(0, 1)|--asym-q --asym-rr"
+    # --- Phase 2: --scale-bound (fit BOUND, freeze NOISE_SIGMA) ---
+    # Saved-fit filenames gain the _scaledB suffix so symmetric and
+    # scale-bound variants coexist in mle_population_explorer.ipynb.
+    #"Classic|None_|Normal(0, 1)|--scale-bound"
+    #"Classic|Q-Val (Offset)|Normal(0, 1)|--scale-bound"
+    # --- Phase 2: Bound-RewardRate drift family ---
+    # New drift entries; per-trial bound rescaling proven equivalent to
+    # path-D (mu/r_t, sigma/r_t, z/r_t) in scale_bound_equivalence.ipynb.
+    #"Bound-RewardRate|None_|Normal(0, 1)|"
+    #"Bound-RewardRate|Q-Val (Offset)|Normal(0, 1)|"
+    # --- Phase 2: Bound-RewardRate + asym-rr (orthogonal opt-ins compose) ---
+    #"Bound-RewardRate|None_|Normal(0, 1)|--asym-rr"
 )
 
 PY=${PYTHON:-python}

@@ -87,6 +87,16 @@ class InitVals:
 DT = 0.005
 T_dur = 3
 NUM_CPUS = os.cpu_count()
+
+
+# --scale-bound regime: when the user opts in (via the CLI flag or the
+# GUI checkbox), fit.simulateDDM swaps the InitVals for BOUND / NOISE_SIGMA
+# with these private constants. BOUND becomes a fitted axis (range >1
+# bin); NOISE_SIGMA freezes at 1.0 so the two near-degenerate scale axes
+# remain identifiable in the DDM loss landscape. Documented in the
+# ``--scale-bound`` plan §"InitVals dual-pair override".
+_BOUND_WHEN_SCALED : InitVal = InitVal(0.3, 5.0, 1.0)
+_NOISE_WHEN_SCALED : InitVal = InitVal(1.0, 1.0, 1.0)
 # Default + valid range for ``mle_terminal_c`` (the threshold C used to
 # partition residual interior mass at t = T_max). Lives outside the
 # ``InitVals`` dataclass because terminal_c is a model-config knob, not a

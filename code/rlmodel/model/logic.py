@@ -219,15 +219,22 @@ def processMultipleSess(mult_sess_df, alpha, beta, include_Q,
 
 def simulateDDMTrial(dvs, NON_DECISION_TIME, starting_point, BOUND, driftFn, DRIFT_COEF,
                      noiseFn, NOISE_SIGMA, dt, max_dt, driftFn_kwargs={},
-                     noiseFn_kwargs={}):
+                     noiseFn_kwargs={}, uses_scaled_bound=False):
     global runs_dx, runs_noise, runs_starting_point, runs_dvs, runs_bound
     max_possible_dt = max_dt #- nondectime
     num_steps = int(np.ceil(max_possible_dt/dt))
     num_trials = dvs.shape[0]
 
-    # Starting point is between -1 and 1, scale the starting point to be
-    # between -bound and bound
-    starting_point_bounded = starting_point * BOUND
+    # Default semantic: starting_point is in [-1, 1] (fraction of bound)
+    # so we multiply by BOUND to get absolute DDM-state units. Under
+    # ``--scale-bound`` BOUND is the fitted axis and bias is already in
+    # absolute units (see state_updates.compute_starting_point_z with the
+    # ``bound`` kwarg + simulateDDM in fit.py); skip the multiplication
+    # so the bias doesn't double-scale.
+    if uses_scaled_bound:
+        starting_point_bounded = starting_point
+    else:
+        starting_point_bounded = starting_point * BOUND
     # Initialize the dx array
     size = num_trials, num_steps
 

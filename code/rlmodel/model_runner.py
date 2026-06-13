@@ -91,7 +91,8 @@ def runModel(df, bias_fn_str, drift_fn_str, noise_fn_str, is_loss_no_dir,
              mle_cupy_fallback="error", mle_gpu_memory_gb=None,
              mle_show_progress=False, mle_terminal_c=MLE_TERMINAL_C.Default,
              init_val_overrides=None,
-             uses_asym_q=False, uses_asym_rr=False):
+             uses_asym_q=False, uses_asym_rr=False,
+             scale_bound=False):
     biasFn = BIAS_FN_DICT[bias_fn_str]
     driftFn = DRIFT_FN_DICT[drift_fn_str]
     noiseFn = NOISE_FN_DICT[noise_fn_str]
@@ -126,7 +127,8 @@ def runModel(df, bias_fn_str, drift_fn_str, noise_fn_str, is_loss_no_dir,
                                      bias_fn_str=bias_fn_str,
                                      drift_fn_str=drift_fn_str,
                                      uses_asym_q=uses_asym_q,
-                                     uses_asym_rr=uses_asym_rr)
+                                     uses_asym_rr=uses_asym_rr,
+                                     scale_bound=scale_bound)
     evolve_res.update(evolve_res_res)
     return evolve_res
 
@@ -201,6 +203,19 @@ def main():
             "Fit a separate BETA_UNREWARDED rate for reward-rate updates on "
             "unrewarded trials. Requires the model to actually learn a "
             "reward rate (NoiseGain-RewardRate drift family)."))
+    parser.add_argument(
+        "--scale-bound", action="store_true", default=False,
+        help=(
+            "Swap which of (BOUND, NOISE_SIGMA) is the fitted scale axis. "
+            "Default behavior fits NOISE_SIGMA with BOUND frozen at 1.0; "
+            "--scale-bound fits BOUND in [0.3, 5.0] with NOISE_SIGMA frozen "
+            "at 1.0 (see initvals.py:_BOUND_WHEN_SCALED / _NOISE_WHEN_SCALED). "
+            "Implies absolute-bias semantics: the bias contribution is "
+            "interpreted in absolute DDM-state units (clipped to +/-BOUND) "
+            "rather than fraction-of-bound. Saved-fit filename gains the "
+            "_scaledB suffix so symmetric and scale-bound fits coexist. "
+            "Note: per-candidate BOUND values disable the population-batch "
+            "code path, so this is slower than the symmetric default."))
     parser.add_argument("--test", action="store_true")
     parser.add_argument("--load-evolve", action="store_true")
     parser.add_argument("--remove-subject", type=str, default=None,
@@ -277,7 +292,8 @@ def main():
                                       is_loss_no_dir=args.loss_no_dir,
                                       fit_mode=args.fit_mode,
                                       uses_asym_q=args.asym_q,
-                                      uses_asym_rr=args.asym_rr)
+                                      uses_asym_rr=args.asym_rr,
+                                      uses_scaled_bound=args.scale_bound)
         assert load_evolve_fp.exists(), f"File not found: {load_evolve_fp}"
         with open(load_evolve_fp, "rb") as f:
             evolve_res = pickle.load(f)
@@ -302,7 +318,8 @@ def main():
                                   mle_terminal_c=args.mle_terminal_c,
                                   init_val_overrides=init_val_overrides,
                                   uses_asym_q=args.asym_q,
-                                  uses_asym_rr=args.asym_rr)
+                                  uses_asym_rr=args.asym_rr,
+                                  scale_bound=args.scale_bound)
     else:
         runModel(df_behavior, bias_fn_str=args.bias, drift_fn_str=args.drift,
                  noise_fn_str=args.noise, num_cpus=args.num_cpus,
@@ -317,7 +334,8 @@ def main():
                  mle_terminal_c=args.mle_terminal_c,
                  init_val_overrides=init_val_overrides,
                  uses_asym_q=args.asym_q,
-                 uses_asym_rr=args.asym_rr)
+                 uses_asym_rr=args.asym_rr,
+                 scale_bound=args.scale_bound)
 
 
 

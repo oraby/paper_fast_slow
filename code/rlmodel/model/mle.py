@@ -54,6 +54,19 @@ class MLEModelConfig:
     # behave as symmetric (legacy) fits.
     uses_asymmetric_alpha: bool = False
     uses_asymmetric_beta: bool = False
+    # Bound-RewardRate per-trial bound flag. Set True when the user
+    # selects a "Bound-RewardRate*" drift; ``fit.simulateDDM`` derives
+    # it from ``drift_fn_str``. The MLE compute paths then apply the
+    # standard DDM rescaling identity per trial: μ /= r_t, σ /= r_t,
+    # z = clip(absolute_bias, ±BOUND·r_t) / r_t. Solver still receives
+    # the scalar BOUND — no solver changes needed; see
+    # scale_bound_equivalence.ipynb for the equivalence derivation.
+    uses_per_trial_bound: bool = False
+    # ``--scale-bound`` flag. Swaps which of (BOUND, NOISE_SIGMA) is
+    # the fitted scale axis (the two are near-degenerate in the DDM
+    # loss landscape). When True, bias is interpreted in absolute
+    # DDM-state units (clipped to ±BOUND) rather than fraction-of-bound.
+    uses_scaled_bound: bool = False
 
     @property
     def uses_q_bias(self):
@@ -591,20 +604,40 @@ def _compute_latent_population_equal_sessions(data, x_matrix, params_names,
         # Delegate Q-value normalization + starting-point bias to
         # state_updates (same math as the scalar path).
         q_rel = state_updates.compute_q_value(q_left, q_right, xp=xp)
-        if model_config.uses_q_bias:
-            z_t = state_updates.compute_starting_point_z(
-                q_left, q_right,
-                delta=bias_coef[:, None],
-                offset=q_offset[:, None],
-                include_Q=True, xp=xp)
+        # Bound-RewardRate vectorized path: apply the Phase-1-validated
+        # rescaling (mu/r_t, sigma/r_t, z/r_t with z clipped to ±b_t in
+        # absolute units first). reward_rate here is the per-(candidate,
+        # session) state BEFORE the current trial — the same value the
+        # NoiseGain branch uses, just consumed differently. The solver
+        # still receives the scalar BOUND per candidate; no solver work.
+        if model_config.uses_per_trial_bound:
+            b_t = bounds[:, None] * reward_rate
+            if model_config.uses_q_bias:
+                z_abs = xp.clip(
+                    bias_coef[:, None] * q_rel + q_offset[:, None],
+                    -b_t, b_t)
+                z_t = z_abs / reward_rate
+            else:
+                z_t = xp.zeros_like(q_rel)
+            # σ /= r_t  (opposite of NoiseGain's σ *= r_t)
+            sigma_t = noise_sigma[:, None] / reward_rate
         else:
-            z_t = xp.zeros_like(q_rel)
-        sigma_t = (
-            reward_rate * noise_sigma[:, None]
-            if model_config.include_RewardRate
-            else xp.broadcast_to(noise_sigma[:, None], q_rel.shape)
-        )
+            if model_config.uses_q_bias:
+                z_t = state_updates.compute_starting_point_z(
+                    q_left, q_right,
+                    delta=bias_coef[:, None],
+                    offset=q_offset[:, None],
+                    include_Q=True, xp=xp)
+            else:
+                z_t = xp.zeros_like(q_rel)
+            sigma_t = (
+                reward_rate * noise_sigma[:, None]
+                if model_config.include_RewardRate
+                else xp.broadcast_to(noise_sigma[:, None], q_rel.shape)
+            )
         base_mu = drift_coef[:, None] * dv[None, :, trial_pos]
+        if model_config.uses_per_trial_bound:
+            base_mu = base_mu / reward_rate
         z[:, :, trial_pos] = z_t
         sigma[:, :, trial_pos] = sigma_t
 
@@ -785,8 +818,17 @@ def _compute_latent_arrays(data, params, model_config):
     z = _compute_z_array(q_left_before, q_right_before, q_rel_before,
                          params, model_config)
     sigma = _compute_sigma_array(reward_rate_before, params, model_config)
+    if model_config.uses_per_trial_bound:
+        # Bound-RewardRate ground-truth semantic: sigma is CONSTANT per
+        # trial; the per-trial scaling lives in bound_per_trial. Override
+        # _compute_sigma_array's NoiseGain branch (which would scale
+        # sigma by reward_rate) so the rowwise path produces path-A
+        # latents from scale_bound_equivalence.ipynb.
+        sigma = np.full_like(
+            reward_rate_before, float(_param(params, "NOISE_SIGMA")),
+            dtype=float)
     mu = _compute_mu_array(data.dv, q_rel_before, sigma, params, model_config)
-    return {
+    latents = {
         "q_left_before": q_left_before,
         "q_right_before": q_right_before,
         "q_rel_before": q_rel_before,
@@ -803,6 +845,23 @@ def _compute_latent_arrays(data, params, model_config):
         # zero default (0.0 reproduces the pre-mixture likelihood).
         "lapse_rate": float(_param(params, "LAPSE_RATE", 0.0)),
     }
+    # Bound-RewardRate: surface per-trial bound for the rowwise reference
+    # path (the equivalence ground-truth proved in Phase 1). The vectorized
+    # path uses the rescaled mu/sigma/z instead; see
+    # _compute_latent_population_equal_sessions.
+    if model_config.uses_per_trial_bound:
+        bound_base = float(_param(params, "BOUND", 1.0))
+        bound_per_trial = bound_base * reward_rate_before
+        latents["bound_per_trial"] = bound_per_trial
+        # Bias is in absolute DDM-state units: re-clip z to ±b_t. The
+        # default _compute_z_array clip is [-1, 1] which collapses the
+        # bound-dependent envelope; redo it here so the rowwise reference
+        # sees the same z the math says it should.
+        if model_config.uses_q_bias:
+            z_raw = (_param(params, "BIAS_COEF") * q_rel_before
+                     + _param(params, "Q_VAL_OFFSET", 0.0))
+            latents["z"] = np.clip(z_raw, -bound_per_trial, bound_per_trial)
+    return latents
 
 
 def _compute_z_array(q_left, q_right, q_rel_before, params, model_config):
@@ -918,6 +977,13 @@ def _evaluate_trial_likelihoods(data, latents, params, model_config):
 def _evaluate_trial_likelihoods_rowwise(data, latents, params, model_config):
     likes = []
     bound = _param(params, "BOUND", 1.0)
+    # Optional per-trial bound override. When ``latents`` carries a
+    # ``bound_per_trial`` array (1-D, length data.n_trials), use it
+    # per-iteration instead of the scalar ``bound`` from params. This
+    # is the entry point for the varying-bound reference path used by
+    # the scale_bound_equivalence verification notebook — production
+    # MLE callers never set this, so the scalar path stays bit-exact.
+    bound_per_trial = latents.get("bound_per_trial")
     non_decision_time = _param(params, "NON_DECISION_TIME", 0.0)
     for i in range(data.n_trials):
         if not latents["valid_for_loss"][i]:
@@ -929,7 +995,8 @@ def _evaluate_trial_likelihoods_rowwise(data, latents, params, model_config):
             z=latents["z"][i],
             mu=latents["mu"][i],
             sigma=latents["sigma"][i],
-            bound=bound,
+            bound=(float(bound_per_trial[i])
+                   if bound_per_trial is not None else bound),
             non_decision_time=non_decision_time,
             dt=model_config.dt,
             dx=model_config.dx,
@@ -959,15 +1026,37 @@ def _evaluate_trial_likelihoods_batched(data, latents, params, model_config,
         normal_cdf=backend.normal_cdf,
         show_progress=False,
     )
+    # Bound-RewardRate fast path: apply the path-D rescaling at the
+    # batched-solver boundary. ``_compute_latent_arrays`` produces
+    # path-A-shaped latents (absolute mu, sigma, z; per-trial bound)
+    # for the rowwise reference; the batched solver expects a single
+    # scalar bound across the batch, so we rescale per-trial
+    # (mu, sigma, z) by BOUND/bound_per_trial = 1/r_t. The rescaling
+    # identity (proven in Phase 1) guarantees this gives identical
+    # observable densities. When ``uses_per_trial_bound=False`` this
+    # branch is a no-op and the production path is bit-exact.
+    bound_scalar = _param(params, "BOUND", 1.0)
+    mu_for_solver    = latents["mu"]
+    sigma_for_solver = latents["sigma"]
+    z_for_solver     = latents["z"]
+    if model_config.uses_per_trial_bound:
+        bpt = latents.get("bound_per_trial")
+        assert bpt is not None, (
+            "uses_per_trial_bound=True but _compute_latent_arrays did not "
+            "produce bound_per_trial — check that flag wiring")
+        rescale = bound_scalar / np.asarray(bpt, dtype=float)
+        mu_for_solver = np.asarray(mu_for_solver, dtype=float) * rescale
+        sigma_for_solver = np.asarray(sigma_for_solver, dtype=float) * rescale
+        z_for_solver = np.asarray(z_for_solver, dtype=float) * rescale
     batch_result = batched_choice_rt_loglik(
         observed_choice_left=data.choice_left,
         observed_rt=data.observed_rt,
         no_choice=latents["no_choice"],
         valid_for_loss=latents["valid_for_loss"],
-        z=latents["z"],
-        mu_values=latents["mu"],
-        sigma=latents["sigma"],
-        bound=_param(params, "BOUND", 1.0),
+        z=z_for_solver,
+        mu_values=mu_for_solver,
+        sigma=sigma_for_solver,
+        bound=bound_scalar,
         non_decision_time=np.full(n, _param(params, "NON_DECISION_TIME", 0.0)),
         dt=model_config.dt,
         dx=model_config.dx,

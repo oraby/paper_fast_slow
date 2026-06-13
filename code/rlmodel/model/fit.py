@@ -312,14 +312,16 @@ def _evolveFPSubject(evolveFP : pathlib.Path, subject):
 
 def evolveFP(drift_fn_str, bias_fn_str, noise_fn_str, t_dur, dt,
             is_loss_no_dir, fit_mode,
-            uses_asym_q=False, uses_asym_rr=False):
+            uses_asym_q=False, uses_asym_rr=False,
+            uses_scaled_bound=False):
     """Build the saved-fit pickle path.
 
     The optional ``_asymQ`` / ``_asymRR`` / ``_asymQRR`` suffix carries
     the asymmetric-LR opt-ins orthogonally to the bias / drift / noise
-    model identity. Symmetric fits (both flags False) keep the original
-    filename format unchanged — backwards-compat for every existing
-    pickle on disk.
+    model identity. ``_scaledB`` further marks fits where BOUND is the
+    fitted axis (NOISE_SIGMA frozen) — see ``--scale-bound``. Suffix
+    ordering: asym first, then scaledB. Symmetric / fixed-bound fits
+    keep the original filename format unchanged.
     """
     loss_no_dir_str = "" if not is_loss_no_dir else "_loss_no_dir"
     if uses_asym_q and uses_asym_rr:
@@ -330,9 +332,11 @@ def evolveFP(drift_fn_str, bias_fn_str, noise_fn_str, t_dur, dt,
         asym_suffix = "_asymRR"
     else:
         asym_suffix = ""
+    scaled_bound_suffix = "_scaledB" if uses_scaled_bound else ""
     main_str = (f"data/RLModel/{fit_mode}_{drift_fn_str}_"
                 f"bias{bias_fn_str}_{noise_fn_str}"
-                f"{loss_no_dir_str}_{t_dur}s_dt{dt}{asym_suffix}.pkl")
+                f"{loss_no_dir_str}_{t_dur}s_dt{dt}"
+                f"{asym_suffix}{scaled_bound_suffix}.pkl")
     return pathlib.Path(main_str)
 
 
@@ -344,7 +348,8 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
                 mle_gpu_memory_gb=None, mle_show_progress=False,
                 mle_terminal_c=MLE_TERMINAL_C.Default,
                 bias_fn_str=None, drift_fn_str=None,
-                uses_asym_q=False, uses_asym_rr=False):
+                uses_asym_q=False, uses_asym_rr=False,
+                scale_bound=False):
     global _pool
     if fit_mode != "chisq":
         if fit_mode != "mle":
@@ -367,6 +372,29 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
 
     include_Q = "Q_val" in biasFn_df_cols or "Q_val" in driftFn_df_cols or "Q_val" in noiseFn_df_cols
     include_RewardRate = "RewardRate" in driftFn_df_cols or "RewardRate" in noiseFn_df_cols or "RewardRate" in biasFn_df_cols
+    # Bound-RewardRate detection: the new drift family is observationally
+    # equivalent to a per-trial-bound model via the path-D rescaling
+    # (mu/r_t, sigma/r_t, z/r_t) — see scale_bound_equivalence.ipynb and
+    # mle.py:_compute_latent_population_equal_sessions. Triggered on
+    # ``drift_fn_str`` prefix; flows into MLEModelConfig below.
+    uses_per_trial_bound = bool(
+        drift_fn_str is not None
+        and drift_fn_str.startswith("Bound-RewardRate"))
+    # ``--scale-bound``: swap which of (BOUND, NOISE_SIGMA) is fit.
+    # InitVal override applied to the bounds_and_defaults dict (which is
+    # InitVals.toDict() — owned by the caller; mutating it is the same
+    # mechanism InitVals.override uses internally). The user passes
+    # scale_bound through runModel; default symmetric fits land here as
+    # False and the dict is untouched.
+    if scale_bound:
+        from .initvals import _BOUND_WHEN_SCALED, _NOISE_WHEN_SCALED
+        bounds_and_defaults = dict(bounds_and_defaults)
+        bounds_and_defaults["BOUND"]       = _BOUND_WHEN_SCALED
+        bounds_and_defaults["NOISE_SIGMA"] = _NOISE_WHEN_SCALED
+        print(f"--scale-bound: BOUND fitted in "
+              f"[{_BOUND_WHEN_SCALED.Min}, {_BOUND_WHEN_SCALED.Max}], "
+              f"NOISE_SIGMA frozen at "
+              f"{_NOISE_WHEN_SCALED.Default}")
 
 
     fixed_params = dict(biasFn=biasFn,
@@ -612,6 +640,8 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
             # strict access, KeyError on miss.
             uses_asymmetric_alpha=include_Q_asym,
             uses_asymmetric_beta=include_RewardRate_asym,
+            uses_per_trial_bound=uses_per_trial_bound,
+            uses_scaled_bound=scale_bound,
         )
         # Pre-flight: the gate table + fit-param list must agree, else
         # the MLE objective hits KeyError mid-DE rather than failing
@@ -627,7 +657,8 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
     evolve_dump_FP = evolveFP(driftFn_str, biasFn_str, noiseFn_str, t_dur, dt,
                               is_loss_no_dir, fit_mode,
                               uses_asym_q=uses_asym_q,
-                              uses_asym_rr=uses_asym_rr)
+                              uses_asym_rr=uses_asym_rr,
+                              uses_scaled_bound=scale_bound)
 
     IS_PARALLEL_EXECUTION_ENABLED = False
     is_gpu_mle = fit_mode == "mle" and model_config.requires_gpu

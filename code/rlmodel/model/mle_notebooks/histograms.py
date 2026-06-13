@@ -25,6 +25,10 @@ DEFAULT_LATENT_COLUMNS = {
     # by asym variant works the same way as filtering by λ or C.
     "asym α": "mle_uses_asymmetric_alpha",
     "asym β": "mle_uses_asymmetric_beta",
+    # Bound-RewardRate per-trial bound + ``--scale-bound`` opt-in. Same
+    # 0/1 cross-fit histogram so users can filter by variant.
+    "bound·r_t": "mle_uses_per_trial_bound",
+    "scale-B": "mle_uses_scaled_bound",
 }
 FILTER_COLORS = ("orange", "green", "tab:red", "tab:purple", "tab:brown")
 

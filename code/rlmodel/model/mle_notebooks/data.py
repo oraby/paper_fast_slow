@@ -136,6 +136,14 @@ def flatten_mle_results(results: list[MLEModelResult]) -> pd.DataFrame:
                 getattr(model_config, "uses_asymmetric_alpha", False))
             df["mle_uses_asymmetric_beta"] = bool(
                 getattr(model_config, "uses_asymmetric_beta", False))
+            # Bound-RewardRate per-trial bound + ``--scale-bound`` opt-in.
+            # Same backwards-compat pattern: old pickles whose saved
+            # MLEModelConfig predates these fields default to False so the
+            # population explorer treats them as legacy fixed-bound fits.
+            df["mle_uses_per_trial_bound"] = bool(
+                getattr(model_config, "uses_per_trial_bound", False))
+            df["mle_uses_scaled_bound"] = bool(
+                getattr(model_config, "uses_scaled_bound", False))
         pieces.append(df)
     if not pieces:
         return pd.DataFrame()

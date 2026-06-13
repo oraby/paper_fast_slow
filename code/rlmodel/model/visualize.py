@@ -49,18 +49,35 @@ def _asym_mode_suffix(all_widgets):
     return ""
 
 
+def _scaled_bound_suffix(all_widgets):
+    """Return ``_scaledB`` when the "Scale Bound" checkbox is ticked."""
+    return ("_scaledB"
+            if ("Scale Bound" in all_widgets
+                and bool(all_widgets["Scale Bound"].value))
+            else "")
+
+
 def _preferred_modes_for(base_mode, all_widgets):
     """Build the preferred-mode fallback chain for the current checkbox state.
 
-    The asym-suffixed key (``mle_asymQ`` / ``mle_asymRR`` / ``mle_asymQRR``)
-    is tried first when the relevant checkbox is ticked. Both ``mle`` and
-    ``chisq`` symmetric defaults remain as fallbacks so the user gets
-    *something* even when the requested asym variant hasn't been fit.
+    Each ticked checkbox contributes a suffix to the keys we try first:
+    ``mle_asymQ`` / ``mle_asymRR`` / ``mle_asymQRR`` for asym + Q/RR, and
+    ``_scaledB`` for the BOUND-fitted axis. Suffix ordering matches
+    fit.evolveFP: asym first, then scaledB. Both ``mle`` and ``chisq``
+    symmetric defaults remain as fallbacks so the user gets *something*
+    even when the exact variant hasn't been fit.
     """
-    suffix = _asym_mode_suffix(all_widgets)
+    asym_suffix = _asym_mode_suffix(all_widgets)
+    scaled_b_suffix = _scaled_bound_suffix(all_widgets)
+    composed_suffix = asym_suffix + scaled_b_suffix
     preferred = []
-    if suffix and base_mode in ("mle", "chisq"):
-        preferred.append(f"{base_mode}{suffix}")
+    if composed_suffix and base_mode in ("mle", "chisq"):
+        preferred.append(f"{base_mode}{composed_suffix}")
+        # Asym-only fallback if scaledB is set but no _asym_scaledB fit
+        # is on disk, so a partial match still loads something useful.
+        if asym_suffix and scaled_b_suffix:
+            preferred.append(f"{base_mode}{asym_suffix}")
+            preferred.append(f"{base_mode}{scaled_b_suffix}")
     preferred.append(base_mode)
     # On the auto-apply path the caller passes base_mode="mle" and still
     # wants chisq as a last resort if no MLE fit exists for the subject.
@@ -86,6 +103,11 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
         "Real-time": gui_cache.get("Real-time", True),
         "Asymmetric Q-update":  gui_cache.get("Asymmetric Q-update", False),
         "Asymmetric RR-update": gui_cache.get("Asymmetric RR-update", False),
+        # ``--scale-bound``: swap which of (BOUND, NOISE_SIGMA) is the
+        # fitted axis. Defaults are read directly from the cache so the
+        # GUI starts in symmetric mode unless the user previously
+        # opted in.
+        "Scale Bound":          gui_cache.get("Scale Bound", False),
     }
     chi2_reset_label = "Reset to Chi\u00b2"
     buttons_labels = ["Reset to MLE defaults", chi2_reset_label, "Update", "Run MLE"]
@@ -206,6 +228,10 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
                  slider_widgets.pop("DRIFT_COEF"),
                  slider_widgets.pop("NOISE_SIGMA"),
                  slider_widgets.pop("BOUND"),
+                 # Scale Bound checkbox sits between NOISE_SIGMA and BOUND
+                 # so the visual grouping reflects what it does — swap
+                 # which of the two sliders is the fittable axis.
+                 checkbox_widgets.pop("Scale Bound"),
                  slider_widgets.pop("NON_DECISION_TIME"),
                  slider_widgets.pop("BETA"),
                  checkbox_widgets.pop("Asymmetric RR-update"),
@@ -351,6 +377,16 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
             all_widgets["ALPHA"].disabled = True
         if not include_RewardRate:
             all_widgets["BETA"].disabled = True
+        # Scale Bound checkbox is a fit-time intent marker only — it
+        # doesn't disable BOUND / NOISE_SIGMA sliders, because the kwarg-
+        # collecting loop below filters out disabled sliders (except
+        # ALPHA / BETA) and runAndPlot requires BOUND. The legacy GUI
+        # signals "BOUND is frozen" via the InitVal range (Min=Max=1.0
+        # by default); under --scale-bound the InitVal override at
+        # fit.simulateDDM time switches that range to (0.3, 5.0). The
+        # GUI's chisq simulation path always uses whatever value sits
+        # on the slider, regardless of which axis the MLE objective
+        # will fit.
         # Asymmetric-LR gating is now orthogonal to the model identity:
         # the checkbox is the source of truth. The checkbox itself is
         # disabled when the active model wouldn't learn the matching
@@ -443,6 +479,8 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
                         all_widgets["Asymmetric Q-update"].value),
                     uses_asym_rr=bool(
                         all_widgets["Asymmetric RR-update"].value),
+                    scale_bound=bool(
+                        all_widgets["Scale Bound"].value),
                 )
                 last_mle_loss_source = "current"
             except Exception as exc:
@@ -734,7 +772,8 @@ def _stored_mle_loss_from_fit_entry(fit_entry):
 def _evaluate_mle_loss_for_gui(df, params, driftFn_str, biasFn_str, noiseFn_str,
                                include_Q, include_RewardRate, dt, t_dur,
                                fit_entry=None, terminal_c_override=None,
-                               uses_asym_q=False, uses_asym_rr=False):
+                               uses_asym_q=False, uses_asym_rr=False,
+                               scale_bound=False):
     fit_config = _fit_entry_mle_config(fit_entry)
     if terminal_c_override is not None:
         # GUI slider value wins over both the saved fit-config and the
@@ -758,6 +797,10 @@ def _evaluate_mle_loss_for_gui(df, params, driftFn_str, biasFn_str, noiseFn_str,
     # createWidget loop disables the checkbox itself in that case.
     uses_asymmetric_alpha = include_Q and uses_asym_q
     uses_asymmetric_beta  = include_RewardRate and uses_asym_rr
+    # Mirror fit.simulateDDM's flag derivation: Bound-RewardRate drift
+    # family triggers the per-trial bound rescaling; --scale-bound
+    # checkbox triggers the absolute-bias / fitted-BOUND semantic.
+    uses_per_trial_bound = driftFn_str.startswith("Bound-RewardRate")
     config = MLEModelConfig(
         drift_fn_str=driftFn_str,
         bias_fn_str=biasFn_str,
@@ -772,6 +815,8 @@ def _evaluate_mle_loss_for_gui(df, params, driftFn_str, biasFn_str, noiseFn_str,
         mle_terminal_c=float(terminal_c),
         uses_asymmetric_alpha=uses_asymmetric_alpha,
         uses_asymmetric_beta=uses_asymmetric_beta,
+        uses_per_trial_bound=uses_per_trial_bound,
+        uses_scaled_bound=bool(scale_bound),
     )
     return evaluate_neg_loglik(params, df, config, return_df=False).neg_loglik
 
