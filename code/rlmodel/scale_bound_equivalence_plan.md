@@ -147,6 +147,73 @@ If even path D diverges from path A meaningfully:
 - `prepare_mle_data` — turns DataFrame into PreparedMLEData consumed
   by both compute paths
 
+## Phase 2.5 — InitVals consolidation + GUI Scale-How dropdown (DONE)
+
+Phase 2 left two GUI rough edges: the `Scale Bound` checkbox driving
+the scale-pair swap was a binary control for what is fundamentally a
+2-way mode, and the InitVal ranges for the frozen counterparts lived
+as module-level constants in `initvals.py` (invisible from the GUI).
+Phase 2.5 cleans both up:
+
+- **InitVals dataclass renames**:
+  - `InitVals.BOUND` (old: `(1, 1, 1)`, frozen) → `InitVals._BOUND_FIXED`
+  - module `_BOUND_WHEN_SCALED` (`(0.3, 5.0, 1.0)`, fittable) → `InitVals.BOUND`
+  - module `_NOISE_WHEN_SCALED` (`(1.0, 1.0, 1.0)`, frozen) → `InitVals._NOISE_FIXED`
+  - `InitVals.NOISE_SIGMA` unchanged
+  - The two module-level constants are deleted; their bodies now live
+    inside the dataclass with explicit underscored names that mean
+    "this is the frozen counterpart of the paired axis".
+- **`fit.simulateDDM`** reads `init_vals._BOUND_FIXED` /
+  `init_vals._NOISE_FIXED` and applies one of the two as an
+  `InitVals.override(...)` on the canonical `BOUND` / `NOISE_SIGMA`
+  key, depending on `scale_bound`. The legacy default branch
+  (`scale_bound=False`) is now an *active* override — necessary
+  because the dataclass default for `BOUND` is now the fittable
+  range, not frozen.
+- **`visualize.py`**: dropped the `Scale Bound` checkbox; added a
+  `Scale-How` dropdown (`Noise` / `Bound`) at the top of the first
+  column, ahead of `Drift Fn`. The new `_BOUND_FIXED` / `_NOISE_FIXED`
+  InitVals fields auto-appear as sliders via the existing
+  `init_vals.items()` loop; placed alongside their fittable siblings
+  (`NOISE_SIGMA` ↔ `_NOISE_FIXED`, `BOUND` ↔ `_BOUND_FIXED`) in the
+  first column. The dropdown drives a 4-slider enable/disable gate
+  (the inactive pair grays out) plus a kwarg-translation fix-up that
+  maps the active-axis slider to the canonical `BOUND` /
+  `NOISE_SIGMA` kwarg names `runAndPlot` consumes. The auto-apply
+  path's change-detection tuple now includes the composed variant
+  suffix (asym + scaled_b) so toggling Scale-How re-loads the
+  matching `mle_scaledB` defaults.
+
+**Test suite**: 144 passed, 1 skipped (was 143 at end of Phase 2; +1
+from the new `test_init_vals_dict_exposes_all_four_scale_pair_fields`
+asserting all four scale-pair fields surface in `InitVals.toDict()`).
+
+**Phase 2.5 files modified**:
+
+| File | Change |
+|---|---|
+| `rlmodel/model/initvals.py` | Rename `BOUND` → `_BOUND_FIXED`; add fittable `BOUND` (range from old `_BOUND_WHEN_SCALED`); add `_NOISE_FIXED` (from old `_NOISE_WHEN_SCALED`); drop module-level scale-pair constants; docstring; TODO marker near `MLE_TERMINAL_C`. |
+| `rlmodel/model/fit.py` | `simulateDDM` uses `init_vals._BOUND_FIXED` / `init_vals._NOISE_FIXED`; override branches on `scale_bound` to preserve bit-exact legacy frozen-BOUND default. |
+| `rlmodel/model_runner.py` | `--scale-bound` help text references `InitVals.BOUND` / `_NOISE_FIXED` instead of the deleted module-level constants. |
+| `rlmodel/model/visualize.py` | Drop `Scale Bound` checkbox; add `Scale-How` dropdown to `drop_downs_labels`; layout pop swaps the checkbox for the dropdown at the top of `first_col`; new `_BOUND_FIXED` / `_NOISE_FIXED` sliders interleaved beside their fittable siblings; 4-slider enable/disable gating on `Scale-How.value`; kwarg-translation fix-up before `runAndPlot`; `_scaled_bound_suffix` + `_evaluate_mle_loss_for_gui` read the dropdown; `last_asym_suffix` renamed to `last_variant_suffix` (composed asym + scaled_b) so Scale-How toggles re-trigger the auto-apply. |
+| `rlmodel/model/tests/test_scale_bound.py` | Drop deleted-constant imports; `test_init_val_fields_describe_scale_pair_contract` asserts on the four dataclass fields; `test_init_val_override_swaps_in_initvals_dict` uses `iv._BOUND_FIXED` / `iv._NOISE_FIXED`; new `test_init_vals_dict_exposes_all_four_scale_pair_fields`. |
+
+## Follow-ups
+
+- [ ] **Move `MLE_TERMINAL_C` into `InitVals`** (user-requested, deferred
+      from Phase 2.5). Safe because the fit-param-set derivation in
+      `fit.py:simulateDDM` keys off `_MAKEONERUN_FITTABLE_PARAMS` plus
+      the bias/drift/noise kwarg lists rather than `InitVals.items()`,
+      so non-fittable dataclass fields like `_BOUND_FIXED` already
+      coexist with the optimizer without leaking into the fit vector.
+      Touchpoints: drop the module-level `MLE_TERMINAL_C` constant from
+      `initvals.py`; update every `from .initvals import MLE_TERMINAL_C`
+      caller (`fit.py`, `model_runner.py`, `visualize.py`, several
+      tests, `mle.py`) to read `InitVals().MLE_TERMINAL_C` instead;
+      update the `createWidget` block that manually creates the
+      `MLE_TERMINAL_C` slider (lines 110-116) so it falls out of the
+      auto-loop like every other field.
+
 ## Checkpoint 1 (still parked)
 
 > Whether to check for invalid trials at mle.py. Keep the explicit

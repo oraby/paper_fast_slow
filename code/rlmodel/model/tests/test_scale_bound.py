@@ -10,11 +10,7 @@ from __future__ import annotations
 import numpy as np
 
 from ..fit import evolveFP
-from ..initvals import (
-    InitVals,
-    _BOUND_WHEN_SCALED,
-    _NOISE_WHEN_SCALED,
-)
+from ..initvals import InitVals
 from ..state_updates import compute_starting_point_z
 
 
@@ -46,33 +42,51 @@ def test_evolveFP_suffix_grammar():
         composed_qrr)
 
 
-def test_init_val_constants_swap_makes_bound_fittable():
-    """Sanity: the private constants describe a non-trivial BOUND range
-    and a frozen NOISE_SIGMA. ``fit.simulateDDM`` applies them as an
-    override on the ``InitVals`` dict; this test pins the contract
-    those constants advertise.
+def test_init_val_fields_describe_scale_pair_contract():
+    """Sanity: the dataclass fields describe a non-trivial fittable
+    BOUND range, a frozen ``_BOUND_FIXED``, a non-trivial fittable
+    NOISE_SIGMA range, and a frozen ``_NOISE_FIXED``. ``fit.simulateDDM``
+    applies the *_FIXED variants as InitVal overrides depending on
+    Scale-How; this test pins the contract each field advertises.
     """
-    assert _BOUND_WHEN_SCALED.Min < _BOUND_WHEN_SCALED.Max, (
-        "BOUND must have a non-trivial fit range under --scale-bound")
-    assert _NOISE_WHEN_SCALED.Min == _NOISE_WHEN_SCALED.Max, (
-        "NOISE_SIGMA must be frozen (Min == Max) under --scale-bound")
-    # The default value in the frozen pair sits inside [Min, Max] by
-    # construction; tighten the assertion to "exactly at the pin"
-    # since that's the design intent.
-    assert _NOISE_WHEN_SCALED.Default == _NOISE_WHEN_SCALED.Min
+    iv = InitVals()
+    d = iv.toDict()
+    # Fittable axes: non-trivial range.
+    assert d["BOUND"].Min < d["BOUND"].Max, (
+        "InitVals.BOUND must have a non-trivial fit range "
+        "(used when Scale-How=Bound).")
+    assert d["NOISE_SIGMA"].Min < d["NOISE_SIGMA"].Max, (
+        "InitVals.NOISE_SIGMA must have a non-trivial fit range "
+        "(used when Scale-How=Noise — the legacy default).")
+    # Frozen counterparts: degenerate range pinned at Default.
+    for name in ("_BOUND_FIXED", "_NOISE_FIXED"):
+        assert d[name].Min == d[name].Max, (
+            f"InitVals.{name} must be frozen (Min == Max).")
+        assert d[name].Default == d[name].Min
 
 
 def test_init_val_override_swaps_in_initvals_dict():
     """Round-trip the override through ``InitVals`` to confirm the dict
-    layer accepts it. This is the exact mechanism ``fit.simulateDDM``
-    uses to swap the fitted axis at fit time.
+    layer accepts ``_BOUND_FIXED`` / ``_NOISE_FIXED`` swapped onto
+    the canonical ``BOUND`` / ``NOISE_SIGMA`` keys. This is the exact
+    mechanism ``fit.simulateDDM`` uses to swap the fitted axis at fit
+    time.
     """
     iv = InitVals()
-    iv.override("BOUND", _BOUND_WHEN_SCALED)
-    iv.override("NOISE_SIGMA", _NOISE_WHEN_SCALED)
+    iv.override("BOUND", iv._BOUND_FIXED)
+    iv.override("NOISE_SIGMA", iv._NOISE_FIXED)
     d = iv.toDict()
-    assert d["BOUND"] == _BOUND_WHEN_SCALED
-    assert d["NOISE_SIGMA"] == _NOISE_WHEN_SCALED
+    assert d["BOUND"] == iv._BOUND_FIXED
+    assert d["NOISE_SIGMA"] == iv._NOISE_FIXED
+
+
+def test_init_vals_dict_exposes_all_four_scale_pair_fields():
+    """The Scale-How GUI dropdown relies on ``InitVals.toDict()``
+    auto-creating sliders for all four scale-pair fields so the user
+    can tweak the active and frozen values independently.
+    """
+    keys = set(InitVals().toDict().keys())
+    assert {"BOUND", "_BOUND_FIXED", "NOISE_SIGMA", "_NOISE_FIXED"} <= keys
 
 
 def test_compute_starting_point_z_absolute_mode():

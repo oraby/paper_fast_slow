@@ -209,7 +209,7 @@ def main():
             "Swap which of (BOUND, NOISE_SIGMA) is the fitted scale axis. "
             "Default behavior fits NOISE_SIGMA with BOUND frozen at 1.0; "
             "--scale-bound fits BOUND in [0.3, 5.0] with NOISE_SIGMA frozen "
-            "at 1.0 (see initvals.py:_BOUND_WHEN_SCALED / _NOISE_WHEN_SCALED). "
+            "at 1.0 (see initvals.py: ``InitVals.BOUND`` / ``_NOISE_FIXED``). "
             "Implies absolute-bias semantics: the bias contribution is "
             "interpreted in absolute DDM-state units (clipped to +/-BOUND) "
             "rather than fraction-of-bound. Saved-fit filename gains the "

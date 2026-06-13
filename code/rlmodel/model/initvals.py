@@ -26,9 +26,37 @@ class InitVal(NamedTuple):
 
 @dataclass
 class InitVals:
+    """Default (Min, Max, Default) tuples for every fittable DDM parameter.
+
+    Scale-axis pairing — the DDM's BOUND and NOISE_SIGMA are
+    near-degenerate in the loss landscape (doubling one and doubling
+    the other gives ~equivalent observable behavior), so **exactly one
+    of the pair is fittable at a time** and the other is frozen. The
+    GUI's "Scale-How" dropdown (and the ``--scale-bound`` CLI flag)
+    selects which axis is active; ``fit.simulateDDM`` calls
+    ``InitVals.override(...)`` at fit time to clamp the inactive one.
+
+    The four fields below come as two pairs:
+
+    - ``NOISE_SIGMA`` / ``_NOISE_FIXED`` — the noise axis. ``NOISE_SIGMA``
+      is the **fittable** range (used when Scale-How=Noise, the legacy
+      default); ``_NOISE_FIXED`` is the frozen counterpart (used when
+      Scale-How=Bound — i.e. ``--scale-bound``).
+    - ``BOUND`` / ``_BOUND_FIXED`` — the bound axis. ``BOUND`` is the
+      **fittable** range (used when Scale-How=Bound); ``_BOUND_FIXED``
+      is the frozen counterpart (used when Scale-How=Noise, the legacy
+      default).
+
+    Underscore prefix marks "this is the frozen counterpart of the
+    paired axis"; it does NOT mean private-do-not-touch. The GUI
+    exposes both as visible sliders so the user can tweak the frozen
+    value as well.
+    """
     DRIFT_COEF : InitVal        = InitVal(0, 20, 1)
     NOISE_SIGMA : InitVal       = InitVal(0, 5, 1.5)
-    BOUND : InitVal             = InitVal(1, 1, 1)
+    _NOISE_FIXED : InitVal      = InitVal(1.0, 1.0, 1.0)
+    BOUND : InitVal             = InitVal(0.3, 5.0, 1.0)
+    _BOUND_FIXED : InitVal      = InitVal(1.0, 1.0, 1.0)
     BIAS_COEF : InitVal         = InitVal(0, 1, .95)
     BIAS_FIXED : InitVal        = InitVal(-1, 1, 0)
     ALPHA : InitVal             = InitVal(0, 1, .3)
@@ -89,18 +117,19 @@ T_dur = 3
 NUM_CPUS = os.cpu_count()
 
 
-# --scale-bound regime: when the user opts in (via the CLI flag or the
-# GUI checkbox), fit.simulateDDM swaps the InitVals for BOUND / NOISE_SIGMA
-# with these private constants. BOUND becomes a fitted axis (range >1
-# bin); NOISE_SIGMA freezes at 1.0 so the two near-degenerate scale axes
-# remain identifiable in the DDM loss landscape. Documented in the
-# ``--scale-bound`` plan §"InitVals dual-pair override".
-_BOUND_WHEN_SCALED : InitVal = InitVal(0.3, 5.0, 1.0)
-_NOISE_WHEN_SCALED : InitVal = InitVal(1.0, 1.0, 1.0)
 # Default + valid range for ``mle_terminal_c`` (the threshold C used to
 # partition residual interior mass at t = T_max). Lives outside the
-# ``InitVals`` dataclass because terminal_c is a model-config knob, not a
-# DE-fittable parameter. C = 1.0 IS allowed and is the canonical "legacy
-# survival" setting — routes the entire interior mass to the no-decision
-# bucket, matching the pre-terminal_c behavior.
+# ``InitVals`` dataclass for historical reasons — terminal_c is a
+# model-config knob, not a DE-fittable parameter. C = 1.0 IS allowed
+# and is the canonical "legacy survival" setting — routes the entire
+# interior mass to the no-decision bucket, matching the
+# pre-terminal_c behavior.
+# TODO: also move MLE_TERMINAL_C into the ``InitVals`` dataclass.
+# fit.py's fit-param-set derivation keys off
+# ``_MAKEONERUN_FITTABLE_PARAMS`` + the bias/drift/noise kwarg lists
+# (not ``InitVals.items()``), so non-fittable InitVals fields like
+# ``_BOUND_FIXED`` already coexist with the optimizer without leaking
+# into the fit vector. Same machinery would handle MLE_TERMINAL_C
+# cleanly. Documented as a follow-up in
+# ``rlmodel/scale_bound_equivalence_plan.md``.
 MLE_TERMINAL_C = InitVal(Min=0.0, Max=1.0, Default=0.0)

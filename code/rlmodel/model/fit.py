@@ -383,18 +383,33 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
     # ``--scale-bound``: swap which of (BOUND, NOISE_SIGMA) is fit.
     # InitVal override applied to the bounds_and_defaults dict (which is
     # InitVals.toDict() — owned by the caller; mutating it is the same
-    # mechanism InitVals.override uses internally). The user passes
-    # scale_bound through runModel; default symmetric fits land here as
-    # False and the dict is untouched.
+    # mechanism InitVals.override uses internally).
+    #
+    # ``InitVals.BOUND`` is the fittable bound (default range
+    # (0.3, 5.0)); ``InitVals._BOUND_FIXED`` is its frozen counterpart
+    # (default (1, 1, 1)). Same pairing for NOISE_SIGMA /
+    # _NOISE_FIXED. Exactly one of the pair is fittable at a time —
+    # the other is overridden in-place onto the canonical fit-vector
+    # key (``BOUND`` / ``NOISE_SIGMA``) below.
+    bounds_and_defaults = dict(bounds_and_defaults)
     if scale_bound:
-        from .initvals import _BOUND_WHEN_SCALED, _NOISE_WHEN_SCALED
-        bounds_and_defaults = dict(bounds_and_defaults)
-        bounds_and_defaults["BOUND"]       = _BOUND_WHEN_SCALED
-        bounds_and_defaults["NOISE_SIGMA"] = _NOISE_WHEN_SCALED
+        # Scale-How=Bound: BOUND uses its dataclass default (fittable).
+        # NOISE_SIGMA is overridden to the frozen counterpart.
+        noise_fixed = bounds_and_defaults["_NOISE_FIXED"]
+        bounds_and_defaults["NOISE_SIGMA"] = noise_fixed
+        bound_active = bounds_and_defaults["BOUND"]
         print(f"--scale-bound: BOUND fitted in "
-              f"[{_BOUND_WHEN_SCALED.Min}, {_BOUND_WHEN_SCALED.Max}], "
-              f"NOISE_SIGMA frozen at "
-              f"{_NOISE_WHEN_SCALED.Default}")
+              f"[{bound_active.Min}, {bound_active.Max}], "
+              f"NOISE_SIGMA frozen at {noise_fixed.Default}")
+    else:
+        # Scale-How=Noise (legacy default): NOISE_SIGMA uses its
+        # dataclass default (fittable). BOUND is overridden to the
+        # frozen counterpart. This restores bit-exact pre-refactor
+        # behavior — when the user hasn't asked for --scale-bound,
+        # BOUND lands at the same (1, 1, 1) range it had as the old
+        # ``InitVals.BOUND``.
+        bound_fixed = bounds_and_defaults["_BOUND_FIXED"]
+        bounds_and_defaults["BOUND"] = bound_fixed
 
 
     fixed_params = dict(biasFn=biasFn,

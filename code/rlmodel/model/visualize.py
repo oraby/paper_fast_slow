@@ -50,10 +50,14 @@ def _asym_mode_suffix(all_widgets):
 
 
 def _scaled_bound_suffix(all_widgets):
-    """Return ``_scaledB`` when the "Scale Bound" checkbox is ticked."""
+    """Return ``_scaledB`` when the Scale-How dropdown is set to "Bound".
+
+    Mirrors the filename convention written by ``fit.evolveFP`` for
+    ``--scale-bound`` fits.
+    """
     return ("_scaledB"
-            if ("Scale Bound" in all_widgets
-                and bool(all_widgets["Scale Bound"].value))
+            if ("Scale-How" in all_widgets
+                and all_widgets["Scale-How"].value == "Bound")
             else "")
 
 
@@ -90,7 +94,7 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
                  is_small_fig_mode, subjects_defaults=None, save_figs=False,
                  save_ovewrite=True):
 
-    drop_downs_labels = ["Subject", "DV", "Drift Fn", "Bias Fn",
+    drop_downs_labels = ["Scale-How", "Subject", "DV", "Drift Fn", "Bias Fn",
                          "Psychometric", "Noise Fn"]
 
     # The two asym checkboxes are orthogonal to the bias / drift / noise
@@ -103,12 +107,10 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
         "Real-time": gui_cache.get("Real-time", True),
         "Asymmetric Q-update":  gui_cache.get("Asymmetric Q-update", False),
         "Asymmetric RR-update": gui_cache.get("Asymmetric RR-update", False),
-        # ``--scale-bound``: swap which of (BOUND, NOISE_SIGMA) is the
-        # fitted axis. Defaults are read directly from the cache so the
-        # GUI starts in symmetric mode unless the user previously
-        # opted in.
-        "Scale Bound":          gui_cache.get("Scale Bound", False),
     }
+    # NOTE: ``Scale Bound`` was a checkbox in earlier work; the same
+    # capability is now driven by the ``Scale-How`` dropdown (top of
+    # first column). See the dropdown handler below.
     chi2_reset_label = "Reset to Chi\u00b2"
     buttons_labels = ["Reset to MLE defaults", chi2_reset_label, "Update", "Run MLE"]
 
@@ -173,6 +175,15 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
         elif label == "Noise Fn":
             options_str = list(NOISE_FN_DICT.keys())
             values = options_str
+        elif label == "Scale-How":
+            # Two-option dropdown for the scale-axis swap. ``Noise`` is
+            # the legacy default — NOISE_SIGMA is fitted, BOUND is
+            # frozen at ``InitVals._BOUND_FIXED``. ``Bound`` flips the
+            # gate via the InitVal override in fit.simulateDDM (and
+            # implies absolute-bias semantics in the MLE eval).
+            options_str = ["Noise", "Bound"]
+            values = options_str
+            default_val_idx = 0
         else:
             raise ValueError(f"Unknown label: {label}")
 
@@ -224,14 +235,18 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
     # gated by the matching asym checkbox. Asym is now orthogonal to the
     # bias / drift / noise selection — any Q-learning model can use
     # ALPHA_UNREWARDED, any RewardRate model can use BETA_UNREWARDED.
-    first_col = [drop_down_widgets.pop("Drift Fn"),
+    # First column heads with the Scale-How dropdown so the mode-switch
+    # visually drives the four scale-pair sliders directly below it:
+    # NOISE_SIGMA + _NOISE_FIXED (the noise axis) and BOUND + _BOUND_FIXED
+    # (the bound axis). Exactly one of each pair is enabled at a time
+    # — see the gating block in updateGUI.
+    first_col = [drop_down_widgets.pop("Scale-How"),
+                 drop_down_widgets.pop("Drift Fn"),
                  slider_widgets.pop("DRIFT_COEF"),
                  slider_widgets.pop("NOISE_SIGMA"),
+                 slider_widgets.pop("_NOISE_FIXED"),
                  slider_widgets.pop("BOUND"),
-                 # Scale Bound checkbox sits between NOISE_SIGMA and BOUND
-                 # so the visual grouping reflects what it does — swap
-                 # which of the two sliders is the fittable axis.
-                 checkbox_widgets.pop("Scale Bound"),
+                 slider_widgets.pop("_BOUND_FIXED"),
                  slider_widgets.pop("NON_DECISION_TIME"),
                  slider_widgets.pop("BETA"),
                  checkbox_widgets.pop("Asymmetric RR-update"),
@@ -281,7 +296,7 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
     last_driftFn = None
     last_biasFn = None
     last_noiseFn = None
-    last_asym_suffix = None
+    last_variant_suffix = None   # composed asym + Scale-How filename suffix
     last_loss = None
     last_mle_loss = None
     last_mle_loss_source = None
@@ -289,23 +304,25 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
     def updateGUI(force_update=False, run_mle=False):
         nonlocal all_widgets, include_Q, include_RewardRate, checkbox_last_val, fig, last_loss
         nonlocal last_subject, last_driftFn, last_biasFn, last_noiseFn
-        nonlocal last_asym_suffix
+        nonlocal last_variant_suffix
         nonlocal last_mle_loss, last_mle_loss_source, last_mle_loss_key
         # print("Updating GUI:", "Update:", all_widgets["Real-time"].value)
 
         cur_subject = all_widgets["Subject"].value
         df = all_df[all_df.Name == cur_subject]
         # print("0")
-        # Treat an asym-checkbox toggle as a "load defaults" trigger —
-        # ticking the box should pull the matching ``mle_asymQ`` /
-        # ``mle_asymRR`` / ``mle_asymQRR`` fit's params straight into the
-        # sliders if that fit exists for the subject. Falls back to the
-        # symmetric ``mle`` (and finally ``chisq``) entry otherwise.
-        cur_asym_suffix = _asym_mode_suffix(all_widgets)
+        # Treat an asym-checkbox or Scale-How toggle as a "load defaults"
+        # trigger — flipping any of them should pull the matching
+        # ``mle_asymQ`` / ``mle_asymRR`` / ``mle_asymQRR`` / ``mle_scaledB``
+        # / composed-suffix fit's params straight into the sliders if
+        # that fit exists for the subject. Falls back to the symmetric
+        # ``mle`` (and finally ``chisq``) entry otherwise.
+        cur_variant_suffix = (
+            _asym_mode_suffix(all_widgets) + _scaled_bound_suffix(all_widgets))
         if ((last_subject != cur_subject) or (last_driftFn != all_widgets["Drift Fn"].value) or
             (last_biasFn != all_widgets["Bias Fn"].value) or
             (last_noiseFn != all_widgets["Noise Fn"].value) or
-            (last_asym_suffix != cur_asym_suffix)) and subjects_defaults is not None:
+            (last_variant_suffix != cur_variant_suffix)) and subjects_defaults is not None:
             _try_apply_fit_defaults(
                 all_widgets, subjects_defaults, t_dur, cur_subject,
                 preferred_modes=_preferred_modes_for("mle", all_widgets),
@@ -314,7 +331,7 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
         last_subject = cur_subject
         last_driftFn = all_widgets["Drift Fn"].value
         last_biasFn = all_widgets["Bias Fn"].value
-        last_asym_suffix = cur_asym_suffix
+        last_variant_suffix = cur_variant_suffix
         last_noiseFn = all_widgets["Noise Fn"].value
         # We can't do the DV filtering here, because we need all subsequent
         # trials to build Q values abd RewardRate. So we will rather do
@@ -377,16 +394,25 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
             all_widgets["ALPHA"].disabled = True
         if not include_RewardRate:
             all_widgets["BETA"].disabled = True
-        # Scale Bound checkbox is a fit-time intent marker only — it
-        # doesn't disable BOUND / NOISE_SIGMA sliders, because the kwarg-
-        # collecting loop below filters out disabled sliders (except
-        # ALPHA / BETA) and runAndPlot requires BOUND. The legacy GUI
-        # signals "BOUND is frozen" via the InitVal range (Min=Max=1.0
-        # by default); under --scale-bound the InitVal override at
-        # fit.simulateDDM time switches that range to (0.3, 5.0). The
-        # GUI's chisq simulation path always uses whatever value sits
-        # on the slider, regardless of which axis the MLE objective
-        # will fit.
+        # Scale-How dropdown drives the 4-slider scale-pair gating.
+        # Exactly two of (NOISE_SIGMA, _NOISE_FIXED, BOUND, _BOUND_FIXED)
+        # are enabled at a time: the fittable slider for the active
+        # axis + the frozen counterpart for the inactive axis. The
+        # kwarg-translation block right after the kwarg-collecting
+        # loop (below, search "Scale-How translates") maps the
+        # active-axis pair to the canonical BOUND / NOISE_SIGMA names
+        # that runAndPlot consumes.
+        scale_how = all_widgets["Scale-How"].value
+        if scale_how == "Noise":
+            all_widgets["NOISE_SIGMA"].disabled  = False
+            all_widgets["_BOUND_FIXED"].disabled = False
+            all_widgets["BOUND"].disabled        = True
+            all_widgets["_NOISE_FIXED"].disabled = True
+        else:  # "Bound"
+            all_widgets["NOISE_SIGMA"].disabled  = True
+            all_widgets["_BOUND_FIXED"].disabled = True
+            all_widgets["BOUND"].disabled        = False
+            all_widgets["_NOISE_FIXED"].disabled = False
         # Asymmetric-LR gating is now orthogonal to the model identity:
         # the checkbox is the source of truth. The checkbox itself is
         # disabled when the active model wouldn't learn the matching
@@ -438,6 +464,19 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
             if widget.description in updatePlots_kwargs_li:
                 updatePlots_kwargs[widget.description] = widget.value
 
+        # Scale-How translates the slider in the active column into the
+        # canonical BOUND / NOISE_SIGMA kwarg names runAndPlot consumes.
+        # Without this fixup the disabled slider in the inactive column
+        # would be skipped by the kwarg-collecting loop above (because
+        # the loop filters out widget.disabled) and runAndPlot would
+        # error with "missing 1 required positional argument: BOUND".
+        if scale_how == "Noise":
+            updatePlots_kwargs["BOUND"]       = all_widgets["_BOUND_FIXED"].value
+            updatePlots_kwargs["NOISE_SIGMA"] = all_widgets["NOISE_SIGMA"].value
+        else:  # "Bound"
+            updatePlots_kwargs["BOUND"]       = all_widgets["BOUND"].value
+            updatePlots_kwargs["NOISE_SIGMA"] = all_widgets["_NOISE_FIXED"].value
+
         # Registry-key form of the previous ``"CorrIncorr" in biasFn.__name__``
         # check — matches "Fixed (Corr/Incorr)" and "μ, σ (Corr/Incorr)".
         plot_bias_dir = "Corr/Incorr" in biasFn_str
@@ -479,8 +518,8 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
                         all_widgets["Asymmetric Q-update"].value),
                     uses_asym_rr=bool(
                         all_widgets["Asymmetric RR-update"].value),
-                    scale_bound=bool(
-                        all_widgets["Scale Bound"].value),
+                    scale_bound=(
+                        all_widgets["Scale-How"].value == "Bound"),
                 )
                 last_mle_loss_source = "current"
             except Exception as exc:
