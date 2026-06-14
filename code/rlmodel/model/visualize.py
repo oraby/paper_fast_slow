@@ -428,6 +428,21 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
         if not (include_RewardRate and asym_rr_cb.value):
             all_widgets["BETA_UNREWARDED"].disabled = True
 
+        # Gray out the Reset buttons when no corresponding saved fit
+        # exists for the current variant — gives the user a quick
+        # visual cue about which (subject × model × asym × Scale-How)
+        # combinations have actually been fit. Re-evaluated on every
+        # updateGUI pass so it tracks subject / model / asym / Scale-How
+        # changes automatically.
+        all_widgets["Reset to MLE defaults"].disabled = (
+            not _any_fit_available_for_chain(
+                subjects_defaults, t_dur, all_widgets, cur_subject,
+                _preferred_modes_for("mle", all_widgets)))
+        all_widgets[chi2_reset_label].disabled = (
+            not _any_fit_available_for_chain(
+                subjects_defaults, t_dur, all_widgets, cur_subject,
+                _preferred_modes_for("chisq", all_widgets)))
+
         # Now we should have update the GUI, but dont continue unless the
         # real-time checkbox is checked or the update button is pressed
         is_realtime = all_widgets["Real-time"].value
@@ -776,6 +791,29 @@ def _get_subject_fit_entry(subjects_defaults, t_dur, noiseFn, biasFn, driftFn,
         return subjects_defaults[t_dur][noiseFn][biasFn][driftFn][subject]
     except KeyError:
         return None
+
+
+def _any_fit_available_for_chain(subjects_defaults, t_dur, all_widgets,
+                                  subject, preferred_modes):
+    """True iff any mode in ``preferred_modes`` has a saved fit for the
+    current (subject, Drift Fn, Bias Fn, Noise Fn) selection.
+
+    Used by ``updateGUI`` to gate the "Reset to MLE defaults" /
+    "Reset to Chi²" buttons — they gray out when no corresponding
+    saved fit exists for the current variant, so the user gets a
+    visual cue about which combinations have actually been fit.
+    """
+    entry = _get_subject_fit_entry(
+        subjects_defaults, t_dur,
+        all_widgets["Noise Fn"].value,
+        all_widgets["Bias Fn"].value,
+        all_widgets["Drift Fn"].value,
+        subject,
+    )
+    if entry is None:
+        return False
+    return any(_fit_entry_for_mode(entry, mode) is not None
+               for mode in preferred_modes)
 
 
 def _mle_loss_key(subject, driftFn_str, biasFn_str, noiseFn_str, t_dur, dt,
