@@ -9,6 +9,15 @@ run_logger = None
 # rnd_default_rng = np.random.default_rng()
 rnd_default_rng = None
 
+# Floor applied to per-trial RewardRate before the path-D rescale in
+# the Bound-RewardRate drift variants. ``r_t = 0`` is reachable when
+# BETA fits near 1 and a trial is unrewarded; without the floor,
+# ``1 / r_t`` would emit divide-by-zero + ±inf cascades that show up
+# as warnings at the drift + noise summation site. ``np.maximum``
+# preserves NaN (the NaN-padded slots beyond actual session length
+# in logic.py still propagate downstream as-is).
+_BOUND_REWARDRATE_EPS = 1e-12
+
 
 def _driftClassic(starting_point : npt.NDArray,
                   nondectime : float,
@@ -159,7 +168,14 @@ def _boundGainRewardRate(starting_point : npt.NDArray,
     """
     global run_logger
 
-    inv_rr = 1.0 / RewardRate[:, np.newaxis]
+    # Floor RewardRate to a tiny positive value before dividing.
+    # ``r_t = 0`` is reachable when BETA fits near 1 and a trial is
+    # unrewarded (recurrence pins to 0). The per-trial bound B*r_t
+    # then collapses to ~0 — a degenerate trial that should absorb
+    # immediately. ``np.maximum`` preserves NaN (the NaN-padded slots
+    # beyond actual session length in logic.py:94 still propagate).
+    rr_safe = np.maximum(RewardRate, _BOUND_REWARDRATE_EPS)
+    inv_rr = 1.0 / rr_safe[:, np.newaxis]
     drift = drift_coef * dvs * dt
     non_decision_dt = int(nondectime / dt)
     noise *= noise_sigma
@@ -199,7 +215,11 @@ def _boundGainDecayingQ(starting_point: npt.NDArray,
     """
     global run_logger
 
-    inv_rr = 1.0 / RewardRate[:, np.newaxis]
+    # Floor r_t before dividing — see _boundGainRewardRate for the
+    # full explanation of why r_t = 0 is reachable and why this is
+    # mathematically the right degenerate behavior.
+    rr_safe = np.maximum(RewardRate, _BOUND_REWARDRATE_EPS)
+    inv_rr = 1.0 / rr_safe[:, np.newaxis]
     non_decsision_dt = int(nondectime / dt)
     noise *= noise_sigma
     noise *= inv_rr
