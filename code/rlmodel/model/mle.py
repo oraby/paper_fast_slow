@@ -204,8 +204,12 @@ def objective_from_population(x_matrix, params_names, df, model_config):
 
     Per-candidate exceptions during latent computation are caught and replaced
     with the standard penalty, matching ``objective_from_vector``'s behavior.
-    Candidates whose ``BOUND`` differs from the rest are evaluated one-at-a-time
-    via ``objective_from_vector`` to avoid mixing grid sizes in the solver.
+    BOUND is uniform across candidates here either because it's frozen
+    upstream in ``fit.simulateDDM`` (legacy path) or because
+    ``_compute_latent_population_equal_sessions`` applied the path-D
+    rescaling so every candidate's effective bound is 1.0
+    (``--scale-bound``). Either way, one solver call handles the whole
+    generation.
     """
     validate_mle_config(model_config)
     x_matrix = np.asarray(x_matrix, dtype=float)
@@ -252,17 +256,12 @@ def objective_from_population(x_matrix, params_names, df, model_config):
     nondec = pop_latents["non_decision_time"]
     lapse_per_cand = pop_latents["lapse_rate"]
 
-    # Phase 2: solver requires uniform BOUND across the chunk (it sets up
-    # x_grid from bound). In the default config BOUND is fixed at 1, so this
-    # holds. If any candidate disagrees, evaluate those one-at-a-time and skip
-    # the population path for them.
-    sub_bounds = bounds[valid_cand_idx]
-    if not np.allclose(sub_bounds, sub_bounds[0]):
-        for i in valid_cand_idx:
-            losses[i] = objective_from_vector(
-                x_matrix[:, i], params_names, prepared, model_config)
-        return losses
-    shared_bound = float(sub_bounds[0])
+    # Phase 2: solver requires uniform BOUND across the chunk (its x_grid
+    # is set up from bound). _compute_latent_population_equal_sessions
+    # guarantees uniformity by design — see the rescale block there and
+    # the docstring above — so we can just read the first candidate's
+    # bound and pass it through.
+    shared_bound = float(bounds[valid_cand_idx[0]])
 
     # Phase 3: configure one solver for the whole generation.
     solver = BatchedDiffusionSolver(
@@ -688,6 +687,35 @@ def _compute_latent_population_equal_sessions(data, x_matrix, params_names,
                 beta_unrewarded=beta_unrewarded, xp=xp)
             reward_rate = xp.where(valid_t, new_rr, reward_rate)
 
+    # --scale-bound: apply the path-D rescaling identity per candidate
+    # (mu/B, sigma/B, z/B) so every candidate's effective bound becomes
+    # 1.0. Same trick the Bound-RewardRate batched path uses, generalized
+    # to per-CANDIDATE BOUND — the scale_bound_equivalence.ipynb identity
+    # makes no distinction between trial-varying and candidate-varying B.
+    # Without this, candidate-major BOUND heterogeneity would break the
+    # solver's single-x_grid assumption and force a per-candidate Python
+    # loop in objective_from_population.
+    inv_b_3d = None
+    if model_config.uses_scaled_bound:
+        inv_b_3d = (1.0 / bounds)[:, None, None]
+        z = z * inv_b_3d
+        sigma = sigma * inv_b_3d
+        if time_varying:
+            # Factored-mu reconstruction: mu_t = base_mu + q_drift_coef *
+            # decay_form + sigma_for_noise * sign * max(...) / dt. Only
+            # the per-trial outer factors need rescaling; the per-candidate
+            # time shapes (decay_form, log_decay) and the q_abs_x_qcoef
+            # inside the max() stay as-is. base_mu_pop is built below in
+            # the time-varying output block; rescaled there via inv_b_3d.
+            if q_drift_coef_pop is not None:
+                q_drift_coef_pop = q_drift_coef_pop * inv_b_3d
+            if sigma_for_noise_pop is not None:
+                sigma_for_noise_pop = sigma_for_noise_pop * inv_b_3d
+        else:
+            assert mu is not None
+            mu = mu * inv_b_3d
+        bounds = xp.ones_like(bounds)
+
     flat_shape = (n_candidates, n_trials)
     valid_flat = xp.broadcast_to(
         valid_for_loss_2d[None, :, :],
@@ -704,6 +732,8 @@ def _compute_latent_population_equal_sessions(data, x_matrix, params_names,
         # factor arrays are flattened to (n_candidates * n_trials,) so the
         # solver can index by valid_idx directly.
         base_mu_pop = drift_coef[:, None, None] * dv[None, :, :]
+        if inv_b_3d is not None:
+            base_mu_pop = base_mu_pop * inv_b_3d
         flat_n = n_candidates * n_trials
         candidate_id_flat = np.broadcast_to(
             np.arange(n_candidates, dtype=np.int64)[:, None],

@@ -8,9 +8,12 @@ in ``test_bound_rewardrate.py``.
 from __future__ import annotations
 
 import numpy as np
+import pandas as pd
 
 from ..fit import evolveFP
 from ..initvals import InitVals
+from ..mle import (MLEModelConfig, objective_from_population,
+                   objective_from_vector)
 from ..state_updates import compute_starting_point_z
 
 
@@ -115,6 +118,167 @@ def test_compute_starting_point_z_absolute_mode():
         q_left=0.9, q_right=0.1, delta=2.0, offset=0.0, include_Q=False,
         bound=2.0)
     assert z_off == 0.0
+
+
+def _padded_scale_bound_df():
+    """Two padded sessions, three trials each (one invalid per session).
+
+    Matches ``_two_session_padded_df`` from ``test_mle_smoke``; duplicated
+    here to keep this test self-contained.
+    """
+    rows = []
+    for sess_num in (1, 2):
+        for trial_num, choice_left, reward, rt, dv, valid in [
+            (1, 1.0, 1.0, 0.12,  0.7, True),
+            (2, 0.0, 0.0, 0.14, -0.5, True),
+            (3, np.nan, np.nan, np.nan, 0.2, False),
+        ]:
+            rows.append(dict(
+                Name="S1", Date=pd.Timestamp("2026-01-01"),
+                SessionNum=sess_num, TrialNumber=trial_num,
+                SessId=f"S1_2026-01-01_{sess_num}",
+                DV=dv, DVstr=str(dv), valid=valid,
+                calcStimulusTime=rt, ChoiceLeft=choice_left,
+                ChoiceCorrect=reward,
+            ))
+    return pd.DataFrame(rows)
+
+
+def test_population_path_handles_scale_bound_without_per_candidate_fallback():
+    """Under ``--scale-bound``, BOUND varies across DE candidates.
+
+    Without the path-D rescale, ``objective_from_population`` would
+    detect heterogeneous BOUND, divert to a per-candidate Python loop,
+    and lose the single-batch GPU payoff. With the rescale (applied
+    in ``_compute_latent_population_equal_sessions``), every candidate's
+    effective bound becomes 1.0 and the whole generation goes through
+    one solver call. This test exercises that path and confirms it
+    completes with finite losses for each candidate.
+    """
+    config = MLEModelConfig(
+        drift_fn_str="Classic", bias_fn_str="None_",
+        noise_fn_str="Normal(0, 1)",
+        include_Q=False, include_RewardRate=False,
+        dt=0.01, t_dur=0.2, dx=0.05,
+        uses_scaled_bound=True,
+    )
+    params_names = np.array(
+        ["DRIFT_COEF", "NOISE_SIGMA", "BOUND", "NON_DECISION_TIME"])
+    # Heterogeneous BOUND — exactly the configuration that used to
+    # divert objective_from_population into the per-candidate loop.
+    candidates = np.array([
+        [1.0, 1.0, 0.5, 0.02],
+        [1.0, 1.0, 1.0, 0.02],
+        [1.0, 1.0, 2.0, 0.02],
+    ], dtype=float).T  # (n_params, S=3)
+    df = _padded_scale_bound_df()
+
+    pop_losses = objective_from_population(
+        candidates, params_names, df, config)
+
+    assert pop_losses.shape == (3,)
+    assert np.all(np.isfinite(pop_losses))
+
+
+def test_population_path_matches_per_candidate_for_unit_bound_under_scale_bound():
+    """When BOUND=1.0, the path-D rescale is the identity (inv_b = 1.0)
+    so the population path is bit-exact with per-candidate. Confirms
+    the rescale block adds no spurious arithmetic for the no-op case.
+    """
+    config = MLEModelConfig(
+        drift_fn_str="Classic", bias_fn_str="None_",
+        noise_fn_str="Normal(0, 1)",
+        include_Q=False, include_RewardRate=False,
+        dt=0.01, t_dur=0.2, dx=0.05,
+        uses_scaled_bound=True,
+    )
+    params_names = np.array(
+        ["DRIFT_COEF", "NOISE_SIGMA", "BOUND", "NON_DECISION_TIME"])
+    candidates = np.array([
+        [1.0, 1.0, 1.0, 0.02],
+        [0.8, 1.2, 1.0, 0.03],
+        [1.5, 0.9, 1.0, 0.01],
+    ], dtype=float).T
+    df = _padded_scale_bound_df()
+
+    pop_losses = objective_from_population(
+        candidates, params_names, df, config)
+    per_candidate = np.array([
+        objective_from_vector(candidates[:, i], params_names, df, config)
+        for i in range(candidates.shape[1])
+    ])
+
+    np.testing.assert_allclose(pop_losses, per_candidate, rtol=0, atol=0)
+
+
+def test_population_path_approximate_equivalence_with_varying_bound():
+    """For varying BOUND under ``--scale-bound``, population and
+    per-candidate paths solve the same continuous PDE on DIFFERENT
+    discretization grids (per-candidate has bin width dx in original
+    DDM-state; population has bin width dx in rescaled coords, i.e.
+    B*dx in original). The rescale identity is exact in the
+    continuous limit; at any finite dx the two paths agree to within
+    discretization noise that shrinks with dx. This test uses a small
+    BOUND spread around 1.0 to keep that noise bounded.
+    """
+    config = MLEModelConfig(
+        drift_fn_str="Classic", bias_fn_str="None_",
+        noise_fn_str="Normal(0, 1)",
+        include_Q=False, include_RewardRate=False,
+        dt=0.005, t_dur=0.2, dx=0.02,
+        uses_scaled_bound=True,
+    )
+    params_names = np.array(
+        ["DRIFT_COEF", "NOISE_SIGMA", "BOUND", "NON_DECISION_TIME"])
+    candidates = np.array([
+        [1.0, 1.0, 0.9, 0.02],
+        [1.0, 1.0, 1.0, 0.02],
+        [1.0, 1.0, 1.1, 0.02],
+    ], dtype=float).T
+    df = _padded_scale_bound_df()
+
+    pop_losses = objective_from_population(
+        candidates, params_names, df, config)
+    per_candidate = np.array([
+        objective_from_vector(candidates[:, i], params_names, df, config)
+        for i in range(candidates.shape[1])
+    ])
+
+    # rtol generous enough to swallow the discretization mismatch
+    # between bin-width-dx-in-rescaled vs bin-width-dx-in-original.
+    np.testing.assert_allclose(pop_losses, per_candidate, rtol=0.05, atol=0.5)
+
+
+def test_population_path_scale_bound_off_is_unaffected_by_rescale():
+    """When ``--scale-bound`` is off the rescale block is skipped, so the
+    legacy bit-exact behavior is preserved. BOUND is uniform across
+    candidates here (``fit.simulateDDM`` freezes it upstream); this
+    test simulates that by passing the same BOUND in every candidate.
+    """
+    config = MLEModelConfig(
+        drift_fn_str="Classic", bias_fn_str="None_",
+        noise_fn_str="Normal(0, 1)",
+        include_Q=False, include_RewardRate=False,
+        dt=0.01, t_dur=0.2, dx=0.05,
+        uses_scaled_bound=False,
+    )
+    params_names = np.array(
+        ["DRIFT_COEF", "NOISE_SIGMA", "BOUND", "NON_DECISION_TIME"])
+    candidates = np.array([
+        [1.0, 1.0, 1.0, 0.02],
+        [0.8, 1.2, 1.0, 0.03],
+        [1.5, 0.9, 1.0, 0.01],
+    ], dtype=float).T
+    df = _padded_scale_bound_df()
+
+    pop_losses = objective_from_population(
+        candidates, params_names, df, config)
+    per_candidate = np.array([
+        objective_from_vector(candidates[:, i], params_names, df, config)
+        for i in range(candidates.shape[1])
+    ])
+
+    np.testing.assert_allclose(pop_losses, per_candidate, rtol=0, atol=0)
 
 
 def test_compute_starting_point_z_absolute_array_bound():
