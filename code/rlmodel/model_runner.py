@@ -85,6 +85,37 @@ def _parse_init_val_overrides(specs):
     return overrides
 
 
+def _expand_asym_shorthand(args):
+    """Resolve ``--asym`` into the canonical ``--asym-q`` / ``--asym-rr``
+    flags based on whether the chosen drift / bias / noise functions
+    actually learn Q-values or a reward rate. Also returns the two
+    detection booleans so the caller can reuse them for downstream
+    validation without re-extracting the column sets.
+
+    The column-dependency derivation matches the
+    ``include_Q`` / ``include_RewardRate`` logic in
+    ``fit.simulateDDM``, so a model that the fitter ignores Q on is
+    likewise a no-op for the shorthand. OR-folds with explicit
+    ``--asym-q`` / ``--asym-rr``; passing both is harmless.
+
+    Mutates ``args.asym_q`` / ``args.asym_rr`` in place. Returns
+    ``(learns_q, learns_rr)``.
+    """
+    from .model.util import (
+        biasFnColsAndKwargs, driftFnColsAndKwargs, noiseFnColsAndKwargs)
+    bias_cols, _ = biasFnColsAndKwargs(BIAS_FN_DICT[args.bias])
+    drift_cols, _ = driftFnColsAndKwargs(DRIFT_FN_DICT[args.drift])
+    noise_cols, _ = noiseFnColsAndKwargs(NOISE_FN_DICT[args.noise])
+    learns_q = ("Q_val" in bias_cols or "Q_val" in drift_cols
+                or "Q_val" in noise_cols)
+    learns_rr = ("RewardRate" in bias_cols or "RewardRate" in drift_cols
+                 or "RewardRate" in noise_cols)
+    if args.asym:
+        args.asym_q = args.asym_q or learns_q
+        args.asym_rr = args.asym_rr or learns_rr
+    return learns_q, learns_rr
+
+
 def runModel(df, bias_fn_str, drift_fn_str, noise_fn_str, is_loss_no_dir,
              fit_mode, evolve_res : dict = None, num_cpus=None,
              dry_run=False, mle_array_backend="numpy", mle_device_id=None,
@@ -204,6 +235,15 @@ def main():
             "unrewarded trials. Requires the model to actually learn a "
             "reward rate (NoiseGain-RewardRate drift family)."))
     parser.add_argument(
+        "--asym", action="store_true", default=False,
+        help=(
+            "Shorthand: enable --asym-q if the model learns Q-values "
+            "(Q-Val bias / Decay-Q drift / Decaying Q-Val noise) AND/OR "
+            "--asym-rr if it learns a reward rate (NoiseGain-RewardRate "
+            "or Bound-RewardRate drift). No-op for models that learn "
+            "neither. Composes with explicit --asym-q / --asym-rr via "
+            "OR — passing both is harmless."))
+    parser.add_argument(
         "--scale-bound", action="store_true", default=False,
         help=(
             "Swap which of (BOUND, NOISE_SIGMA) is the fitted scale axis. "
@@ -234,21 +274,14 @@ def main():
             f"--mle-terminal-c must satisfy "
             f"{MLE_TERMINAL_C.Min} <= C <= {MLE_TERMINAL_C.Max}; "
             f"got {args.mle_terminal_c}")
-    # Pre-flight on --asym-q / --asym-rr: each flag requires the
-    # underlying learning quantity to actually exist in the selected
-    # model. Use the same auto-detection that fit.py:simulateDDM uses
-    # (cols pulled by *ColsAndKwargs from each fn's signature) so the
-    # check matches what the fitter will see.
-    if args.asym_q or args.asym_rr:
-        from .model.util import (
-            biasFnColsAndKwargs, driftFnColsAndKwargs, noiseFnColsAndKwargs)
-        bias_cols, _ = biasFnColsAndKwargs(BIAS_FN_DICT[args.bias])
-        drift_cols, _ = driftFnColsAndKwargs(DRIFT_FN_DICT[args.drift])
-        noise_cols, _ = noiseFnColsAndKwargs(NOISE_FN_DICT[args.noise])
-        learns_q = ("Q_val" in bias_cols or "Q_val" in drift_cols
-                    or "Q_val" in noise_cols)
-        learns_rr = ("RewardRate" in bias_cols or "RewardRate" in drift_cols
-                     or "RewardRate" in noise_cols)
+    # Pre-flight on --asym / --asym-q / --asym-rr: --asym is a
+    # shorthand that expands to the canonical flags based on what the
+    # model actually learns; the explicit flags require the underlying
+    # learning quantity to exist. Both branches share the same
+    # column-based detection inside _expand_asym_shorthand, which
+    # matches fit.simulateDDM's include_Q / include_RewardRate.
+    if args.asym_q or args.asym_rr or args.asym:
+        learns_q, learns_rr = _expand_asym_shorthand(args)
         if args.asym_q and not learns_q:
             parser.error(
                 f"--asym-q requires a model that learns Q-values "

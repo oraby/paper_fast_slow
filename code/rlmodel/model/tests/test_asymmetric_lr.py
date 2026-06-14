@@ -375,3 +375,103 @@ def test_asym_cli_preflight_rejects_asym_rr_without_rr_learning():
         f"expected argparse error (exit 2); got {proc.returncode}\n"
         f"stdout: {proc.stdout!r}\nstderr: {proc.stderr!r}")
     assert "--asym-rr requires" in proc.stderr, proc.stderr
+
+
+# ---------------------------------------------------------------------------
+# ``--asym`` shorthand expansion (``_expand_asym_shorthand``)
+# ---------------------------------------------------------------------------
+
+import argparse
+
+from ...model_runner import _expand_asym_shorthand
+
+
+def _asym_args(drift, bias, noise, asym=True, asym_q=False, asym_rr=False):
+    return argparse.Namespace(
+        drift=drift, bias=bias, noise=noise,
+        asym=asym, asym_q=asym_q, asym_rr=asym_rr,
+    )
+
+
+def test_expand_asym_shorthand_q_only_model():
+    """Q-Val bias + Classic drift learns Q but no reward rate.
+    ``--asym`` flips only asym_q."""
+    args = _asym_args(drift="Classic", bias="Q-Val", noise="Normal(0, 1)")
+    learns_q, learns_rr = _expand_asym_shorthand(args)
+    assert learns_q is True and learns_rr is False
+    assert args.asym_q is True
+    assert args.asym_rr is False
+
+
+def test_expand_asym_shorthand_rr_only_model():
+    """NoiseGain-RewardRate drift + None_ bias learns RR but no Q.
+    ``--asym`` flips only asym_rr."""
+    args = _asym_args(drift="NoiseGain-RewardRate", bias="None_",
+                       noise="Normal(0, 1)")
+    learns_q, learns_rr = _expand_asym_shorthand(args)
+    assert learns_q is False and learns_rr is True
+    assert args.asym_q is False
+    assert args.asym_rr is True
+
+
+def test_expand_asym_shorthand_both_q_and_rr_model():
+    """NoiseGain-RewardRate + Q-Val learns both. ``--asym`` flips both."""
+    args = _asym_args(drift="NoiseGain-RewardRate", bias="Q-Val",
+                       noise="Normal(0, 1)")
+    learns_q, learns_rr = _expand_asym_shorthand(args)
+    assert learns_q is True and learns_rr is True
+    assert args.asym_q is True
+    assert args.asym_rr is True
+
+
+def test_expand_asym_shorthand_neither_model_is_noop():
+    """Classic + None_ + Normal(0, 1) learns neither Q nor RR.
+    ``--asym`` is a strict no-op; both flags stay False."""
+    args = _asym_args(drift="Classic", bias="None_", noise="Normal(0, 1)")
+    learns_q, learns_rr = _expand_asym_shorthand(args)
+    assert learns_q is False and learns_rr is False
+    assert args.asym_q is False
+    assert args.asym_rr is False
+
+
+def test_expand_asym_shorthand_off_does_not_flip():
+    """``--asym`` not passed: no expansion regardless of what the model
+    learns. The helper still returns detection booleans so the caller's
+    validation block can use them."""
+    args = _asym_args(drift="NoiseGain-RewardRate", bias="Q-Val",
+                       noise="Normal(0, 1)", asym=False)
+    learns_q, learns_rr = _expand_asym_shorthand(args)
+    assert learns_q is True and learns_rr is True
+    # asym was False, so no expansion
+    assert args.asym_q is False
+    assert args.asym_rr is False
+
+
+def test_expand_asym_shorthand_or_composes_with_explicit_flag():
+    """``--asym --asym-q`` is harmless: asym_q was already True, the
+    expansion leaves it True (OR is idempotent). asym_rr flips iff the
+    model learns RR."""
+    args = _asym_args(drift="NoiseGain-RewardRate", bias="Q-Val",
+                       noise="Normal(0, 1)", asym=True, asym_q=True)
+    learns_q, learns_rr = _expand_asym_shorthand(args)
+    assert learns_q is True and learns_rr is True
+    assert args.asym_q is True   # was True, still True
+    assert args.asym_rr is True  # OR-flipped by --asym
+
+
+def test_expand_asym_shorthand_decay_q_drift_detected_as_q():
+    """``Decay Q`` drift uses Q-values; ``--asym`` should treat it as
+    Q-learning even though the bias is None_."""
+    args = _asym_args(drift="Decay Q", bias="None_", noise="Normal(0, 1)")
+    learns_q, learns_rr = _expand_asym_shorthand(args)
+    assert learns_q is True
+    assert args.asym_q is True
+
+
+def test_expand_asym_shorthand_decaying_q_val_noise_detected_as_q():
+    """``Decaying Q-Val`` noise function uses Q-values; ``--asym``
+    should treat it as Q-learning."""
+    args = _asym_args(drift="Classic", bias="None_", noise="Decaying Q-Val")
+    learns_q, learns_rr = _expand_asym_shorthand(args)
+    assert learns_q is True
+    assert args.asym_q is True
