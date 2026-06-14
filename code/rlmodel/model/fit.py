@@ -380,6 +380,21 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
     uses_per_trial_bound = bool(
         drift_fn_str is not None
         and drift_fn_str.startswith("Bound-RewardRate"))
+    # Soft-limit: Bound-RewardRate is mathematically equivalent to
+    # NoiseGain-RewardRate when BOUND is frozen at 1.0 (the default
+    # without --scale-bound). Running them together wastes compute and
+    # emits a misleadingly-named pickle. If you genuinely want to do
+    # this — e.g. for an apples-to-apples sanity check — comment out
+    # the following block.
+    if uses_per_trial_bound and not scale_bound:
+        raise ValueError(
+            f"Drift {drift_fn_str!r} uses per-trial bound scaling "
+            f"(BOUND * r_t), but --scale-bound is OFF so BOUND is "
+            f"frozen at 1.0. This collapses to NoiseGain-RewardRate "
+            f"semantics with extra compute. Either add --scale-bound "
+            f"to actually fit BOUND in [0.3, 5.0], or use a "
+            f"NoiseGain-RewardRate drift instead. Soft-limit — see "
+            f"fit.py near this line to override.")
     # ``--scale-bound``: swap which of (BOUND, NOISE_SIGMA) is fit.
     # InitVal override applied to the bounds_and_defaults dict (which is
     # InitVals.toDict() — owned by the caller; mutating it is the same
