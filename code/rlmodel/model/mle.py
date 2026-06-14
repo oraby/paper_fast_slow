@@ -1,3 +1,4 @@
+import datetime
 from dataclasses import dataclass
 from functools import partial
 
@@ -377,6 +378,7 @@ def result_payload(optim_res, params_names, params_init, params_bounds,
         aic=2 * k - 2 * eval_res.loglik,
         bic=k * np.log(n) - 2 * eval_res.loglik,
         model_config=model_config,
+        fit_finish_time=datetime.datetime.now().isoformat(timespec="seconds"),
     )
 
 

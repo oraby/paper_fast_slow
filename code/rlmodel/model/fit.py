@@ -17,6 +17,7 @@ import pandas as pd
 from scipy.optimize import differential_evolution
 from functools import partial
 import inspect
+import datetime
 import multiprocessing
 import multiprocessing.pool
 import pathlib
@@ -293,6 +294,8 @@ def _processSubject(subject_df, fixed_params_names, fixed_params_vals,
                     is_loss_no_dir=is_loss_no_dir,
                     fit_mode=fit_mode,
                     noise_dt_scaling="sqrt_dt",
+                    fit_finish_time=datetime.datetime.now().isoformat(
+                        timespec="seconds"),
                     )
 
     with open(evolve_dump_FP_subject, 'wb') as f:
