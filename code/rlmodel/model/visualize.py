@@ -755,7 +755,10 @@ def _apply_fit_defaults(all_widgets, subjects_defaults, t_dur, subject, mode,
             return True
         _apply_fit_defaults._last_log_key = log_key
     params = _fit_entry_params(fit_entry)
-    print(f"Setting {mode.upper()} defaults for:", subject)
+    finish_time = fit_entry.get("fit_finish_time") if isinstance(
+        fit_entry, dict) else None
+    suffix = f" (fit saved {finish_time})" if finish_time else ""
+    print(f"Setting {mode.upper()} defaults for: {subject}{suffix}")
     for val_name, val in params.items():
         if val_name not in all_widgets:
             continue
