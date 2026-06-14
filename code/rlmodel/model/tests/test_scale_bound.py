@@ -9,11 +9,15 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pytest
 
-from ..fit import evolveFP
+from ..bias import BIAS_FN_DICT
+from ..drift import DRIFT_FN_DICT
+from ..fit import evolveFP, simulateDDM
 from ..initvals import InitVals
 from ..mle import (MLEModelConfig, objective_from_population,
                    objective_from_vector)
+from ..noise import NOISE_FN_DICT
 from ..state_updates import compute_starting_point_z
 
 
@@ -279,6 +283,36 @@ def test_population_path_scale_bound_off_is_unaffected_by_rescale():
     ])
 
     np.testing.assert_allclose(pop_losses, per_candidate, rtol=0, atol=0)
+
+
+def test_bound_rewardrate_without_scale_bound_raises_soft_limit():
+    """Bound-RewardRate drift without ``--scale-bound`` collapses to
+    NoiseGain-RewardRate semantics (BOUND frozen at 1.0) with extra
+    compute and a misleading filename. ``fit.simulateDDM`` raises
+    ValueError tagged ``soft-limit`` so the user has to be explicit;
+    a power user wanting the combination can comment out the guard.
+    """
+    bias_str = "None_"
+    drift_str = "Bound-RewardRate"
+    noise_str = "Normal(0, 1)"
+    init_vals_dict = InitVals().toDict()
+
+    with pytest.raises(ValueError, match=r"(?i)soft-limit"):
+        simulateDDM(
+            df=pd.DataFrame(),
+            bounds_and_defaults=init_vals_dict,
+            dt=0.005, t_dur=1.0,
+            biasFn=BIAS_FN_DICT[bias_str],
+            driftFn=DRIFT_FN_DICT[drift_str],
+            noiseFn=NOISE_FN_DICT[noise_str],
+            is_loss_no_dir=False,
+            num_cpus=1,
+            evolvs_res={},
+            fit_mode="mle",
+            bias_fn_str=bias_str,
+            drift_fn_str=drift_str,
+            scale_bound=False,
+        )
 
 
 def test_compute_starting_point_z_absolute_array_bound():
