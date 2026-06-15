@@ -386,9 +386,15 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
     # Soft-limit: Bound-RewardRate is mathematically equivalent to
     # NoiseGain-RewardRate when BOUND is frozen at 1.0 (the default
     # without --scale-bound). Running them together wastes compute and
-    # emits a misleadingly-named pickle. If you genuinely want to do
-    # this — e.g. for an apples-to-apples sanity check — comment out
-    # the following block.
+    # emits a misleadingly-named pickle.
+    #
+    # CLI/GUI users no longer reach this branch — both surfaces only
+    # expose ``RewardRate`` and ``drift.resolve_drift_alias`` routes
+    # the alias to the right family based on --scale-bound (or
+    # Scale-How in the GUI). The check stays as protection for direct
+    # programmatic callers of ``simulateDDM`` that bypass the alias
+    # layer. If you genuinely want to run Bound-RewardRate without
+    # --scale-bound from code, comment out the following block.
     if uses_per_trial_bound and not scale_bound:
         raise ValueError(
             f"Drift {drift_fn_str!r} uses per-trial bound scaling "

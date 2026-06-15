@@ -1,6 +1,7 @@
 from .model.initvals import NUM_CPUS, InitVal, InitVals, MLE_TERMINAL_C, DT, T_dur
 from .model import fit
-from .model.drift import DRIFT_FN_DICT
+from .model.drift import (
+    DRIFT_FN_DICT, resolve_drift_alias, user_facing_drift_keys)
 from .model.bias import BIAS_FN_DICT
 from .model.noise import NOISE_FN_DICT
 import numpy as np
@@ -83,6 +84,19 @@ def _parse_init_val_overrides(specs):
         default = nums[2] if len(nums) == 3 else 0.5 * (mn + mx)
         overrides[name.strip().upper()] = InitVal(mn, mx, default)
     return overrides
+
+
+def _resolve_drift_alias_args(args):
+    """Resolve ``--drift RewardRate*`` into the canonical
+    ``DRIFT_FN_DICT`` key based on ``--scale-bound``. Mutates
+    ``args.drift`` in place. No-op for non-alias drifts (e.g.
+    ``Classic``, ``Decay Q``).
+
+    Must run before any code that touches ``args.drift`` — in
+    particular before ``_expand_asym_shorthand``'s column-based
+    detection, so the substring scan sees the canonical name.
+    """
+    args.drift = resolve_drift_alias(args.drift, args.scale_bound)
 
 
 def _expand_asym_shorthand(args):
@@ -168,7 +182,7 @@ def main():
     # noise_fn_str, num_cpus, dry_run
     parser = argparse.ArgumentParser()
     parser.add_argument("--drift", type=str, required=True,
-                        choices=DRIFT_FN_DICT.keys())
+                        choices=user_facing_drift_keys())
     parser.add_argument("--bias", type=str, required=True,
                         choices=BIAS_FN_DICT.keys())
     parser.add_argument("--noise", type=str, #required=True,
@@ -233,16 +247,16 @@ def main():
         help=(
             "Fit a separate BETA_UNREWARDED rate for reward-rate updates on "
             "unrewarded trials. Requires the model to actually learn a "
-            "reward rate (NoiseGain-RewardRate drift family)."))
+            "reward rate (RewardRate drift family)."))
     parser.add_argument(
         "--asym", action="store_true", default=False,
         help=(
             "Shorthand: enable --asym-q if the model learns Q-values "
             "(Q-Val bias / Decay-Q drift / Decaying Q-Val noise) AND/OR "
-            "--asym-rr if it learns a reward rate (NoiseGain-RewardRate "
-            "or Bound-RewardRate drift). No-op for models that learn "
-            "neither. Composes with explicit --asym-q / --asym-rr via "
-            "OR — passing both is harmless."))
+            "--asym-rr if it learns a reward rate (RewardRate drift "
+            "family). No-op for models that learn neither. Composes "
+            "with explicit --asym-q / --asym-rr via OR — passing both "
+            "is harmless."))
     parser.add_argument(
         "--scale-bound", action="store_true", default=False,
         help=(
@@ -274,6 +288,10 @@ def main():
             f"--mle-terminal-c must satisfy "
             f"{MLE_TERMINAL_C.Min} <= C <= {MLE_TERMINAL_C.Max}; "
             f"got {args.mle_terminal_c}")
+    # Resolve the RewardRate drift alias into the canonical DRIFT_FN_DICT
+    # key. Must run before _expand_asym_shorthand so its column-based
+    # detection sees the resolved name.
+    _resolve_drift_alias_args(args)
     # Pre-flight on --asym / --asym-q / --asym-rr: --asym is a
     # shorthand that expands to the canonical flags based on what the
     # model actually learns; the explicit flags require the underlying
@@ -291,7 +309,7 @@ def main():
         if args.asym_rr and not learns_rr:
             parser.error(
                 f"--asym-rr requires a model that learns a reward rate "
-                f"(NoiseGain-RewardRate drift family); got "
+                f"(RewardRate drift family); got "
                 f"bias={args.bias!r}, drift={args.drift!r}, "
                 f"noise={args.noise!r}.")
     try:

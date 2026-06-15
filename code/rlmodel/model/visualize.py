@@ -1,5 +1,7 @@
 from .logic import makeOneRun
-from .drift import DRIFT_FN_DICT
+from .drift import (
+    DRIFT_FN_DICT, _REWARDRATE_ALIAS_FOR_INTERNAL, resolve_drift_alias,
+    user_facing_drift_keys)
 from .noise import NOISE_FN_DICT
 from .bias import BIAS_FN_DICT
 from .plotter import runAndPlot, createFig
@@ -61,6 +63,23 @@ def _scaled_bound_suffix(all_widgets):
             else "")
 
 
+def _resolved_drift_fn_value(all_widgets):
+    """Read the Drift Fn dropdown's value and resolve any
+    ``RewardRate*`` alias to the canonical ``DRIFT_FN_DICT`` key.
+
+    The dropdown shows the alias; all downstream code (``DRIFT_FN_DICT``
+    lookups, ``_get_subject_fit_entry`` saved-fit keys, the
+    ``startswith("Bound-RewardRate")`` per-trial-bound check) expects
+    the resolved internal name. The Scale-How dropdown is the source
+    of truth for which implementation the alias maps to.
+    """
+    raw = all_widgets["Drift Fn"].value
+    scale_bound_active = (
+        "Scale-How" in all_widgets
+        and all_widgets["Scale-How"].value == "Bound")
+    return resolve_drift_alias(raw, scale_bound_active)
+
+
 def _preferred_modes_for(base_mode, all_widgets):
     """Build the preferred-mode fallback chain for the current checkbox state.
 
@@ -93,6 +112,20 @@ def _preferred_modes_for(base_mode, all_widgets):
 def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
                  is_small_fig_mode, subjects_defaults=None, save_figs=False,
                  save_ovewrite=True):
+
+    # One-shot GUI cache migration: the Drift Fn dropdown used to expose
+    # the NoiseGain-/Bound- implementation names directly; both are now
+    # collapsed into a single ``RewardRate`` alias and Scale-How decides
+    # which family dispatches. Map deprecated cached values to the alias
+    # and pre-set Scale-How so users keep their previous selection
+    # across the change. Idempotent on already-migrated caches.
+    if gui_cache is not None:
+        cached_drift = gui_cache.get("Drift Fn", None)
+        if cached_drift in _REWARDRATE_ALIAS_FOR_INTERNAL:
+            gui_cache["Drift Fn"] = _REWARDRATE_ALIAS_FOR_INTERNAL[cached_drift]
+            gui_cache["Scale-How"] = (
+                "Bound" if cached_drift.startswith("Bound-RewardRate")
+                else "Noise")
 
     drop_downs_labels = ["Scale-How", "Subject", "DV", "Drift Fn", "Bias Fn",
                          "Psychometric", "Noise Fn"]
@@ -157,13 +190,14 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
             options_str = sorted(df["Name"].unique())
             values = options_str
         elif label == "Drift Fn":
-            options_str = list(DRIFT_FN_DICT.keys())
-            # Widget values are the registry KEY strings (not fn objects)
-            # so the GUI can distinguish "NoiseGain-RewardRate" from
-            # "NoiseGain-RewardRate-asym" — both alias to the same Python
-            # fn, which would collide if we stored the fn here.
+            # User-facing names: the NoiseGain-/Bound- pairs are collapsed
+            # to a single ``RewardRate`` alias. The Scale-How dropdown
+            # decides which implementation actually dispatches; the alias
+            # is resolved at the top of updateGUI before any downstream
+            # code touches driftFn_str.
+            options_str = user_facing_drift_keys()
             values = options_str
-            default_val_idx = options_str.index("NoiseGain-RewardRate")
+            default_val_idx = options_str.index("RewardRate")
         elif label == "Bias Fn":
             options_str = list(BIAS_FN_DICT.keys())
             values = options_str
@@ -319,7 +353,8 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
         # ``mle`` (and finally ``chisq``) entry otherwise.
         cur_variant_suffix = (
             _asym_mode_suffix(all_widgets) + _scaled_bound_suffix(all_widgets))
-        if ((last_subject != cur_subject) or (last_driftFn != all_widgets["Drift Fn"].value) or
+        cur_driftFn_resolved = _resolved_drift_fn_value(all_widgets)
+        if ((last_subject != cur_subject) or (last_driftFn != cur_driftFn_resolved) or
             (last_biasFn != all_widgets["Bias Fn"].value) or
             (last_noiseFn != all_widgets["Noise Fn"].value) or
             (last_variant_suffix != cur_variant_suffix)) and subjects_defaults is not None:
@@ -329,7 +364,7 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
                 required=False, quiet=True)
 
         last_subject = cur_subject
-        last_driftFn = all_widgets["Drift Fn"].value
+        last_driftFn = cur_driftFn_resolved
         last_biasFn = all_widgets["Bias Fn"].value
         last_variant_suffix = cur_variant_suffix
         last_noiseFn = all_widgets["Noise Fn"].value
@@ -345,7 +380,7 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
         # them. ``biasFn`` etc. (the actual callables) are looked up
         # explicitly when needed below.
         biasFn_str = all_widgets["Bias Fn"].value
-        driftFn_str = all_widgets["Drift Fn"].value
+        driftFn_str = _resolved_drift_fn_value(all_widgets)
         noiseFn_str = all_widgets["Noise Fn"].value
         biasFn = BIAS_FN_DICT[biasFn_str]
         driftFm = DRIFT_FN_DICT[driftFn_str]
@@ -428,20 +463,25 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
         if not (include_RewardRate and asym_rr_cb.value):
             all_widgets["BETA_UNREWARDED"].disabled = True
 
-        # Gray out the Reset buttons when no corresponding saved fit
-        # exists for the current variant — gives the user a quick
-        # visual cue about which (subject × model × asym × Scale-How)
-        # combinations have actually been fit. Re-evaluated on every
-        # updateGUI pass so it tracks subject / model / asym / Scale-How
-        # changes automatically.
+        # Gray out the Reset buttons when the EXACT variant for the
+        # current (Asym-Q × Asym-RR × Scale-How) checkbox state has no
+        # saved fit. ``_preferred_modes_for`` returns the exact variant
+        # as its FIRST element followed by partial-match / symmetric
+        # fallbacks — we deliberately gate on the first element only,
+        # so e.g. ticking Asym-Q without a saved ``mle_asymQ`` fit
+        # leaves the button disabled even when the symmetric ``mle``
+        # exists. Falling back silently would make the asym checkboxes
+        # feel inert. Re-evaluated on every updateGUI pass.
+        mle_chain = _preferred_modes_for("mle", all_widgets)
+        chisq_chain = _preferred_modes_for("chisq", all_widgets)
         all_widgets["Reset to MLE defaults"].disabled = (
             not _any_fit_available_for_chain(
                 subjects_defaults, t_dur, all_widgets, cur_subject,
-                _preferred_modes_for("mle", all_widgets)))
+                mle_chain[:1]))
         all_widgets[chi2_reset_label].disabled = (
             not _any_fit_available_for_chain(
                 subjects_defaults, t_dur, all_widgets, cur_subject,
-                _preferred_modes_for("chisq", all_widgets)))
+                chisq_chain[:1]))
 
         # Now we should have update the GUI, but dont continue unless the
         # real-time checkbox is checked or the update button is pressed
@@ -629,7 +669,19 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
                 for biasFn, biasFn_dict in noiseFn_dict.items():
                     all_widgets["Bias Fn"].value = biasFn
                     for driftFn, driftFn_dict in biasFn_dict.items():
-                        all_widgets["Drift Fn"].value = driftFn
+                        # subjects_defaults is keyed by INTERNAL drift
+                        # names (the saved-fit filename uses those);
+                        # the dropdown now shows RewardRate aliases.
+                        # Translate before assigning + pre-set Scale-How
+                        # so the figure folder layout still works.
+                        if driftFn in _REWARDRATE_ALIAS_FOR_INTERNAL:
+                            all_widgets["Scale-How"].value = (
+                                "Bound" if driftFn.startswith("Bound-RewardRate")
+                                else "Noise")
+                            all_widgets["Drift Fn"].value = (
+                                _REWARDRATE_ALIAS_FOR_INTERNAL[driftFn])
+                        else:
+                            all_widgets["Drift Fn"].value = driftFn
                         # Now switch to real time to update the plots
                         all_widgets["Real-time"].value = True
                         fn = f"{noiseFn}{biasFn}{driftFn}_maxdur_{t_dur}s"
@@ -735,7 +787,7 @@ def _apply_fit_defaults(all_widgets, subjects_defaults, t_dur, subject, mode,
         t_dur,
         all_widgets["Noise Fn"].value,
         all_widgets["Bias Fn"].value,
-        all_widgets["Drift Fn"].value,
+        _resolved_drift_fn_value(all_widgets),
         subject,
     )
     fit_entry = _fit_entry_for_mode(entry, mode)
@@ -749,7 +801,7 @@ def _apply_fit_defaults(all_widgets, subjects_defaults, t_dur, subject, mode,
             subject, mode,
             all_widgets["Noise Fn"].value,
             all_widgets["Bias Fn"].value,
-            all_widgets["Drift Fn"].value,
+            _resolved_drift_fn_value(all_widgets),
         )
         if getattr(_apply_fit_defaults, "_last_log_key", None) == log_key:
             return True
@@ -810,7 +862,7 @@ def _any_fit_available_for_chain(subjects_defaults, t_dur, all_widgets,
         subjects_defaults, t_dur,
         all_widgets["Noise Fn"].value,
         all_widgets["Bias Fn"].value,
-        all_widgets["Drift Fn"].value,
+        _resolved_drift_fn_value(all_widgets),
         subject,
     )
     if entry is None:

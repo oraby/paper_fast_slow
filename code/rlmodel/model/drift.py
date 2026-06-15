@@ -305,3 +305,61 @@ DRIFT_FN_DICT = {
     "Bound-RewardRate Decay Q":             partialWithNames(_boundGainDecayingQ, nondectime_Q=True, Q_VAL_OFFSET=0),
     "Bound-RewardRate Decay Q (Offset)":    partialWithNames(_boundGainDecayingQ, nondectime_Q=True),
 }
+
+
+# ---------------------------------------------------------------------------
+# RewardRate alias layer (CLI + GUI)
+# ---------------------------------------------------------------------------
+#
+# NoiseGain-RewardRate and Bound-RewardRate are mathematically equivalent
+# under the path-D rescale (proven in scale_bound_equivalence.ipynb); the
+# user shouldn't have to pick the implementation. RewardRate is the only
+# name exposed at the user-facing edge (--drift CLI choices and the GUI
+# Drift Fn dropdown). The active scale-bound state (--scale-bound on the
+# CLI; the Scale-How dropdown in the GUI) routes the alias to the right
+# DRIFT_FN_DICT key. The internal registry is unchanged so every existing
+# saved-fit pickle still loads via fit.evolveFP.
+_REWARDRATE_ALIASES = {
+    # alias -> (resolved-without-scale-bound, resolved-with-scale-bound)
+    "RewardRate":                  ("NoiseGain-RewardRate",
+                                     "Bound-RewardRate"),
+    "RewardRate Decay Q":          ("NoiseGain-RewardRate Decay Q",
+                                     "Bound-RewardRate Decay Q"),
+    "RewardRate Decay Q (Offset)": ("NoiseGain-RewardRate Decay Q (Offset)",
+                                     "Bound-RewardRate Decay Q (Offset)"),
+}
+
+
+# Reverse map: every implementation name -> its alias. Used by the GUI
+# cache-migration shim so users who reopen the notebook with a cache
+# that holds an old "Drift Fn" value get auto-migrated.
+_REWARDRATE_ALIAS_FOR_INTERNAL = {
+    impl: alias
+    for alias, pair in _REWARDRATE_ALIASES.items()
+    for impl in pair
+}
+
+
+def user_facing_drift_keys():
+    """User-facing drift names: ``DRIFT_FN_DICT`` keys with the
+    NoiseGain-/Bound- pairs collapsed to ``RewardRate`` aliases.
+
+    Used by argparse's ``choices=`` and the GUI dropdown so they show
+    one ``RewardRate`` entry per family instead of two implementation
+    names.
+    """
+    suppressed = set(_REWARDRATE_ALIAS_FOR_INTERNAL)
+    keys = [k for k in DRIFT_FN_DICT if k not in suppressed]
+    keys.extend(_REWARDRATE_ALIASES)
+    return keys
+
+
+def resolve_drift_alias(drift_str, scale_bound):
+    """Resolve a ``RewardRate*`` alias to its canonical ``DRIFT_FN_DICT``
+    registry key. No-op for non-alias drifts (e.g. ``Classic``,
+    ``Decay Q``).
+    """
+    if drift_str in _REWARDRATE_ALIASES:
+        without_sb, with_sb = _REWARDRATE_ALIASES[drift_str]
+        return with_sb if scale_bound else without_sb
+    return drift_str
