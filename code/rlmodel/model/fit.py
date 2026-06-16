@@ -5,6 +5,7 @@ from .logic import makeOneRun
 from .array_backend import assert_gpu_backend, resolve_array_backend
 from .initvals import MLE_TERMINAL_C
 from .mle import (
+    MIN_POPULATION_CANDIDATES,
     MLEModelConfig,
     estimate_population_settings,
     objective_from_population,
@@ -350,6 +351,7 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
                 mle_device_id=None, mle_cupy_fallback="error",
                 mle_gpu_memory_gb=None, mle_show_progress=False,
                 mle_terminal_c=MLE_TERMINAL_C.Default,
+                mle_min_population_candidates=None,
                 bias_fn_str=None, drift_fn_str=None,
                 uses_asym_q=False, uses_asym_rr=False,
                 scale_bound=False):
@@ -673,6 +675,13 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
             mle_gpu_memory_gb=mle_gpu_memory_gb,
             mle_show_progress=mle_show_progress,
             mle_terminal_c=float(mle_terminal_c),
+            # DE population floor. ``--mle-min-population`` translates
+            # into this; programmatic callers can leave it None to
+            # take the dataclass default (``MIN_POPULATION_CANDIDATES``).
+            mle_min_population_candidates=int(
+                mle_min_population_candidates
+                if mle_min_population_candidates is not None
+                else MIN_POPULATION_CANDIDATES),
             # The flag-gated asymmetric-LR contract on MLEModelConfig
             # (see mle.py:_compute_latent_arrays). True ⇒ ALPHA_UNREWARDED
             # / BETA_UNREWARDED MUST be in the params dict at eval time —

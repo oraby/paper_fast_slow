@@ -1,5 +1,6 @@
 from .model.initvals import NUM_CPUS, InitVal, InitVals, MLE_TERMINAL_C, DT, T_dur
 from .model import fit
+from .model.mle import MIN_POPULATION_CANDIDATES
 from .model.drift import (
     DRIFT_FN_DICT, resolve_drift_alias, user_facing_drift_keys)
 from .model.bias import BIAS_FN_DICT
@@ -135,6 +136,7 @@ def runModel(df, bias_fn_str, drift_fn_str, noise_fn_str, is_loss_no_dir,
              dry_run=False, mle_array_backend="numpy", mle_device_id=None,
              mle_cupy_fallback="error", mle_gpu_memory_gb=None,
              mle_show_progress=False, mle_terminal_c=MLE_TERMINAL_C.Default,
+             mle_min_population_candidates=None,
              init_val_overrides=None,
              uses_asym_q=False, uses_asym_rr=False,
              scale_bound=False):
@@ -169,6 +171,7 @@ def runModel(df, bias_fn_str, drift_fn_str, noise_fn_str, is_loss_no_dir,
                                      mle_gpu_memory_gb=mle_gpu_memory_gb,
                                      mle_show_progress=mle_show_progress,
                                      mle_terminal_c=mle_terminal_c,
+                                     mle_min_population_candidates=mle_min_population_candidates,
                                      bias_fn_str=bias_fn_str,
                                      drift_fn_str=drift_fn_str,
                                      uses_asym_q=uses_asym_q,
@@ -236,6 +239,18 @@ def main():
             "behavior. Only honored by the batched MLE path (which is "
             "the default)."))
     parser.add_argument(
+        "--mle-min-population", type=int,
+        default=MIN_POPULATION_CANDIDATES,
+        help=(
+            "Floor on the DE population size (actual candidates = "
+            "scipy_popsize * n_params). Default "
+            f"({MIN_POPULATION_CANDIDATES}) keeps the population diverse "
+            "enough for DE to explore the parameter space even when the "
+            "memory budget would otherwise pick a smaller batch. Lower "
+            "this on tight-memory GPUs to fit the budget; raise it for "
+            "harder loss landscapes that need more candidates per "
+            "generation."))
+    parser.add_argument(
         "--asym-q", action="store_true", default=False,
         help=(
             "Fit a separate ALPHA_UNREWARDED rate for Q-value updates on "
@@ -288,6 +303,10 @@ def main():
             f"--mle-terminal-c must satisfy "
             f"{MLE_TERMINAL_C.Min} <= C <= {MLE_TERMINAL_C.Max}; "
             f"got {args.mle_terminal_c}")
+    if args.mle_min_population < 1:
+        parser.error(
+            f"--mle-min-population must be a positive integer; "
+            f"got {args.mle_min_population}")
     # Resolve the RewardRate drift alias into the canonical DRIFT_FN_DICT
     # key. Must run before _expand_asym_shorthand so its column-based
     # detection sees the resolved name.
@@ -367,6 +386,7 @@ def main():
                                   mle_gpu_memory_gb=args.mle_gpu_memory_gb,
                                   mle_show_progress=mle_show_progress,
                                   mle_terminal_c=args.mle_terminal_c,
+                                  mle_min_population_candidates=args.mle_min_population,
                                   init_val_overrides=init_val_overrides,
                                   uses_asym_q=args.asym_q,
                                   uses_asym_rr=args.asym_rr,
@@ -383,6 +403,7 @@ def main():
                  mle_gpu_memory_gb=args.mle_gpu_memory_gb,
                  mle_show_progress=mle_show_progress,
                  mle_terminal_c=args.mle_terminal_c,
+                 mle_min_population_candidates=args.mle_min_population,
                  init_val_overrides=init_val_overrides,
                  uses_asym_q=args.asym_q,
                  uses_asym_rr=args.asym_rr,

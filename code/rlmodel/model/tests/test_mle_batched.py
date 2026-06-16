@@ -250,3 +250,71 @@ def test_memory_budget_scales_population_candidates_below_ceiling():
     assert info["actual_candidates"] <= info["target_candidates"]
     assert info["actual_candidates"] == info["scipy_popsize"] * 4
     assert info["target_candidates"] >= 1
+
+
+def _tiny_memory_config(min_pop):
+    """Squeeze the memory budget down so the population floor binds.
+
+    ``mle_gpu_memory_gb=1e-6`` gives a flat-trial capacity of 1, so
+    ``target_candidates`` is also 1 and the floor is the only thing
+    determining ``actual_candidates``.
+    """
+    return MLEModelConfig(
+        drift_fn_str="Classic", bias_fn_str="None_",
+        noise_fn_str="Normal(0, 1)",
+        include_Q=False, include_RewardRate=False,
+        dt=0.01, t_dur=0.2, dx=0.1,
+        mle_gpu_memory_gb=1e-6,
+        mle_min_population_candidates=min_pop,
+    )
+
+
+def test_estimate_population_settings_honors_mle_model_config_floor():
+    """``MLEModelConfig.mle_min_population_candidates`` overrides the
+    default floor; the CLI threads ``--mle-min-population`` here."""
+    # Lower floor (8) -> actual_candidates rises only to 8.
+    info_low = estimate_population_settings(
+        _tiny_memory_config(min_pop=8), n_trials=1000, n_params=4, bound=1.0)
+    assert info_low["actual_candidates"] == 8
+    assert info_low["scipy_popsize"] == 2  # ceil(8 / 4)
+
+    # Higher floor (128) -> actual_candidates rises to 128 even though
+    # the memory budget would have picked a much smaller batch.
+    info_high = estimate_population_settings(
+        _tiny_memory_config(min_pop=128), n_trials=1000, n_params=4, bound=1.0)
+    assert info_high["actual_candidates"] == 128
+    assert info_high["scipy_popsize"] == 32  # ceil(128 / 4)
+
+
+def test_estimate_population_settings_default_floor_matches_module_constant():
+    """When no override is passed, the floor falls back to
+    ``MIN_POPULATION_CANDIDATES`` (64)."""
+    from ..mle import MIN_POPULATION_CANDIDATES
+
+    config = MLEModelConfig(
+        drift_fn_str="Classic", bias_fn_str="None_",
+        noise_fn_str="Normal(0, 1)",
+        include_Q=False, include_RewardRate=False,
+        dt=0.01, t_dur=0.2, dx=0.1,
+        mle_gpu_memory_gb=1e-6,
+    )
+    info = estimate_population_settings(
+        config, n_trials=1000, n_params=4, bound=1.0)
+    assert info["actual_candidates"] == MIN_POPULATION_CANDIDATES
+
+
+def test_validate_mle_config_rejects_nonpositive_min_population():
+    """Floor must be a positive int; zero / negative is a config bug."""
+    import pytest
+
+    from ..mle import validate_mle_config
+
+    config = MLEModelConfig(
+        drift_fn_str="Classic", bias_fn_str="None_",
+        noise_fn_str="Normal(0, 1)",
+        include_Q=False, include_RewardRate=False,
+        dt=0.01, t_dur=0.2, dx=0.1,
+        mle_min_population_candidates=0,
+    )
+    with pytest.raises(ValueError, match="mle_min_population_candidates"):
+        validate_mle_config(config)

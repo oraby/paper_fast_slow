@@ -28,6 +28,13 @@ SUPPORTED_MLE_ARRAY_BACKENDS = {"auto", "numpy", "cupy"}
 SUPPORTED_MLE_CUPY_FALLBACKS = {"numpy", "error"}
 _PREPARED_SESSION_BACKEND_CACHE = {}
 
+# Floor on DE actual_candidates (= scipy_popsize * n_params). Keeps the
+# population diverse enough for DE to explore the parameter space even
+# when the memory budget would otherwise pick a smaller batch. Used as
+# the default for ``MLEModelConfig.mle_min_population_candidates``, which
+# the CLI's ``--mle-min-population`` overrides per-fit.
+MIN_POPULATION_CANDIDATES = 64
+
 
 @dataclass(frozen=True)
 class MLEModelConfig:
@@ -47,6 +54,12 @@ class MLEModelConfig:
     mle_use_batched_likelihood: bool = True
     mle_show_progress: bool = False
     mle_terminal_c: float = MLE_TERMINAL_C.Default
+    # DE population floor — see ``MIN_POPULATION_CANDIDATES`` above for
+    # the rationale. Exposed as a per-fit knob so users can dial down
+    # on tight-memory GPUs (smaller floor → smaller batch → fits the
+    # budget) or up for harder loss landscapes that need more
+    # candidates per generation. CLI: ``--mle-min-population``.
+    mle_min_population_candidates: int = MIN_POPULATION_CANDIDATES
     # Asymmetric-LR opt-in flags. When True, the corresponding
     # ALPHA_UNREWARDED / BETA_UNREWARDED param MUST be in the params
     # dict at evaluate-time — strict access, KeyError on miss (loud
@@ -137,6 +150,10 @@ def validate_mle_config(model_config):
             f"Expected {sorted(SUPPORTED_MLE_CUPY_FALLBACKS)}.")
     if model_config.mle_gpu_memory_gb is not None and model_config.mle_gpu_memory_gb <= 0:
         raise ValueError("mle_gpu_memory_gb must be positive")
+    if int(model_config.mle_min_population_candidates) < 1:
+        raise ValueError(
+            "mle_min_population_candidates must be a positive integer; "
+            f"got {model_config.mle_min_population_candidates!r}")
     c = float(model_config.mle_terminal_c)
     if not (MLE_TERMINAL_C.Min <= c <= MLE_TERMINAL_C.Max):
         raise ValueError(
@@ -947,15 +964,15 @@ def _decaying_q_noise_array(q_rel_before, params, n_t):
     return np.where(q_rel_before[:, None] < 0, -decayed, decayed)
 
 
-MIN_POPULATION_CANDIDATES = 64
-
-
 def estimate_population_settings(model_config, n_trials, n_params, bound=1.0):
     """Return candidate count and SciPy popsize from the memory ceiling.
 
-    Enforces a floor of ``MIN_POPULATION_CANDIDATES`` actual candidates so
-    DE has enough diversity to explore the parameter space even when the
-    memory budget would otherwise pick a smaller population.
+    Enforces a floor of ``model_config.mle_min_population_candidates``
+    actual candidates so DE has enough diversity to explore the
+    parameter space even when the memory budget would otherwise pick a
+    smaller population. The floor defaults to
+    ``MIN_POPULATION_CANDIDATES`` (64); the ``--mle-min-population`` CLI
+    flag overrides per-fit.
     """
     flat_capacity, memory_estimate = estimate_flat_trial_capacity_for_memory(
         model_config.mle_gpu_memory_gb, bound, model_config.dx,
@@ -967,8 +984,9 @@ def estimate_population_settings(model_config, n_trials, n_params, bound=1.0):
         target_candidates = max(int(flat_capacity) // max(int(n_trials), 1), 1)
     n_params = max(int(n_params), 1)
     # SciPy's actual population is `scipy_popsize * n_params`. Round up so
-    # `actual_candidates >= MIN_POPULATION_CANDIDATES`.
-    min_popsize = -(-MIN_POPULATION_CANDIDATES // n_params)  # ceil division
+    # `actual_candidates >= mle_min_population_candidates`.
+    min_floor = int(model_config.mle_min_population_candidates)
+    min_popsize = -(-min_floor // n_params)  # ceil division
     scipy_popsize = max(target_candidates // n_params, min_popsize, 1)
     actual_candidates = scipy_popsize * n_params
     population_info = {
