@@ -1077,7 +1077,14 @@ def _evaluate_trial_likelihoods_batched(data, latents, params, model_config,
             "uses_per_trial_bound=True but _compute_latent_arrays did not "
             "produce bound_per_trial — check that flag wiring")
         rescale = bound_scalar / np.asarray(bpt, dtype=float)
-        mu_for_solver = np.asarray(mu_for_solver, dtype=float) * rescale
+        # ``mu`` is per-trial (n_trials,) for constant-drift models but
+        # per-(trial, timestep) (n_trials, n_t) for Decay-Q variants —
+        # numpy aligns trailing axes, so the 2-D case needs ``rescale``
+        # promoted to (n_trials, 1) for the broadcast to land on the
+        # trial axis instead of the time axis.
+        mu_arr = np.asarray(mu_for_solver, dtype=float)
+        mu_for_solver = mu_arr * (rescale[:, None] if mu_arr.ndim == 2
+                                  else rescale)
         sigma_for_solver = np.asarray(sigma_for_solver, dtype=float) * rescale
         z_for_solver = np.asarray(z_for_solver, dtype=float) * rescale
     batch_result = batched_choice_rt_loglik(

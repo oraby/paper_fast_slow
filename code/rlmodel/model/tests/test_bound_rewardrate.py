@@ -126,6 +126,39 @@ def test_bound_rewardrate_emits_per_trial_bound_in_latents():
         latents["reward_rate_before"] * 1.0)  # BOUND_base=1.0 from _params()
 
 
+def test_bound_rewardrate_decay_q_rescale_broadcasts_against_2d_mu():
+    """Regression: ``_evaluate_trial_likelihoods_batched`` rescales
+    ``(mu, sigma, z)`` by ``rescale = BOUND / bound_per_trial`` when
+    ``uses_per_trial_bound`` is True. For Decay-Q drift families, ``mu``
+    is per-(trial, timestep) — shape ``(n_trials, n_t)`` — instead of
+    just ``(n_trials,)``, so the multiplication has to align the
+    per-trial ``rescale`` along the trial axis rather than the time axis.
+    Pre-fix, ``np.asarray(mu) * rescale`` exploded with
+    ``shapes (n_trials, n_t) (n_trials,)`` cannot be broadcast.
+    Hit through the result_payload path which runs Decay-Q drifts
+    through this evaluator at the final eval step.
+    """
+    df = _build_fixture()
+    params = dict(_params())
+    params["Q_VAL_DECAY_RATE"] = 1.0
+    params["Q_VAL_COEF"] = 0.4
+    # Decay-Q drift name → ``uses_decay_q_drift`` per the MLEModelConfig
+    # property, which makes ``_compute_mu_array`` return a 2-D mu.
+    config = MLEModelConfig(
+        drift_fn_str="Bound-RewardRate Decay Q (Offset)",
+        bias_fn_str="None_",
+        noise_fn_str="Normal(0, 1)",
+        include_Q=True,
+        include_RewardRate=True,
+        dt=0.005, t_dur=0.8, dx=0.02,
+        mle_use_batched_likelihood=True,
+        uses_per_trial_bound=True,
+    )
+
+    result = evaluate_neg_loglik(params, df, config)
+    assert np.isfinite(result.neg_loglik)
+
+
 def test_symmetric_path_unaffected_by_bound_rewardrate_flag_off():
     """Old pickles (and symmetric fits going forward) must not change
     behavior. With uses_per_trial_bound=False, the latent compute should
