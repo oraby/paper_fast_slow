@@ -556,6 +556,16 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
             run_mle_btn.disabled = True
             run_mle_btn.description = "Running MLE..."
             try:
+                # NB: no ``except Exception`` here on purpose. A silent
+                # swallow used to map any failure to ``np.nan`` +
+                # ``last_mle_loss_source = "error"``, which surfaced in
+                # the loss-title as a bland ``"not run (error)"`` and
+                # hid the actual traceback (broadcast errors, missing
+                # params, dtype mismatches, etc.). Letting the
+                # exception propagate gives the user the real stack
+                # trace in the notebook cell output; the ``finally``
+                # block below still restores the button so the GUI
+                # doesn't end up stuck in "Running MLE…".
                 last_mle_loss = _evaluate_mle_loss_for_gui(
                     df=df,
                     params=_mle_params_from_widgets(all_widgets),
@@ -577,10 +587,6 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
                         all_widgets["Scale-How"].value == "Bound"),
                 )
                 last_mle_loss_source = "current"
-            except Exception as exc:
-                print(f"MLE loss failed: {type(exc).__name__}: {exc}")
-                last_mle_loss = np.nan
-                last_mle_loss_source = "error"
             finally:
                 last_mle_loss_key = mle_loss_key
                 run_mle_btn.disabled = False
