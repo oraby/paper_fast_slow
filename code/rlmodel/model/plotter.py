@@ -115,9 +115,10 @@ def runAndPlot(df, fig, axs, include_Q, include_RewardRate, biasFn, driftFn,
 
 
     subject = df.Name.iloc[0]
+    num_trials = len(df)
     fig.suptitle(_loss_title(
-        subject, chi_square_loss=loss, mle_loss=mle_loss,
-        mle_loss_source=mle_loss_source))
+        subject, num_trials=num_trials, chi_square_loss=loss, mle_loss=mle_loss,
+        mle_loss_source=mle_loss_source), y=0.99)
 
     global last_df
     last_df = df
