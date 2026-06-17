@@ -2,7 +2,7 @@ from .logic import makeOneRun
 from .runlogger import RunLogger
 from .util import PsychometricPlot
 from ...behavior.bias import calcBias
-from ...behavior.rewardrate import calcAvgRewardRate
+from ...behavior.rewardrate import calcAvgRewardRate, plotSubjectRewardRateRt
 from ...common import clr
 from ...figcode.psychometric import (
                        _psychAxes, _slowFastPsychSubject, _fitPsych, _getGroups,
@@ -39,6 +39,14 @@ def runAndPlot(df, fig, axs, include_Q, include_RewardRate, biasFn, driftFn,
                noiseFn,  plot_bias_dir, psych_plot : PsychometricPlot,
                DRIFT_COEF, NOISE_SIGMA, BOUND, ALPHA, BETA,
                NON_DECISION_TIME, t_dur, dt, is_small_fig_mode,
+               # Asymmetric-LR opt-ins (mirror ``makeOneRun``). ``None``
+               # means "use the symmetric ALPHA / BETA" — the
+               # ``state_updates.update_q_values`` / ``update_reward_rate``
+               # contract. The GUI's collection loop keys off this
+               # signature: when the Asymmetric-Q/-RR checkbox is off the
+               # corresponding slider is disabled and not collected, so
+               # this default kicks in and the symmetric path runs.
+               ALPHA_UNREWARDED=None, BETA_UNREWARDED=None,
                dvs_filter=None,
                biasFn_df_cols=[], biasFn_kwargs={},
                driftFn_df_cols=[], driftFn_kwargs={},
@@ -81,6 +89,8 @@ def runAndPlot(df, fig, axs, include_Q, include_RewardRate, biasFn, driftFn,
                         driftFn=driftFn, driftFn_df_cols=driftFn_df_cols, driftFn_kwargs=driftFn_kwargs,
                         noiseFn=noiseFn, noiseFn_df_cols=noiseFn_df_cols, noiseFn_kwargs=noiseFn_kwargs,
                         ALPHA=ALPHA, BETA=BETA, NON_DECISION_TIME=NON_DECISION_TIME,
+                        ALPHA_UNREWARDED=ALPHA_UNREWARDED,
+                        BETA_UNREWARDED=BETA_UNREWARDED,
                         DRIFT_COEF=DRIFT_COEF, NOISE_SIGMA=NOISE_SIGMA,
                         BOUND=BOUND, dt=dt, t_dur=t_dur, is_loss_no_dir=is_loss_no_dir,
                         return_df=True)
@@ -92,6 +102,8 @@ def runAndPlot(df, fig, axs, include_Q, include_RewardRate, biasFn, driftFn,
                         driftFn=driftFn, driftFn_df_cols=driftFn_df_cols, driftFn_kwargs=driftFn_kwargs,
                         noiseFn=noiseFn, noiseFn_df_cols=noiseFn_df_cols, noiseFn_kwargs=noiseFn_kwargs,
                         ALPHA=ALPHA, BETA=BETA, NON_DECISION_TIME=NON_DECISION_TIME,
+                        ALPHA_UNREWARDED=ALPHA_UNREWARDED,
+                        BETA_UNREWARDED=BETA_UNREWARDED,
                         DRIFT_COEF=DRIFT_COEF, NOISE_SIGMA=NOISE_SIGMA,
                         BOUND=BOUND, dt=dt, t_dur=t_dur, is_loss_no_dir=is_loss_no_dir, return_df=True)
     loss, df = ret

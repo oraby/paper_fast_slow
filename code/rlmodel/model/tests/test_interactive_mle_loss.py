@@ -79,6 +79,35 @@ def test_fit_entry_for_mode_supports_positional_tuple_without_mode_names():
     )["DRIFT_COEF"] == 2.0
 
 
+def test_fit_entry_for_mode_recognizes_scaledB_and_composed_variants():
+    """Regression: ``_fit_entries_by_mode`` used to recognize only
+    ``mle`` / ``chisq`` and ``mle_asym* / chisq_asym*``. ``--scale-bound``
+    fits are keyed as ``mle_scaledB`` / ``chisq_scaledB`` (and the
+    composed ``mle_asymQ_scaledB`` family); those were silently dropped
+    from the recognized set, so the Reset-to-Defaults button stayed
+    grayed out even when the saved fit existed on disk.
+    """
+    mle_scaled = {"params": {"BOUND": 1.5}}
+    mle_asymQ_scaled = {"params": {"BOUND": 2.0}}
+    chisq_scaled = {"params": {"BOUND": 0.8}}
+    entry = {
+        "mle": {"params": {"BOUND": 1.0}},
+        "mle_asymQ": {"params": {"BOUND": 1.1}},
+        "mle_scaledB": mle_scaled,
+        "mle_asymQ_scaledB": mle_asymQ_scaled,
+        "chisq_scaledB": chisq_scaled,
+    }
+
+    assert visualize._fit_entry_for_mode(entry, "mle_scaledB") is mle_scaled
+    assert visualize._fit_entry_for_mode(
+        entry, "mle_asymQ_scaledB") is mle_asymQ_scaled
+    assert visualize._fit_entry_for_mode(
+        entry, "chisq_scaledB") is chisq_scaled
+    # Existing modes still resolve correctly.
+    assert visualize._fit_entry_for_mode(entry, "mle") is entry["mle"]
+    assert visualize._fit_entry_for_mode(entry, "mle_asymQ") is entry["mle_asymQ"]
+
+
 def test_fit_entry_params_supports_plain_numpy_scalar_param_dict():
     fit_entry = {
         np.str_("DRIFT_COEF"): np.float64(1.47),
@@ -116,6 +145,42 @@ def test_fit_entry_for_mode_ignores_non_fit_tuple_payloads():
         visualize._fit_entry_for_mode(entry, "mle")
     ) == {"DRIFT_COEF": np.float64(1.0)}
     assert visualize._fit_entry_for_mode(entry, "chisq") is None
+
+
+def test_mle_params_from_widgets_includes_asym_unrewarded_params():
+    """``_compute_latent_arrays`` reads ``ALPHA_UNREWARDED`` /
+    ``BETA_UNREWARDED`` via strict access whenever the matching
+    ``uses_asymmetric_*`` flag is True. The GUI's ``Run MLE`` button
+    builds the params dict from this whitelist; if the unrewarded
+    sliders aren't in the dict the MLE call fails with KeyError —
+    which used to be swallowed and rendered as ``"not run (error)"``.
+    Pin both keys here so a future refactor doesn't drop them again.
+    """
+    class _Slider:
+        def __init__(self, value):
+            self.value = value
+
+    widgets = {
+        "DRIFT_COEF": _Slider(1.0),
+        "NOISE_SIGMA": _Slider(1.0),
+        "BOUND": _Slider(1.0),
+        "NON_DECISION_TIME": _Slider(0.02),
+        "ALPHA": _Slider(0.3),
+        "BETA": _Slider(0.4),
+        "ALPHA_UNREWARDED": _Slider(0.11),
+        "BETA_UNREWARDED": _Slider(0.22),
+        "BIAS_COEF": _Slider(0.5),
+        "Q_VAL_OFFSET": _Slider(0.0),
+        "LAPSE_RATE": _Slider(0.0),
+        "Drift Fn": _Slider("RewardRate"),  # non-param widget, ignored
+    }
+
+    params = visualize._mle_params_from_widgets(widgets)
+
+    assert params["ALPHA_UNREWARDED"] == 0.11
+    assert params["BETA_UNREWARDED"] == 0.22
+    # Non-param widgets stay out.
+    assert "Drift Fn" not in params
 
 
 def test_mle_loss_key_changes_with_params():

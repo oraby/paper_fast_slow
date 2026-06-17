@@ -724,6 +724,14 @@ def _mle_params_from_widgets(all_widgets):
         "Q_VAL_DECAY_RATE",
         "Q_VAL_COEF",
         "Q_VAL_OFFSET",
+        # Asymmetric-LR opt-ins. ``_compute_latent_arrays`` reads
+        # these via strict access whenever ``uses_asymmetric_*`` is
+        # True on the model_config (set when the GUI checkbox is
+        # ticked) — KeyError on miss. Pass them through
+        # unconditionally; when asym is off, the model_config flag
+        # is False and these values are ignored.
+        "ALPHA_UNREWARDED",
+        "BETA_UNREWARDED",
         # MLE-only contamination / lapse mixture. Read here so "Run MLE"
         # propagates the slider value into ``evaluate_neg_loglik``; not
         # touched by the chisq simulation path.
@@ -968,16 +976,17 @@ def _fit_entries_by_mode(entry):
     if entry is None:
         return {}
     if isinstance(entry, dict):
-        # The notebook now keys asym variants as ``mle_asymQ`` /
-        # ``mle_asymRR`` / ``mle_asymQRR`` (and the same for chisq if
-        # ever produced) so symmetric and asym fits of the same model
-        # coexist. Accept any key that starts with the recognized base
-        # modes — the lookup chain elsewhere (preferred_modes) picks
-        # exactly which variant to apply.
+        # The notebook keys variants as ``mle_asymQ`` / ``mle_asymRR`` /
+        # ``mle_asymQRR`` / ``mle_scaledB`` (and the composed
+        # ``mle_asymQ_scaledB`` etc.), plus the bare ``mle`` / ``chisq``
+        # symmetric fits — and the same set for chisq. Recognize any
+        # key with one of those base mode prefixes followed by an
+        # optional suffix; ``_preferred_modes_for`` decides which
+        # specific variant the GUI is asking for.
         recognized = {k for k in entry.keys()
-                      if k == "mle" or k == "chisq"
-                      or k.startswith("mle_asym")
-                      or k.startswith("chisq_asym")}
+                      if k in ("mle", "chisq")
+                      or k.startswith("mle_")
+                      or k.startswith("chisq_")}
         if recognized:
             return {mode: entry[mode] for mode in recognized}
         if _is_params_dict(entry):

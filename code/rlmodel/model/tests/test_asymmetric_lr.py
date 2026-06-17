@@ -478,6 +478,99 @@ def test_expand_asym_shorthand_decaying_q_val_noise_detected_as_q():
 
 
 # ---------------------------------------------------------------------------
+# ``runAndPlot`` plumbing: ALPHA_UNREWARDED / BETA_UNREWARDED must reach
+# ``makeOneRun`` so the GUI sliders aren't silently dropped.
+# ---------------------------------------------------------------------------
+
+import inspect
+from unittest.mock import patch
+
+from .. import plotter
+
+
+def test_runAndPlot_signature_exposes_unrewarded_kwargs():
+    """The GUI's slider-collection loop in ``visualize.updateGUI`` keys
+    off ``signature(runAndPlot).parameters`` to decide which slider
+    values to forward. ``ALPHA_UNREWARDED`` / ``BETA_UNREWARDED`` must
+    be in that signature or the GUI silently drops them and
+    ``makeOneRun`` falls back to the symmetric defaults — exactly the
+    bug where moving the BETA_UNREWARDED slider had no visible effect.
+    """
+    params = inspect.signature(plotter.runAndPlot).parameters
+    assert "ALPHA_UNREWARDED" in params
+    assert "BETA_UNREWARDED" in params
+    assert params["ALPHA_UNREWARDED"].default is None
+    assert params["BETA_UNREWARDED"].default is None
+
+
+def _runAndPlot_stub_df():
+    """Minimum DataFrame that gets ``runAndPlot`` to the makeOneRun call.
+    Real plotting and downstream work fails after the mocked
+    ``makeOneRun`` raises, which is fine — we only need to reach the
+    call site.
+    """
+    return pd.DataFrame({"RewardRateSim": [], "RewardRate": []})
+
+
+def test_runAndPlot_forwards_unrewarded_kwargs_to_makeOneRun():
+    """Beyond exposing the kwargs, ``runAndPlot`` must thread the values
+    through to ``makeOneRun``; otherwise the asymmetric branch in
+    ``state_updates.update_q_values`` / ``update_reward_rate`` never
+    fires. Mock ``makeOneRun`` and assert the kwargs land there.
+    """
+    sentinel = RuntimeError("captured")
+    with patch.object(plotter, "makeOneRun", side_effect=sentinel) as mock_run:
+        try:
+            plotter.runAndPlot(
+                df=_runAndPlot_stub_df(), fig=None, axs=None,
+                include_Q=True, include_RewardRate=True,
+                biasFn=None, driftFn=None, noiseFn=None,
+                plot_bias_dir=None, psych_plot=None,
+                DRIFT_COEF=1.0, NOISE_SIGMA=1.0, BOUND=1.0,
+                ALPHA=0.5, BETA=0.5,
+                NON_DECISION_TIME=0.02,
+                t_dur=0.2, dt=0.01,
+                is_small_fig_mode=False,
+                ALPHA_UNREWARDED=0.11,
+                BETA_UNREWARDED=0.22,
+            )
+        except RuntimeError as exc:
+            assert exc is sentinel
+    kwargs = mock_run.call_args.kwargs
+    assert kwargs["ALPHA_UNREWARDED"] == 0.11
+    assert kwargs["BETA_UNREWARDED"] == 0.22
+
+
+def test_runAndPlot_defaults_unrewarded_kwargs_to_None():
+    """When the GUI's asym checkbox is off, the slider is disabled and
+    the value isn't collected — ``runAndPlot`` then runs with its
+    default ``None``, which is the ``state_updates`` sentinel for
+    "use the symmetric ALPHA / BETA". This pins that default so a
+    future refactor that changes it (e.g. to 0.0) doesn't silently
+    break the symmetric path.
+    """
+    sentinel = RuntimeError("captured")
+    with patch.object(plotter, "makeOneRun", side_effect=sentinel) as mock_run:
+        try:
+            plotter.runAndPlot(
+                df=_runAndPlot_stub_df(), fig=None, axs=None,
+                include_Q=True, include_RewardRate=True,
+                biasFn=None, driftFn=None, noiseFn=None,
+                plot_bias_dir=None, psych_plot=None,
+                DRIFT_COEF=1.0, NOISE_SIGMA=1.0, BOUND=1.0,
+                ALPHA=0.5, BETA=0.5,
+                NON_DECISION_TIME=0.02,
+                t_dur=0.2, dt=0.01,
+                is_small_fig_mode=False,
+            )
+        except RuntimeError as exc:
+            assert exc is sentinel
+    kwargs = mock_run.call_args.kwargs
+    assert kwargs["ALPHA_UNREWARDED"] is None
+    assert kwargs["BETA_UNREWARDED"] is None
+
+
+# ---------------------------------------------------------------------------
 # ``RewardRate`` drift alias (``resolve_drift_alias`` + CLI helper)
 # ---------------------------------------------------------------------------
 
