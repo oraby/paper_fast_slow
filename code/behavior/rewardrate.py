@@ -53,7 +53,9 @@ def plotSubjectRewardRateRt(subject : str, subject_df : pd.DataFrame,
                             plot : bool=True,
                             plot_distinct_timeouts : bool=False,
                             save_figs : bool=False, descrp : str ="",
-                            save_prefix : Union[str, None]=None):
+                            save_prefix : Union[str, None]=None,
+                            use_ax : Union[plt.Axes, None]=None,
+                            linecolor : Union[str, None]=None):
     if save_figs:
         assert save_prefix is not None
     # print("Subject:", subject, "Num Trials:", len(subject_df))
@@ -72,8 +74,9 @@ def plotSubjectRewardRateRt(subject : str, subject_df : pd.DataFrame,
     common_kwargs = dict(subject=subject, col_postfix=col_postfix, rt_col=rt_col,
                          RT_ZSCORE=RT_ZSCORE, num_past_trials=num_past_trials,
                          min_trials_per_sess_rr=min_trials_per_sess_rr,
-                         BY_SESS=BY_SESS, save_figs=save_figs,
-                         descrp=descrp, save_prefix=save_prefix)
+                         BY_SESS=BY_SESS, linecolor=linecolor,
+                         save_figs=save_figs, descrp=descrp,
+                         save_prefix=save_prefix)
     distinct_kwargs = common_kwargs.copy()
     distinct_kwargs["plot"] = plot_distinct_timeouts
     for timeout, timeout_df in subject_df.groupby("GUI_TimeOutIncorrectChoice"):
@@ -84,6 +87,7 @@ def plotSubjectRewardRateRt(subject : str, subject_df : pd.DataFrame,
 
     all_kwargs = common_kwargs.copy()
     all_kwargs["plot"] = plot
+    all_kwargs["use_ax"] = use_ax
     all_res_dict = _plotRewardRateRT(df=subject_df, timeout="All",
                                      **all_kwargs)
     for key, val in all_res_dict.items():
@@ -100,7 +104,9 @@ def _plotRewardRateRT(subject : str, df : pd.DataFrame, col_postfix : str,
                       timeout : Union[float, str],
                       min_trials_per_sess_rr : int, plot : bool=True,
                       save_figs : bool=False, descrp : str ="",
-                      save_prefix : Union[str, None]=None):
+                      save_prefix : Union[str, None]=None,
+                      use_ax : Union[plt.Axes, None]=None,
+                      linecolor : Union[str, None]=None):
     if save_figs:
         assert save_prefix is not None
     RewardRateCol = f"RewardRate{col_postfix}{num_past_trials}"
@@ -118,9 +124,14 @@ def _plotRewardRateRT(subject : str, df : pd.DataFrame, col_postfix : str,
     rr_vals += 1e-5
     bins = pd.cut(rr_vals, ratios_bins, right=False)
     if plot:
-        fig, ax = plt.subplots(1, 1, figsize=(10, 5))
-        twin_ax = ax.twinx()
-    groupby_obj = df.groupby(bins)
+        if use_ax is None:
+            fig, ax = plt.subplots(1, 1, figsize=(10, 5))
+            twin_ax = ax.twinx()
+        else:
+            ax = use_ax
+            #twin_ax = ax.twinx()
+
+    groupby_obj = df.groupby(bins, observed=False)
     bin_xs = []
     ys = []
     ys_err = []
@@ -157,7 +168,7 @@ def _plotRewardRateRT(subject : str, df : pd.DataFrame, col_postfix : str,
         res_dict["RewardRateCount"].append(len(bin_df))
         res_dict["TotalNumTrials"].append(total_num_trials)
 
-        if plot:
+        if plot and use_ax is None:
             twin_ax.bar(bin_x, len(bin_df), label=bin_name,
                         width=CUT_SIZE - CUT_SIZE/5, color="gray", alpha=.2)
 
@@ -165,20 +176,21 @@ def _plotRewardRateRT(subject : str, df : pd.DataFrame, col_postfix : str,
         # ys = groupby_obj[rt_col].mean()
         # ys_err = groupby_obj[rt_col].sem() if len(bin_df) > 1 else 0
         # print("Y:", ys)
-        ax.errorbar(bin_xs, ys, yerr=ys_err, label=bin_name)
+        ax.errorbar(bin_xs, ys, yerr=ys_err, label=bin_name, color=linecolor)
         ax.set_xlabel(f"Reward Rate (Past {num_past_trials} Trials)")
         ax.set_ylabel("Reaction-Time" + (" (Z-Score)" if RT_ZSCORE else ""))
         ax.set_title((descrp + '\n' if len(descrp) else "") +
                      f"Subject: {subject} - Incorrect Timeout: ~{timeout}s")
-        ax.spines[['top', 'right']].set_visible(False)
-        twin_ax.spines[['top', 'right']].set_visible(False)
-        twin_ax.set_ylabel("Trials Count")
+        if use_ax is None:
+            ax.spines[['top', 'right']].set_visible(False)
+            twin_ax.spines[['top', 'right']].set_visible(False)
+            twin_ax.set_ylabel("Trials Count")
         if save_figs:
             save_fp = _buildSaveFP(save_prefix, subject, descrp, timeout,
                                    BY_SESS, RT_ZSCORE, num_past_trials)
             fig.savefig(save_fp,  bbox_inches='tight')
             plt.close(fig)
-        else:
+        elif use_ax is None:
             plt.show()
     return res_dict
 

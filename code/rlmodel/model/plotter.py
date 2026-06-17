@@ -234,7 +234,25 @@ def plotPlots(df, axs, include_Q, include_RewardRate,
         _plotMotorBias(df, ax_motor_bias)
         _plotPrevOutcomeQuantile(df, ax_prev_out_cur_q)
         # print(f"Prev Outcome Cur Quantile: {time.time() - time_now:.2f}"); time_now = time.time()
-        _plotPrevOutcomeCount(df, ax_prev_outs_rt)
+        #_plotPrevOutcomeCount(df, ax_prev_outs_rt)
+        subject = df.Name.iloc[0]
+        MIN_TRIALS_PER_SESS_RR = 1
+        REWARD_RATE_NUM_PAST_TRIALS = 5
+        REWARD_RATE_BY_SESS = False
+        reward_rate_kwargs = dict(subject=subject, num_past_trials=REWARD_RATE_NUM_PAST_TRIALS,
+                                  BY_SESS=REWARD_RATE_BY_SESS, save_figs=False, RT_ZSCORE=False,
+                                  min_trials_per_sess_rr=MIN_TRIALS_PER_SESS_RR,
+                                  plot_distinct_timeouts=False, use_ax=ax_prev_outs_rt,
+                                  plot=True)
+        # Zero reward-rate is noisy as it doesn't happen often that the subject goes for 5
+        # trials without reward.
+        plotSubjectRewardRateRt(subject_df=df[df.RewardRate5 != 0], col_postfix="",  rt_col="calcStimulusTime", linecolor="gray",
+                                **reward_rate_kwargs)
+        plotSubjectRewardRateRt(subject_df=df[df.RewardRateSim5 != 0], col_postfix="Sim", rt_col="SimRT", linecolor="k",
+                                **reward_rate_kwargs)
+        ax_prev_outs_rt.set_title("Reward Rate vs RT")
+        lines, labels = ax_prev_outs_rt.get_legend_handles_labels()
+        ax_prev_outs_rt.legend(lines, ["Real Reward Rate", "Model Reward Rate"], loc='upper right')
         if SINGLE_WIN_LOSE_UPDATE:
             _plotStaySwitch(df, ax_win_lose_update)
         else:
