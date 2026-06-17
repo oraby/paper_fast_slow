@@ -130,7 +130,8 @@ def runAndPlot(df, fig, axs, include_Q, include_RewardRate, biasFn, driftFn,
     return loss, df
 
 
-def _loss_title(subject, chi_square_loss, mle_loss=None, mle_loss_source=None):
+def _loss_title(subject, num_trials, chi_square_loss, mle_loss=None,
+                mle_loss_source=None):
     chi_text = _format_loss_value(chi_square_loss)
     mle_text = _format_loss_value(mle_loss)
     if mle_loss_source:
@@ -199,6 +200,7 @@ def plotPlots(df, axs, include_Q, include_RewardRate,
     # Error bars are not remove with bar.remove() above
     ax_psych.clear()
     _psychAxes(ax=ax_psych, combine_sides=False)
+    ax_psych.set_title("Psychometric", y=0.9)
     if not is_small_fig_mode:
         ax_prev_out_cur_q.clear()
         ax_prev_out_cur_q.set_title("Prev Outcome Cur Quantile")
@@ -305,7 +307,7 @@ def _createFigFull(fig=None):
     (hist_corr_fig, hist_dir_fig, psych_fig,
      prev_cur_q_fig) = top_row_subfigs.subfigures(1, 4)
 
-    hist_corr_fig.suptitle("RT Hist (correct/incorrect)")
+    hist_corr_fig.suptitle("RT Hist (correct/incorrect)", y=0.9)
     hist_corr_axs = hist_corr_fig.subplots(2, 1, sharex=True, gridspec_kw={"hspace":0})
     # hist_corr_fig.suubplots_adjust(hspace=0)
     hist_corr_axs[1].invert_yaxis()
@@ -315,7 +317,7 @@ def _createFigFull(fig=None):
     hist_corr_axs[0].set_title("RT Correct", alpha=0)
     hist_corr_axs[1].set_title("RT Incorrect", alpha=0)
 
-    hist_dir_fig.suptitle("RT Hist (direction)")
+    hist_dir_fig.suptitle("RT Hist (direction)", y=0.9)
     hist_dir_axs = hist_dir_fig.subplots(2, 1, sharex=True, gridspec_kw={"hspace":0})
     hist_dir_axs[1].invert_yaxis()
     hist_dir_axs[0].set_ylabel("Left")
@@ -324,8 +326,8 @@ def _createFigFull(fig=None):
     hist_dir_axs[1].set_title("RT Right", alpha=0)
 
     psych_ax = psych_fig.subplots()
-    psych_ax.set_title("Psychometric")
     _psychAxes(ax=psych_ax)
+    psych_ax.set_title("Psychometric")
 
     if SINGLE_WIN_LOSE_UPDATE:
         prev_cur_q_fig.suptitle("Prev Outcome Cur Quantile")
