@@ -137,7 +137,7 @@ def _loss_title(subject, chi_square_loss, mle_loss=None, mle_loss_source=None):
         mle_text = f"{mle_text} ({mle_loss_source})"
     return (
         f"{subject} - Chi-Square Loss: {chi_text}, "
-        f"MLE Loss: {mle_text}")
+        f"MLE Loss: {mle_text} - {num_trials:,} Trials")
 
 
 def _format_loss_value(value):
