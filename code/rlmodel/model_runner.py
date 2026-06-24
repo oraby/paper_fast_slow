@@ -188,6 +188,8 @@ def runModel(df, bias_fn_str, drift_fn_str, noise_fn_str, is_loss_no_dir,
              mle_show_progress=False, mle_terminal_c=MLE_TERMINAL_C.Default,
              mle_min_population_candidates=None,
              mle_condition_columns=(),
+             mle_choice_weight=1.0, mle_rt_weight=1.0,
+             mle_choice_norm="conditional",
              init_val_overrides=None,
              uses_asym_q=False, uses_asym_rr=False,
              scale_bound=False):
@@ -224,6 +226,9 @@ def runModel(df, bias_fn_str, drift_fn_str, noise_fn_str, is_loss_no_dir,
                                      mle_terminal_c=mle_terminal_c,
                                      mle_min_population_candidates=mle_min_population_candidates,
                                      mle_condition_columns=mle_condition_columns,
+                                     mle_choice_weight=mle_choice_weight,
+                                     mle_rt_weight=mle_rt_weight,
+                                     mle_choice_norm=mle_choice_norm,
                                      bias_fn_str=bias_fn_str,
                                      drift_fn_str=drift_fn_str,
                                      uses_asym_q=uses_asym_q,
@@ -316,6 +321,36 @@ def main():
             "Does NOT affect the saved-fit filename, so you can A/B "
             "test against an existing fit by overwriting the same "
             "pickle on disk."))
+    parser.add_argument(
+        "--mle-choice-weight", type=float, default=1.0,
+        help=(
+            "Weight on the CHOICE component of the per-trial MLE loss "
+            "(w_choice in `w_choice*log P(c) + w_rt*log p(rt|c)`). "
+            "Default 1.0. Raise above --mle-rt-weight to prioritize "
+            "reproducing choice/side-bias phenotypes over RT shape."))
+    parser.add_argument(
+        "--mle-rt-weight", type=float, default=1.0,
+        help=(
+            "Weight on the RT (reaction-time-given-choice) component of "
+            "the per-trial MLE loss (w_rt). Default 1.0. With "
+            "--mle-choice-norm marginal, weights (1, 1) reproduce the "
+            "legacy joint loss exactly."))
+    parser.add_argument(
+        "--mle-choice-norm", choices=["conditional", "marginal"],
+        default="conditional",
+        help=(
+            "How the choice component's probability is normalized. "
+            "'conditional' (DEFAULT) divides by P(L)+P(R), conditioning "
+            "on a decision being made so survival/no-hit mass does not "
+            "leak into the choice term (isolates side-bias from overall "
+            "decisiveness). 'marginal' uses the raw bound-hit prob; with "
+            "weights (1, 1) it reproduces today's exact loss. NOTE: "
+            "because the default is 'conditional', a run with no weight "
+            "flags already changes the objective vs the legacy loss, and "
+            "since this does NOT affect the filename it overwrites an old "
+            "fit at the same path (losses not comparable). Use "
+            "'--mle-choice-norm marginal --mle-choice-weight 1 "
+            "--mle-rt-weight 1' to reproduce the exact legacy fit."))
     parser.add_argument(
         "--asym-q", action="store_true", default=False,
         help=(
@@ -412,6 +447,16 @@ def main():
     if mle_condition_columns:
         print(f"--mle-conditions: balancing MLE loss across condition "
               f"groups defined by {list(mle_condition_columns)}")
+    if args.fit_mode == "mle":
+        print(f"MLE choice/RT loss: choice_weight={args.mle_choice_weight}, "
+              f"rt_weight={args.mle_rt_weight}, "
+              f"choice_norm={args.mle_choice_norm!r}"
+              + ("" if (args.mle_choice_norm == "marginal"
+                        and args.mle_choice_weight == 1.0
+                        and args.mle_rt_weight == 1.0)
+                 else "  (NOTE: differs from the legacy joint loss; "
+                      "filename unchanged so this overwrites any existing "
+                      "fit at the same path)"))
 
     # Translate the user-facing CPU/GPU knob into the two internal flags that
     # mle.MLEModelConfig + array_backend.resolve_array_backend understand:

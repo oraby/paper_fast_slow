@@ -1027,6 +1027,14 @@ def _evaluate_mle_loss_for_gui(df, params, driftFn_str, biasFn_str, noiseFn_str,
         _scalar_column_value(df, "mle_dx", default=0.02)
         if fit_config is None
         else getattr(fit_config, "dx", 0.02))
+    # Choice/RT-weight loss settings come from the saved fit's config so
+    # the GUI's "Run MLE" loss matches the objective the fit was scored
+    # under. Old pickles (no such config / fields) fall back to the
+    # MLEModelConfig dataclass defaults — marginal, (1, 1) — i.e. the
+    # legacy joint loss, so they render exactly as before.
+    mle_choice_weight = getattr(fit_config, "mle_choice_weight", 1.0)
+    mle_rt_weight = getattr(fit_config, "mle_rt_weight", 1.0)
+    mle_choice_norm = getattr(fit_config, "mle_choice_norm", "marginal")
     # Mirror fit.py's gating: the explicit asym flags (sourced from
     # the GUI checkboxes by the caller) are the only signal. Combined
     # with include_Q / include_RewardRate so a checkbox ticked against
@@ -1050,6 +1058,9 @@ def _evaluate_mle_loss_for_gui(df, params, driftFn_str, biasFn_str, noiseFn_str,
         mle_array_backend="numpy",
         mle_cupy_fallback="numpy",
         mle_terminal_c=float(terminal_c),
+        mle_choice_weight=float(mle_choice_weight),
+        mle_rt_weight=float(mle_rt_weight),
+        mle_choice_norm=str(mle_choice_norm),
         uses_asymmetric_alpha=uses_asymmetric_alpha,
         uses_asymmetric_beta=uses_asymmetric_beta,
         uses_per_trial_bound=uses_per_trial_bound,
