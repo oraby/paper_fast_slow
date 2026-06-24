@@ -15,11 +15,10 @@
 #
 # To pick which combinations to run, edit the ``combos`` array below.
 # Each entry uses ``|`` as the field separator so values can contain
-# spaces, parentheses, and dashes (e.g. ``NoiseGain-RewardRate Decay Q
-# (Offset)``). An OPTIONAL fourth ``|``-separated field carries extra
-# CLI args to append for that combo (e.g. ``--asym-q --asym-rr``) —
-# this lets a single canonical model name pair with multiple asym
-# opt-ins side-by-side.
+# spaces, parentheses, and dashes (e.g. ``RewardRate Decay Q (Offset)``).
+# An OPTIONAL fourth ``|``-separated field carries extra CLI args to append
+# for that combo (e.g. ``--asym --scale-bound``) — this lets a single canonical
+# model name pair with multiple asym opt-ins side-by-side.
 
 set -uo pipefail
 
@@ -27,32 +26,11 @@ combos=(
     # --- symmetric baselines ---
     #"Classic|None_|Normal(0, 1)|"
     #"Classic|Q-Val (Offset)|Normal(0, 1)|"
-    #"NoiseGain-RewardRate|None_|Normal(0, 1)|"
-    #"NoiseGain-RewardRate|Q-Val (Offset)|Normal(0, 1)|"
-    # --- asym opt-ins (orthogonal: --asym-q / --asym-rr) ---
-    "Classic|Q-Val (Offset)|Normal(0, 1)|"
-    #"Classic|Q-Val (Offset)|Normal(0, 1)|--asym-q"
-    #
-    "NoiseGain-RewardRate|None_|Normal(0, 1)|"
-    #"NoiseGain-RewardRate|None_|Normal(0, 1)|--asym-rr"
-    #
-    "NoiseGain-RewardRate|Q-Val (Offset)|Normal(0, 1)|"
-    #"NoiseGain-RewardRate|Q-Val (Offset)|Normal(0, 1)|--asym-q --asym-rr"
-    # --- Decay-Q + asym-q (newly possible under the orthogonal design) ---
-    #"Decay Q (Offset)|None_|Normal(0, 1)|--asym-q"
-    #"NoiseGain-RewardRate Decay Q (Offset)|None_|Normal(0, 1)|--asym-q --asym-rr"
-    # --- Phase 2: --scale-bound (fit BOUND, freeze NOISE_SIGMA) ---
-    # Saved-fit filenames gain the _scaledB suffix so symmetric and
-    # scale-bound variants coexist in mle_population_explorer.ipynb.
-    #"Classic|None_|Normal(0, 1)|--scale-bound"
-    #"Classic|Q-Val (Offset)|Normal(0, 1)|--scale-bound"
-    # --- Phase 2: Bound-RewardRate drift family ---
-    # New drift entries; per-trial bound rescaling proven equivalent to
-    # path-D (mu/r_t, sigma/r_t, z/r_t) in scale_bound_equivalence.ipynb.
-    #"Bound-RewardRate|None_|Normal(0, 1)|"
-    #"Bound-RewardRate|Q-Val (Offset)|Normal(0, 1)|"
-    # --- Phase 2: Bound-RewardRate + asym-rr (orthogonal opt-ins compose) ---
-    #"Bound-RewardRate|None_|Normal(0, 1)|--asym-rr"
+    #"RewardRate|None_|Normal(0, 1)|"
+    "RewardRate|Q-Val (Offset)|Normal(0, 1)|"
+    # --- Decay-Q ---
+    #"Decay Q (Offset)|None_|Normal(0, 1)|"
+    #"RewardRate Decay Q (Offset)|None_|Normal(0, 1)|"
 )
 
 PY=${PYTHON:-python}
