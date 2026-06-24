@@ -21,6 +21,7 @@ import inspect
 import datetime
 import multiprocessing
 import multiprocessing.pool
+import os
 import pathlib
 import pickle
 
@@ -350,6 +351,39 @@ def evolveFP(drift_fn_str, bias_fn_str, noise_fn_str, t_dur, dt,
                 f"{loss_no_dir_str}_{t_dur}s_dt{dt}"
                 f"{asym_suffix}{scaled_bound_suffix}.pkl")
     return pathlib.Path(main_str)
+
+
+def _merge_save_evolve(evolve_dump_FP, subject, dict_res):
+    """Reload the on-disk evolve pickle, set this subject's entry, and
+    atomically replace the file.
+
+    Lets parallel processes fitting DIFFERENT subjects merge into the
+    shared pickle instead of the last writer clobbering earlier ones
+    with the stale snapshot it loaded at startup: the reload happens
+    immediately before each write, so a process that finishes later
+    picks up the entries other processes already saved. Writing to a
+    pid-suffixed temp file + ``Path.replace`` keeps the pickle from ever
+    being observed half-written.
+
+    NOTE: this narrows but does not fully close the inter-process race
+    (a TOCTOU window remains between the reload and the replace). It is
+    safe for the intended workload — a few long-running processes each
+    fitting a different subject — because they touch different keys.
+    """
+    dump_path = pathlib.Path(evolve_dump_FP)
+    merged = {}
+    if dump_path.exists():
+        try:
+            with open(dump_path, "rb") as f:
+                merged = pickle.load(f)
+        except (EOFError, pickle.UnpicklingError):
+            merged = {}  # tolerate a concurrent half-write; re-add below
+    merged[subject] = dict_res
+    tmp_path = dump_path.with_suffix(dump_path.suffix + f".tmp.{os.getpid()}")
+    with open(tmp_path, "wb") as f:
+        pickle.dump(merged, f)
+    tmp_path.replace(dump_path)  # atomic on the same filesystem
+    return merged
 
 
 _pool = None # Ruse pool between runs
@@ -789,8 +823,9 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
             dict_res = partialProcess(subject_df)
             evolvs_res[subject] = dict_res
             if not dry_run:
-                with open(evolve_dump_FP, 'wb') as f:
-                    pickle.dump(evolvs_res, f)
+                # Reload-merge save (not a full overwrite) so concurrent
+                # processes fitting other subjects aren't clobbered.
+                _merge_save_evolve(evolve_dump_FP, subject, dict_res)
             print("Subject:", subject, "done")
             if dry_run:
                 break
@@ -802,8 +837,9 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
                 subject = subject_df.Name.iloc[0]
                 evolvs_res[subject] = dict_res
                 if not dry_run:
-                    with open(evolve_dump_FP, 'wb') as f:
-                        pickle.dump(evolvs_res, f)
+                    # Reload-merge save (not a full overwrite) so concurrent
+                    # processes fitting other subjects aren't clobbered.
+                    _merge_save_evolve(evolve_dump_FP, subject, dict_res)
                 print("Subject:", subject, "done")
                 if dry_run:
                     break

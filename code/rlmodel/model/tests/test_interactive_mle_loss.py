@@ -415,9 +415,8 @@ def test_apply_fit_defaults_print_renders_asctime_and_mle_conditions(capsys):
        saved ISO ``2026-06-17T15:23:45``.
     2. ``mle_condition_columns`` if the fit was condition-balanced —
        crucial when a pickle has mixed conditions across subjects
-       (``--load-evolve --remove-subject`` leaves the other subjects'
-       fits untouched while the re-fit subject uses the new
-       conditions).
+       (``--only-subject`` leaves the other subjects' fits untouched
+       while the re-fit subject uses the new conditions).
     """
     from types import SimpleNamespace
 

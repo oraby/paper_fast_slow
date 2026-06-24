@@ -97,6 +97,46 @@ def _parse_mle_conditions(raw):
     return tuple(col.strip() for col in raw.split(",") if col.strip())
 
 
+def _select_only_subjects(df, only_subject):
+    """Restrict ``df`` to the named subjects for ``--only-subject``.
+
+    No-op when ``only_subject`` is falsy (None / empty). Raises
+    ``ValueError`` (the caller maps it to ``parser.error``) listing the
+    available subject names when any requested name is absent, so a typo
+    fails fast at startup instead of silently fitting nothing.
+    """
+    if not only_subject:
+        return df
+    available = set(df["Name"].unique())
+    missing = [s for s in only_subject if s not in available]
+    if missing:
+        raise ValueError(
+            f"--only-subject names not in dataset: {missing}; "
+            f"available: {sorted(available)}")
+    return df[df["Name"].isin(only_subject)]
+
+
+def _order_by_only_subjects(df, only_subject):
+    """Reorder ``df`` so subjects appear in the order given on the command
+    line (``--only-subject S2 --only-subject S1`` ⇒ S2 fit before S1).
+
+    ``simulateDDM`` derives its processing order from
+    ``df.Name.unique()`` (first appearance), but ``_extendTrials`` sorts
+    by ``Name`` alphabetically, so without this the subjects would be fit
+    alphabetically regardless of the CLI order. A **stable** sort keyed by
+    CLI position rearranges the per-subject blocks while preserving each
+    subject's within-block Date/Session/Trial order, which the RL state
+    propagation depends on. No-op when ``only_subject`` is falsy. Must run
+    AFTER ``_extendTrials`` (whose alphabetical sort would otherwise undo
+    it). Assumes ``df`` was already filtered to the named subjects.
+    """
+    if not only_subject:
+        return df
+    order = {name: i for i, name in enumerate(only_subject)}
+    return df.sort_values(
+        by="Name", key=lambda s: s.map(order), kind="stable")
+
+
 def _resolve_drift_alias_args(args):
     """Resolve ``--drift RewardRate*`` into the canonical
     ``DRIFT_FN_DICT`` key based on ``--scale-bound``. Mutates
@@ -313,8 +353,15 @@ def main():
             "code path, so this is slower than the symmetric default."))
     parser.add_argument("--test", action="store_true")
     parser.add_argument("--load-evolve", action="store_true")
-    parser.add_argument("--remove-subject", type=str, default=None,
-                        action='append' )
+    parser.add_argument("--only-subject", type=str, default=None,
+                        action='append',
+                        help=(
+                            "Fit ONLY the named subject(s) (repeatable: "
+                            "--only-subject S1 --only-subject S2). The "
+                            "per-subject save reload-merges into the on-disk "
+                            "pickle, so other subjects already saved at that "
+                            "path are preserved without --load-evolve. The "
+                            "named subjects are always (re)fit."))
     args = parser.parse_args()
     if args.test:
         runTest()
@@ -382,8 +429,19 @@ def main():
     mle_show_progress = bool(args.mle_progress or args.mle_backend == "GPU")
 
     df_behavior = loadDF(min_valid_trials=0)
+    # --only-subject: restrict to the named subjects before the per-subject
+    # extend/reduce work. Validation lists available names on a typo.
+    try:
+        df_behavior = _select_only_subjects(df_behavior, args.only_subject)
+    except ValueError as exc:
+        parser.error(str(exc))
+    if args.only_subject:
+        print(f"--only-subject: (re)fitting only {list(args.only_subject)}")
     df_behavior = _extendTrials(df_behavior)
     df_behavior = _reduceDFSize(df_behavior)
+    # Reorder to the CLI order AFTER _extendTrials (which sorts by Name
+    # alphabetically) so subjects are processed in the order specified.
+    df_behavior = _order_by_only_subjects(df_behavior, args.only_subject)
 
     evolve_res = None
     if args.load_evolve:
@@ -397,49 +455,35 @@ def main():
         assert load_evolve_fp.exists(), f"File not found: {load_evolve_fp}"
         with open(load_evolve_fp, "rb") as f:
             evolve_res = pickle.load(f)
-    if args.remove_subject:
-        for subject in args.remove_subject:
-            assert subject in evolve_res, f"Subject not found: {subject}"
-        print("Removing subjects iteratively")
-        # Run in a loop such that we remvoe one subject at a time
-        for subject in args.remove_subject:
-            print("Removing subject:", subject)
-            evolve_res.pop(subject)
-            evolve_res = runModel(df_behavior, bias_fn_str=args.bias, drift_fn_str=args.drift,
-                                  noise_fn_str=args.noise, num_cpus=args.num_cpus,
-                                  dry_run=args.dry_run, evolve_res=evolve_res,
-                                  is_loss_no_dir=args.loss_no_dir,
-                                  fit_mode=args.fit_mode,
-                                  mle_array_backend=mle_array_backend,
-                                  mle_device_id=args.mle_device_id,
-                                  mle_cupy_fallback=mle_cupy_fallback,
-                                  mle_gpu_memory_gb=args.mle_gpu_memory_gb,
-                                  mle_show_progress=mle_show_progress,
-                                  mle_terminal_c=args.mle_terminal_c,
-                                  mle_min_population_candidates=args.mle_min_population,
-                                  mle_condition_columns=mle_condition_columns,
-                                  init_val_overrides=init_val_overrides,
-                                  uses_asym_q=args.asym_q,
-                                  uses_asym_rr=args.asym_rr,
-                                  scale_bound=args.scale_bound)
-    else:
-        runModel(df_behavior, bias_fn_str=args.bias, drift_fn_str=args.drift,
-                 noise_fn_str=args.noise, num_cpus=args.num_cpus,
-                 dry_run=args.dry_run, evolve_res=evolve_res,
-                 is_loss_no_dir=args.loss_no_dir,
-                 fit_mode=args.fit_mode,
-                 mle_array_backend=mle_array_backend,
-                 mle_device_id=args.mle_device_id,
-                 mle_cupy_fallback=mle_cupy_fallback,
-                 mle_gpu_memory_gb=args.mle_gpu_memory_gb,
-                 mle_show_progress=mle_show_progress,
-                 mle_terminal_c=args.mle_terminal_c,
-                 mle_min_population_candidates=args.mle_min_population,
-                 mle_condition_columns=mle_condition_columns,
-                 init_val_overrides=init_val_overrides,
-                 uses_asym_q=args.asym_q,
-                 uses_asym_rr=args.asym_rr,
-                 scale_bound=args.scale_bound)
+    # --only-subject always (re)fits the named subjects: drop them from any
+    # loaded results so simulateDDM doesn't skip them (the fit set is
+    # df.Name.unique() minus evolve_res keys). The df was already filtered
+    # to them above, so this single runModel call fits exactly the named
+    # subjects; simulateDDM's reload-merge save preserves everyone else on
+    # disk (even across parallel processes), so --load-evolve isn't required.
+    if args.only_subject and evolve_res:
+        for subject in args.only_subject:
+            evolve_res.pop(subject, None)
+    runModel(df_behavior, bias_fn_str=args.bias, drift_fn_str=args.drift,
+             noise_fn_str=args.noise, num_cpus=args.num_cpus,
+             dry_run=args.dry_run, evolve_res=evolve_res,
+             is_loss_no_dir=args.loss_no_dir,
+             fit_mode=args.fit_mode,
+             mle_array_backend=mle_array_backend,
+             mle_device_id=args.mle_device_id,
+             mle_cupy_fallback=mle_cupy_fallback,
+             mle_gpu_memory_gb=args.mle_gpu_memory_gb,
+             mle_show_progress=mle_show_progress,
+             mle_terminal_c=args.mle_terminal_c,
+             mle_min_population_candidates=args.mle_min_population,
+             mle_condition_columns=mle_condition_columns,
+             mle_choice_weight=args.mle_choice_weight,
+             mle_rt_weight=args.mle_rt_weight,
+             mle_choice_norm=args.mle_choice_norm,
+             init_val_overrides=init_val_overrides,
+             uses_asym_q=args.asym_q,
+             uses_asym_rr=args.asym_rr,
+             scale_bound=args.scale_bound)
 
 
 

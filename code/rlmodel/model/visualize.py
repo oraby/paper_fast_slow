@@ -880,10 +880,9 @@ def _apply_fit_defaults(all_widgets, subjects_defaults, t_dur, subject, mode,
     params = _fit_entry_params(fit_entry)
     # Pull per-fit metadata from the saved entry so the user can see
     # WHICH fit (which finish time, which condition-balanced loss) is
-    # being applied — important when ``--load-evolve`` +
-    # ``--remove-subject`` leaves a pickle with mixed
-    # ``mle_condition_columns`` across subjects (each re-fit subject
-    # overwrites its own dict entry, others stay untouched).
+    # being applied — important when ``--only-subject`` leaves a pickle
+    # with mixed ``mle_condition_columns`` across subjects (each re-fit
+    # subject overwrites its own dict entry, others stay untouched).
     suffix_parts = []
     if isinstance(fit_entry, dict):
         fit_result = fit_entry.get("result", {})
