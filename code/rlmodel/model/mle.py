@@ -81,6 +81,15 @@ class MLEModelConfig:
     # loss landscape). When True, bias is interpreted in absolute
     # DDM-state units (clipped to ±BOUND) rather than fraction-of-bound.
     uses_scaled_bound: bool = False
+    # Per-condition sample-balancing columns for the MLE loss. Empty
+    # tuple → unweighted (legacy bit-exact sum). Populated from the
+    # ``--mle-conditions`` CLI flag. EXCLUDED from ``fit.evolveFP``'s
+    # filename composition by design so the user can A/B test by
+    # overwriting the same pickle — the column list is preserved
+    # inside the saved ``model_config`` for traceability. See
+    # ``prepare_mle_data._compute_trial_weights`` for the formula:
+    # ``weight[i] = total_valid / (num_groups * group_size[gid(i)])``.
+    mle_condition_columns: tuple = ()
 
     @property
     def uses_q_bias(self):
@@ -129,6 +138,13 @@ class PreparedMLEData:
     reward: np.ndarray
     observed_rt: np.ndarray
     trial_number: np.ndarray
+    # Per-trial sample-balancing weights, indexed in the same order as
+    # the other arrays. ``None`` means "unweighted sum" (legacy);
+    # otherwise ``(n_trials,)`` float64. Populated by
+    # ``prepare_mle_data`` when ``MLEModelConfig.mle_condition_columns``
+    # is non-empty. Invalid trials get weight 0 — they're masked out
+    # at the sum site anyway; the 0 documents intent.
+    trial_weights: np.ndarray | None = None
 
     @property
     def n_trials(self):
@@ -171,7 +187,7 @@ def neg_loglik(params, df, model_config):
 
 def evaluate_neg_loglik(params, df, model_config, return_df=False):
     validate_mle_config(model_config)
-    data = prepare_mle_data(df)
+    data = prepare_mle_data(df, model_config.mle_condition_columns)
     params = {str(k).upper(): float(v) for k, v in params.items()}
 
     latents = _compute_latent_arrays(data, params, model_config)
@@ -180,7 +196,16 @@ def evaluate_neg_loglik(params, df, model_config, return_df=False):
     valid_mask = latents["valid_for_loss"]
     loglik_values = like_result.loglik
     finite_valid = valid_mask & np.isfinite(loglik_values)
-    total_loglik = float(loglik_values[finite_valid].sum())
+    # ``trial_weights is None`` → unweighted legacy sum (bit-exact).
+    # Otherwise multiply the per-trial loglik by the sample-balancing
+    # weight before summing; see ``_compute_trial_weights`` for the
+    # formula. The aggregate scale is preserved.
+    if data.trial_weights is None:
+        total_loglik = float(loglik_values[finite_valid].sum())
+    else:
+        total_loglik = float(
+            (loglik_values * data.trial_weights)[finite_valid].sum())
+        print(f"data.trial_weights total loglik: {total_loglik:.4f}")
     n_trials_loss = int(finite_valid.sum())
 
     mle_df = None
@@ -240,7 +265,8 @@ def objective_from_population(x_matrix, params_names, df, model_config):
             f"matrix; got shape {x_matrix.shape}")
 
     n_candidates = x_matrix.shape[1]
-    prepared = prepare_mle_data(df) if not isinstance(df, PreparedMLEData) else df
+    prepared = (df if isinstance(df, PreparedMLEData)
+                else prepare_mle_data(df, model_config.mle_condition_columns))
     if n_candidates == 0:
         return np.empty(0, dtype=float)
 
@@ -346,10 +372,20 @@ def objective_from_population(x_matrix, params_names, df, model_config):
     )
 
     # Phase 6: reshape (S_valid * N,) → (S_valid, N) and aggregate.
+    # ``trial_weights is None`` → unweighted legacy sum (bit-exact).
+    # Otherwise broadcast the per-trial sample-balancing weight across
+    # the candidate axis before summing. The weights are stable across
+    # DE generations (data-only), so they're computed once in
+    # ``prepare_mle_data`` and live on ``prepared``.
     per_cand_loglik = batch_result.loglik.reshape(n_valid, n_trials)
     per_cand_valid = valid_stack[valid_cand_idx]
     finite_valid = per_cand_valid & np.isfinite(per_cand_loglik)
-    total_loglik = np.where(finite_valid, per_cand_loglik, 0.0).sum(axis=1)
+    if prepared.trial_weights is None:
+        total_loglik = np.where(finite_valid, per_cand_loglik, 0.0).sum(axis=1)
+    else:
+        weighted = per_cand_loglik * prepared.trial_weights[None, :]
+        total_loglik = np.where(finite_valid, weighted, 0.0).sum(axis=1)
+        print(f"data.trial_weights per-candidate loglik: {-total_loglik.max():.4f}")
     neg_loglik = -total_loglik
     # Defensive: any candidate that somehow produced a non-finite sum gets
     # the penalty. Should not happen given the LOGLIK_FLOOR clamp inside the
@@ -357,6 +393,22 @@ def objective_from_population(x_matrix, params_names, df, model_config):
     bad = ~np.isfinite(neg_loglik)
     neg_loglik[bad] = penalty
     losses[valid_cand_idx] = neg_loglik
+    # # Per-DE-generation visibility for ``--mle-conditions``: prints
+    # # between each ``differential_evolution step k: f(x)= …`` line so
+    # # the user can confirm the weighting actually fired this batch.
+    # # Gated on ``trial_weights is not None`` — silent under the
+    # # legacy unweighted path.
+    # if prepared.trial_weights is not None:
+    #     good_losses = neg_loglik[~bad]
+    #     if good_losses.size:
+    #         distinct_weights = np.unique(np.round(
+    #             prepared.trial_weights[prepared.trial_weights > 0], 6))
+    #         print(
+    #             f"--mle-conditions: weighted batch "
+    #             f"(n_cand={n_valid}, "
+    #             f"trial weights={distinct_weights.tolist()}): "
+    #             f"neg_loglik best={float(good_losses.min()):.4f}, "
+    #             f"worst={float(good_losses.max()):.4f}")
     return losses
 
 
@@ -367,7 +419,7 @@ def result_payload(optim_res, params_names, params_init, params_bounds,
     else:
         x = np.asarray(optim_res.x, dtype=float)
     params = params_from_vector(x, params_names)
-    data = prepare_mle_data(subject_df)
+    data = prepare_mle_data(subject_df, model_config.mle_condition_columns)
     eval_res = evaluate_neg_loglik(params, data, model_config, return_df=True)
     k = len(params_names)
     n = max(eval_res.n_trials_loss, 1)
@@ -404,8 +456,34 @@ def make_objective(params_names, df, model_config):
                    df=df, model_config=model_config)
 
 
-def prepare_mle_data(df):
+def prepare_mle_data(df, condition_columns=()):
+    """Build the static MLE fixture once per fit.
+
+    ``condition_columns`` (typically sourced from
+    ``MLEModelConfig.mle_condition_columns``) — when non-empty,
+    per-trial sample-balancing weights are precomputed and cached on
+    the returned ``PreparedMLEData.trial_weights``. The weighted-sum
+    branch at the two MLE loss sites consumes them; the default
+    empty tuple keeps every existing caller bit-exact.
+    """
     if isinstance(df, PreparedMLEData):
+        # Pass-through is the common case (callers re-prepare a
+        # subject's data downstream). Hard-fail when the caller asks
+        # for conditions but the prepared instance was built without
+        # them — re-preparing here would either silently drop the
+        # conditions or quietly disagree with the cached arrays. The
+        # right fix is to pass ``condition_columns`` at the original
+        # ``prepare_mle_data(raw_df, ...)`` call site (see
+        # ``fit._processSubject``). This assert exists because the
+        # missing thread there was the actual reason
+        # ``--mle-conditions`` looked like a no-op for a release.
+        assert (not condition_columns) or (df.trial_weights is not None), (
+            "prepare_mle_data was called with "
+            f"condition_columns={tuple(condition_columns)!r} on a "
+            "PreparedMLEData with trial_weights=None — the data was "
+            "prepared without conditions, so the weighted sum sites "
+            "would silently fall through to the unweighted path. "
+            "Re-prepare from the raw df at the original call site.")
         return df
     sort_cols = [col for col in ["SessId", "TrialNumber"] if col in df.columns]
     sorted_df = df.sort_values(sort_cols) if sort_cols else df
@@ -418,17 +496,66 @@ def prepare_mle_data(df):
             starts.append(start)
             stops.append(i)
             start = i
+    valid_mask = sorted_df["valid"].to_numpy(dtype=bool)
     return PreparedMLEData(
         df=df,
         sorted_index=sorted_df.index.to_numpy(),
         session_slices=tuple(zip(starts, stops)),
         dv=_float_col(sorted_df, "DV"),
-        valid=sorted_df["valid"].to_numpy(dtype=bool),
+        valid=valid_mask,
         choice_left=_float_col(sorted_df, "ChoiceLeft"),
         reward=_float_col(sorted_df, "ChoiceCorrect"),
         observed_rt=_float_col(sorted_df, "calcStimulusTime"),
         trial_number=_float_col(sorted_df, "TrialNumber"),
+        trial_weights=_compute_trial_weights(
+            sorted_df, tuple(condition_columns), valid_mask),
     )
+
+
+def _compute_trial_weights(sorted_df, condition_columns, valid_mask):
+    """Sample-balanced per-trial weights for the MLE neg-loglik sum.
+
+    Formula (mirrors ``logic.calcLoss``'s with-direction route but in a
+    single weighted sum):
+
+        group_id(i)   = (df[col_1][i], df[col_2][i], ...) for trial i
+        num_groups    = #{ distinct group ids over valid trials }
+        group_size[g] = #{ valid trials with group_id == g }
+        weight[i]     = total_valid / (num_groups * group_size[gid(i)])
+
+    Sum-preserving: ``sum_i weight[i] == total_valid`` always, so the
+    aggregate loss stays on the same scale as the unweighted sum;
+    only the within-condition contribution is rebalanced.
+
+    Returns ``None`` for empty ``condition_columns`` (legacy fast
+    path: the sum site detects ``None`` and skips the multiply). NaN
+    values in any condition column form their own group via pandas
+    ``groupby(..., dropna=False)`` — the right call for no-choice
+    trials under ``(ChoiceCorrect, ChoiceLeft)``.
+    """
+    if not condition_columns:
+        return None
+    missing = [c for c in condition_columns if c not in sorted_df.columns]
+    if missing:
+        raise KeyError(
+            f"--mle-conditions references unknown df columns: {missing}; "
+            f"available: {sorted(sorted_df.columns)}")
+    total_valid = int(valid_mask.sum())
+    if total_valid == 0:
+        # Empty fixture / nothing valid. Any reasonable default works
+        # since ``finite_valid`` masks the whole sum to 0.0 anyway.
+        return np.ones(len(sorted_df), dtype=float)
+    valid_df = sorted_df.iloc[np.flatnonzero(valid_mask)]
+    group_ids_valid = valid_df.groupby(
+        list(condition_columns), dropna=False, sort=False
+    ).ngroup().to_numpy()
+    num_groups = int(group_ids_valid.max()) + 1 if group_ids_valid.size else 0
+    group_size = np.bincount(group_ids_valid, minlength=num_groups)
+    per_valid_weight = (
+        float(total_valid) / (num_groups * group_size[group_ids_valid]))
+    weights = np.zeros(len(sorted_df), dtype=float)
+    weights[valid_mask] = per_valid_weight
+    return weights
 
 
 def _param(params, name, default=None):

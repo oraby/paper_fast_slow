@@ -10,6 +10,7 @@ from .util import (initDF, assignQuantiles, driftFnColsAndKwargs,
 from .initvals import InitVals, MLE_TERMINAL_C
 from .mle import MLEModelConfig, evaluate_neg_loglik
 # from ._readparams import readParams
+import datetime
 import ipywidgets as widgets
 from IPython.display import display, clear_output
 import numpy as np
@@ -28,6 +29,33 @@ import os
 _MLE_ONLY_SLIDER_NAMES = {"LAPSE_RATE", "MLE_TERMINAL_C"}
 
 
+def _include_flags_for_current_model(all_widgets):
+    """Whether the active model learns Q-values / RewardRate.
+
+    Source of truth is the Drift/Bias/Noise dropdowns (the *Fn columns
+    each fn declares it needs) — NOT the asym checkboxes' ``disabled``
+    flag. updateGUI sets that disabled flag late in the same callback,
+    so any caller earlier in updateGUI (the auto-apply variant-suffix
+    lookup at the top of updateGUI) would otherwise read a stale value
+    from the previous model.
+    """
+    biasFn  = BIAS_FN_DICT[all_widgets["Bias Fn"].value]
+    driftFn = DRIFT_FN_DICT[_resolved_drift_fn_value(all_widgets)]
+    noiseFn = NOISE_FN_DICT[all_widgets["Noise Fn"].value]
+    biasFn_df_cols,  _ = biasFnColsAndKwargs(biasFn)
+    driftFn_df_cols, _ = driftFnColsAndKwargs(driftFn)
+    noiseFn_df_cols, _ = noiseFnColsAndKwargs(noiseFn)
+    include_Q = (
+        "Q_val" in biasFn_df_cols
+        or "Q_val" in driftFn_df_cols
+        or "Q_val" in noiseFn_df_cols)
+    include_RewardRate = (
+        "RewardRate" in driftFn_df_cols
+        or "RewardRate" in noiseFn_df_cols
+        or "RewardRate" in biasFn_df_cols)
+    return include_Q, include_RewardRate
+
+
 def _asym_mode_suffix(all_widgets):
     """Return the asym suffix that matches the current checkbox state.
 
@@ -35,12 +63,24 @@ def _asym_mode_suffix(all_widgets):
     ``subjects_defaults[...][subject]["mle_asymQ"]`` etc. when the
     relevant checkbox is ticked. Returns ``""`` when neither checkbox is
     set so symmetric fits load as before.
+
+    A ticked checkbox is treated as effectively off when the active
+    model doesn't learn the matching quantity (no Q-learning →
+    ``Asymmetric Q-update`` contributes no suffix). Otherwise a stale
+    tick left over from a previous model would steer the preferred-mode
+    chain (and the Reset-button gating that consults its first element)
+    at a saved-fit key — ``mle_asymQ`` — that can't exist for the new
+    model, hiding the symmetric ``mle`` fit that DOES exist.
     """
+    include_Q, include_RewardRate = _include_flags_for_current_model(
+        all_widgets)
     asym_q = (
-        "Asymmetric Q-update" in all_widgets
+        include_Q
+        and "Asymmetric Q-update" in all_widgets
         and bool(all_widgets["Asymmetric Q-update"].value))
     asym_rr = (
-        "Asymmetric RR-update" in all_widgets
+        include_RewardRate
+        and "Asymmetric RR-update" in all_widgets
         and bool(all_widgets["Asymmetric RR-update"].value))
     if asym_q and asym_rr:
         return "_asymQRR"
@@ -81,32 +121,33 @@ def _resolved_drift_fn_value(all_widgets):
 
 
 def _preferred_modes_for(base_mode, all_widgets):
-    """Build the preferred-mode fallback chain for the current checkbox state.
+    """Build the strict saved-fit mode key for the current checkbox state.
 
-    Each ticked checkbox contributes a suffix to the keys we try first:
+    Each ticked checkbox contributes a suffix to the key we look up:
     ``mle_asymQ`` / ``mle_asymRR`` / ``mle_asymQRR`` for asym + Q/RR, and
     ``_scaledB`` for the BOUND-fitted axis. Suffix ordering matches
-    fit.evolveFP: asym first, then scaledB. Both ``mle`` and ``chisq``
-    symmetric defaults remain as fallbacks so the user gets *something*
-    even when the exact variant hasn't been fit.
+    ``fit.evolveFP``: asym first, then scaledB.
+
+    Returns a SINGLE-ELEMENT tuple by design — strict matching only.
+    Earlier versions returned a fallback chain (``mle_asymQ`` → ``mle``
+    → ``chisq``) so the GUI could silently load *something* even when
+    the exact variant hadn't been fit, but that hid surprises:
+    ticking Asym-Q on a model whose ``mle_asymQ`` didn't exist would
+    silently load the symmetric ``mle`` and the user wouldn't realize
+    they were looking at the wrong variant. Strict policy now: if the
+    exact variant has no saved fit the auto-apply / title / Reset paths
+    leave the GUI in its previous state (sliders untouched, title
+    showing "not run"), making the absence visible.
+
+    The tuple shape (rather than a bare string) is kept for API
+    compatibility with the chain-walking callers
+    (``_try_apply_fit_defaults`` / ``_stored_mle_loss_from_fit_entry``),
+    which iterate over the returned value — strict matching is just the
+    1-element case of "walk the chain".
     """
     asym_suffix = _asym_mode_suffix(all_widgets)
     scaled_b_suffix = _scaled_bound_suffix(all_widgets)
-    composed_suffix = asym_suffix + scaled_b_suffix
-    preferred = []
-    if composed_suffix and base_mode in ("mle", "chisq"):
-        preferred.append(f"{base_mode}{composed_suffix}")
-        # Asym-only fallback if scaledB is set but no _asym_scaledB fit
-        # is on disk, so a partial match still loads something useful.
-        if asym_suffix and scaled_b_suffix:
-            preferred.append(f"{base_mode}{asym_suffix}")
-            preferred.append(f"{base_mode}{scaled_b_suffix}")
-    preferred.append(base_mode)
-    # On the auto-apply path the caller passes base_mode="mle" and still
-    # wants chisq as a last resort if no MLE fit exists for the subject.
-    if base_mode == "mle" and "chisq" not in preferred:
-        preferred.append("chisq")
-    return tuple(preferred)
+    return (f"{base_mode}{asym_suffix}{scaled_b_suffix}",)
 
 
 def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
@@ -349,8 +390,14 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
         # trigger — flipping any of them should pull the matching
         # ``mle_asymQ`` / ``mle_asymRR`` / ``mle_asymQRR`` / ``mle_scaledB``
         # / composed-suffix fit's params straight into the sliders if
-        # that fit exists for the subject. Falls back to the symmetric
-        # ``mle`` (and finally ``chisq``) entry otherwise.
+        # that fit exists for the subject. Strict on the variant suffix,
+        # with one cross-mode fallback: try the exact MLE variant first,
+        # then the matching chisq variant, then nothing. The chisq
+        # cross-mode fallback is intentional ONLY on this auto-apply
+        # path — the Reset-MLE button (label promises MLE) and the
+        # title's "MLE Loss:" (label says MLE) stay strict-MLE-or-
+        # nothing. Here we'd rather show *some* fit's params than leave
+        # the sliders stale from the previous subject.
         cur_variant_suffix = (
             _asym_mode_suffix(all_widgets) + _scaled_bound_suffix(all_widgets))
         cur_driftFn_resolved = _resolved_drift_fn_value(all_widgets)
@@ -360,7 +407,9 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
             (last_variant_suffix != cur_variant_suffix)) and subjects_defaults is not None:
             _try_apply_fit_defaults(
                 all_widgets, subjects_defaults, t_dur, cur_subject,
-                preferred_modes=_preferred_modes_for("mle", all_widgets),
+                preferred_modes=(
+                    _preferred_modes_for("mle", all_widgets)
+                    + _preferred_modes_for("chisq", all_widgets)),
                 required=False, quiet=True)
 
         last_subject = cur_subject
@@ -465,23 +514,23 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
 
         # Gray out the Reset buttons when the EXACT variant for the
         # current (Asym-Q × Asym-RR × Scale-How) checkbox state has no
-        # saved fit. ``_preferred_modes_for`` returns the exact variant
-        # as its FIRST element followed by partial-match / symmetric
-        # fallbacks — we deliberately gate on the first element only,
-        # so e.g. ticking Asym-Q without a saved ``mle_asymQ`` fit
-        # leaves the button disabled even when the symmetric ``mle``
-        # exists. Falling back silently would make the asym checkboxes
-        # feel inert. Re-evaluated on every updateGUI pass.
+        # saved fit. ``_preferred_modes_for`` is strict — it returns
+        # only the exact variant — so the button is enabled iff that
+        # specific saved fit exists for the subject. Ticking Asym-Q
+        # without a saved ``mle_asymQ`` leaves the button disabled even
+        # when the symmetric ``mle`` exists, making the absence visible
+        # rather than silently loading the wrong variant. Re-evaluated
+        # on every updateGUI pass.
         mle_chain = _preferred_modes_for("mle", all_widgets)
         chisq_chain = _preferred_modes_for("chisq", all_widgets)
         all_widgets["Reset to MLE defaults"].disabled = (
             not _any_fit_available_for_chain(
                 subjects_defaults, t_dur, all_widgets, cur_subject,
-                mle_chain[:1]))
+                mle_chain))
         all_widgets[chi2_reset_label].disabled = (
             not _any_fit_available_for_chain(
                 subjects_defaults, t_dur, all_widgets, cur_subject,
-                chisq_chain[:1]))
+                chisq_chain))
 
         # Now we should have update the GUI, but dont continue unless the
         # real-time checkbox is checked or the update button is pressed
@@ -547,7 +596,14 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
         fit_entry = _get_subject_fit_entry(
             subjects_defaults, t_dur, noiseFn_str, biasFn_str,
             driftFn_str, cur_subject)
-        stored_mle_loss = _stored_mle_loss_from_fit_entry(fit_entry)
+        # Use the same strict variant key the apply-defaults path uses
+        # so the title's "MLE Loss: …" reflects the EXACT variant the
+        # current (Scale-How × Asym-Q × Asym-RR) selection refers to.
+        # No fallback: if no saved fit for the exact variant, this
+        # returns None and the title shows "not run" rather than the
+        # loss of a different variant.
+        stored_mle_loss = _stored_mle_loss_from_fit_entry(
+            fit_entry, _preferred_modes_for("mle", all_widgets))
         if stored_mle_loss is None:
             stored_mle_loss = _stored_mle_loss_from_df(df)
         if run_mle:
@@ -645,9 +701,10 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
 
     # The Reset buttons consult the asym checkboxes so the variant the
     # user is sweeping in the GUI (Q-update / RR-update) gets its own
-    # saved defaults loaded. Falls back through the preferred-modes
-    # chain to symmetric ``mle`` (and ``chisq`` for the MLE button) if
-    # the asym fit isn't on disk yet.
+    # saved defaults loaded. Strict matching: if the exact variant has
+    # no saved fit the click is a no-op (sliders unchanged) — the
+    # button gate above grays it out in that case anyway, so this is
+    # mostly belt-and-suspenders.
     all_widgets["Reset to MLE defaults"].on_click(
         lambda _button: _reset_defaults_and_update(
             all_widgets, subjects_defaults, t_dur,
@@ -754,12 +811,12 @@ def _reset_defaults_and_update(all_widgets, subjects_defaults, t_dur,
                                preferred_modes, update_fn):
     """Apply the first available fit from ``preferred_modes``.
 
-    The button handlers pass a tuple like
-    ``("mle_asymQ", "mle", "chisq")`` — the asym-suffixed key is tried
-    first when the checkbox is ticked, with symmetric variants as
-    fallbacks. ``required=False`` so a missing asym fit just silently
-    falls through instead of raising — the GUI shouldn't crash because
-    the user hasn't run that variant yet.
+    Under the strict-matching policy ``_preferred_modes_for`` returns
+    a 1-element tuple (e.g. ``("mle_asymQ",)``) so this collapses to
+    "apply the exact variant if it exists; otherwise no-op". The
+    chain-walking signature is kept for API stability with the
+    underlying ``_try_apply_fit_defaults`` helper. ``required=False``
+    so a missing variant leaves the sliders alone instead of raising.
     """
     subject = all_widgets["Subject"].value
     _try_apply_fit_defaults(
@@ -821,9 +878,31 @@ def _apply_fit_defaults(all_widgets, subjects_defaults, t_dur, subject, mode,
             return True
         _apply_fit_defaults._last_log_key = log_key
     params = _fit_entry_params(fit_entry)
-    finish_time = fit_entry.get("fit_finish_time") if isinstance(
-        fit_entry, dict) else None
-    suffix = f" (fit saved {finish_time})" if finish_time else ""
+    # Pull per-fit metadata from the saved entry so the user can see
+    # WHICH fit (which finish time, which condition-balanced loss) is
+    # being applied — important when ``--load-evolve`` +
+    # ``--remove-subject`` leaves a pickle with mixed
+    # ``mle_condition_columns`` across subjects (each re-fit subject
+    # overwrites its own dict entry, others stay untouched).
+    suffix_parts = []
+    if isinstance(fit_entry, dict):
+        fit_result = fit_entry.get("result", {})
+        finish_time = fit_result.get("fit_finish_time")
+        if finish_time:
+            try:
+                # Saved as ``datetime.now().isoformat(timespec="seconds")``;
+                # render as ``Wed Jun 17 15:23:45 2026`` for readability.
+                finish_time_display = datetime.datetime.fromisoformat(
+                    finish_time).ctime()
+            except (TypeError, ValueError):
+                finish_time_display = str(finish_time)
+            suffix_parts.append(f"fit saved {finish_time_display}")
+    fit_model_config = _fit_entry_result(fit_entry).get("model_config")
+    cond_cols = getattr(fit_model_config, "mle_condition_columns", ())
+    if cond_cols:
+        suffix_parts.append(
+            f"mle_conditions={','.join(cond_cols)}")
+    suffix = f" ({'; '.join(suffix_parts)})" if suffix_parts else ""
     print(f"Setting {mode.upper()} defaults for: {subject}{suffix}")
     for val_name, val in params.items():
         if val_name not in all_widgets:
@@ -903,15 +982,28 @@ def _stored_mle_loss_from_df(df):
     return None
 
 
-def _stored_mle_loss_from_fit_entry(fit_entry):
-    fit_entry = _fit_entry_for_mode(fit_entry, "mle")
-    if fit_entry is None:
-        return None
-    result = _fit_entry_result(fit_entry)
-    for key in ("neg_loglik", "mle_loss", "mle_neg_loglik"):
-        value = result.get(key)
-        if _is_finite_number(value):
-            return float(value)
+def _stored_mle_loss_from_fit_entry(fit_entry, preferred_modes=("mle",)):
+    """Look up a saved fit's neg_loglik for the given mode key(s).
+
+    Under the strict-matching policy ``_preferred_modes_for`` passes a
+    1-element tuple here (e.g. ``("mle_scaledB",)``) so the title
+    reflects the EXACT variant the current Scale-How / Asym-Q / Asym-RR
+    selection refers to — no silent fallback to a different mode.
+
+    The function still iterates over ``preferred_modes`` so legacy
+    callers (and tests) that pass a multi-element chain continue to
+    work — strict matching is enforced upstream at the call site, not
+    inside this walker.
+    """
+    for mode in preferred_modes:
+        mode_entry = _fit_entry_for_mode(fit_entry, mode)
+        if mode_entry is None:
+            continue
+        result = _fit_entry_result(mode_entry)
+        for key in ("neg_loglik", "mle_loss", "mle_neg_loglik"):
+            value = result.get(key)
+            if _is_finite_number(value):
+                return float(value)
     return None
 
 

@@ -87,6 +87,16 @@ def _parse_init_val_overrides(specs):
     return overrides
 
 
+def _parse_mle_conditions(raw):
+    """Split a comma-separated ``--mle-conditions`` string into a tuple
+    of column names. Empty / ``None`` → empty tuple (= unweighted
+    legacy loss). Whitespace and trailing commas are tolerated.
+    """
+    if not raw:
+        return ()
+    return tuple(col.strip() for col in raw.split(",") if col.strip())
+
+
 def _resolve_drift_alias_args(args):
     """Resolve ``--drift RewardRate*`` into the canonical
     ``DRIFT_FN_DICT`` key based on ``--scale-bound``. Mutates
@@ -137,6 +147,7 @@ def runModel(df, bias_fn_str, drift_fn_str, noise_fn_str, is_loss_no_dir,
              mle_cupy_fallback="error", mle_gpu_memory_gb=None,
              mle_show_progress=False, mle_terminal_c=MLE_TERMINAL_C.Default,
              mle_min_population_candidates=None,
+             mle_condition_columns=(),
              init_val_overrides=None,
              uses_asym_q=False, uses_asym_rr=False,
              scale_bound=False):
@@ -172,6 +183,7 @@ def runModel(df, bias_fn_str, drift_fn_str, noise_fn_str, is_loss_no_dir,
                                      mle_show_progress=mle_show_progress,
                                      mle_terminal_c=mle_terminal_c,
                                      mle_min_population_candidates=mle_min_population_candidates,
+                                     mle_condition_columns=mle_condition_columns,
                                      bias_fn_str=bias_fn_str,
                                      drift_fn_str=drift_fn_str,
                                      uses_asym_q=uses_asym_q,
@@ -250,6 +262,20 @@ def main():
             "this on tight-memory GPUs to fit the budget; raise it for "
             "harder loss landscapes that need more candidates per "
             "generation."))
+    parser.add_argument(
+        "--mle-conditions", type=str, default=None,
+        help=(
+            "Comma-separated df column names that define condition "
+            "groups for a sample-balanced MLE loss. Each trial's "
+            "per-trial loglik is reweighted by "
+            "``total_valid / (num_groups * group_size)`` so each "
+            "condition contributes equally regardless of size. "
+            "Inspired by logic.calcLoss's with-direction route — "
+            "e.g. ``--mle-conditions=ChoiceCorrect,ChoiceLeft``. "
+            "Omit (or pass empty) for the legacy unweighted sum. "
+            "Does NOT affect the saved-fit filename, so you can A/B "
+            "test against an existing fit by overwriting the same "
+            "pickle on disk."))
     parser.add_argument(
         "--asym-q", action="store_true", default=False,
         help=(
@@ -335,6 +361,10 @@ def main():
         init_val_overrides = _parse_init_val_overrides(args.init_val)
     except ValueError as exc:
         parser.error(str(exc))
+    mle_condition_columns = _parse_mle_conditions(args.mle_conditions)
+    if mle_condition_columns:
+        print(f"--mle-conditions: balancing MLE loss across condition "
+              f"groups defined by {list(mle_condition_columns)}")
 
     # Translate the user-facing CPU/GPU knob into the two internal flags that
     # mle.MLEModelConfig + array_backend.resolve_array_backend understand:
@@ -387,6 +417,7 @@ def main():
                                   mle_show_progress=mle_show_progress,
                                   mle_terminal_c=args.mle_terminal_c,
                                   mle_min_population_candidates=args.mle_min_population,
+                                  mle_condition_columns=mle_condition_columns,
                                   init_val_overrides=init_val_overrides,
                                   uses_asym_q=args.asym_q,
                                   uses_asym_rr=args.asym_rr,
@@ -404,6 +435,7 @@ def main():
                  mle_show_progress=mle_show_progress,
                  mle_terminal_c=args.mle_terminal_c,
                  mle_min_population_candidates=args.mle_min_population,
+                 mle_condition_columns=mle_condition_columns,
                  init_val_overrides=init_val_overrides,
                  uses_asym_q=args.asym_q,
                  uses_asym_rr=args.asym_rr,

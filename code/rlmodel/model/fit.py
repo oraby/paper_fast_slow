@@ -158,7 +158,15 @@ def _processSubject(subject_df, fixed_params_names, fixed_params_vals,
         assert model_config is not None, (
             "fit_mode='mle' requires a non-None model_config; "
             "simulateDDM constructs one — this should be unreachable.")
-        prepared_subject = prepare_mle_data(subject_df)
+        # Prepare ONCE with the condition columns so
+        # ``PreparedMLEData.trial_weights`` is cached upfront.
+        # Downstream callers (``objective_from_population``,
+        # ``result_payload``'s ``evaluate_neg_loglik``) short-circuit
+        # on an already-prepared instance and would otherwise inherit
+        # ``trial_weights=None`` — silently running the unweighted
+        # objective even when ``--mle-conditions`` was passed.
+        prepared_subject = prepare_mle_data(
+            subject_df, model_config.mle_condition_columns)
 
         # Pre-flight: when the user asked for --mle-backend GPU, resolve and
         # probe the backend before scipy DE starts. This catches
@@ -352,6 +360,7 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
                 mle_gpu_memory_gb=None, mle_show_progress=False,
                 mle_terminal_c=MLE_TERMINAL_C.Default,
                 mle_min_population_candidates=None,
+                mle_condition_columns=(),
                 bias_fn_str=None, drift_fn_str=None,
                 uses_asym_q=False, uses_asym_rr=False,
                 scale_bound=False):
@@ -682,6 +691,12 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
                 mle_min_population_candidates
                 if mle_min_population_candidates is not None
                 else MIN_POPULATION_CANDIDATES),
+            # Per-condition sample-balancing columns. Empty tuple →
+            # unweighted (legacy). Filename is NOT affected (evolveFP
+            # doesn't see this), so A/B tests overwrite the same
+            # pickle. ``tuple(...)`` for the frozen dataclass and to
+            # neutralize any list the caller passes.
+            mle_condition_columns=tuple(mle_condition_columns or ()),
             # The flag-gated asymmetric-LR contract on MLEModelConfig
             # (see mle.py:_compute_latent_arrays). True ⇒ ALPHA_UNREWARDED
             # / BETA_UNREWARDED MUST be in the params dict at eval time —
