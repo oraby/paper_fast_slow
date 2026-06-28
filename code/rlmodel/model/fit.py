@@ -38,13 +38,26 @@ _makeOneRun_params_names = np.asanyarray([
     p for p in _makeOneRun_params_names
     if p not in _NON_FITTABLE_MAKEONERUN_PARAMS])
 
-def _makeOneRunWrapper(x, x_params_names, fixed_params_names, fixed_params_vals,
-                       logicFn_x_idxs, logicFn_fix_idxs,
-                       biasFn_x_idxs,  biasFn_fix_idxs,
-                       driftFn_x_idxs, driftFn_fix_idxs,
-                       noiseFn_x_idxs, noiseFn_fix_idxs,
-                       ):
-    assert len(x_params_names) == len(x)
+def _candidate_to_makeOneRun_kwargs(x, x_params_names,
+                                    fixed_params_names, fixed_params_vals,
+                                    logicFn_x_idxs, logicFn_fix_idxs,
+                                    biasFn_x_idxs,  biasFn_fix_idxs,
+                                    driftFn_x_idxs, driftFn_fix_idxs,
+                                    noiseFn_x_idxs, noiseFn_fix_idxs):
+    """Map one candidate parameter vector ``x`` into a ready-to-splat
+    ``makeOneRun`` kwargs dict.
+
+    Splits ``x`` (fit params) and ``fixed_params_vals`` (fixed params, incl.
+    ``df``/``dt``/``t_dur``/``is_loss_no_dir``/``biasFn``/… appended in
+    ``simulateDDM``) across the logic / drift / noise / bias dispatch tables via
+    the precomputed index arrays, then applies the frozen-rate sentinels.
+
+    Shared by the chisq DE driver (``_makeOneRunWrapper``) and the joint MLE+Chi²
+    objective (``_jointVectorizedObjectiveWrapper``). MLE-only fit params (e.g.
+    ``LAPSE_RATE``) are not in any dispatch index set, so they're harmlessly
+    ignored here — Chi² is computed from the same superset candidate vector.
+    """
+    x_params_names = np.asanyarray(x_params_names)
     logicFn_kwargs = {k: v for k, v in zip(x_params_names[logicFn_x_idxs],
                                             x[logicFn_x_idxs])}
     logicFn_kwargs.update({k: v for k, v in zip(fixed_params_names[logicFn_fix_idxs],
@@ -75,18 +88,21 @@ def _makeOneRunWrapper(x, x_params_names, fixed_params_names, fixed_params_vals,
         logicFn_kwargs["BETA"] = np.nan
     logicFn_kwargs.setdefault("ALPHA_UNREWARDED", None)
     logicFn_kwargs.setdefault("BETA_UNREWARDED", None)
-    DEBUG = False
-    if DEBUG:
-        print("LogicFn kwargs:", logicFn_kwargs)
-        print("DriftFn kwargs:", driftFn_kwargs)
-        print("NoiseFn kwargs:", noiseFn_kwargs)
-        print("BiasFn kwargs:", biasFn_kwargs)
-    # print("x:", x)
-    # print("x_params_names:", x_params_names)
-    # print("driftFn_kwargs:", driftFn_kwargs)
+    return {**logicFn_kwargs, "driftFn_kwargs": driftFn_kwargs,
+            "noiseFn_kwargs": noiseFn_kwargs, "biasFn_kwargs": biasFn_kwargs}
 
-    return makeOneRun(**logicFn_kwargs, driftFn_kwargs=driftFn_kwargs,
-                      noiseFn_kwargs=noiseFn_kwargs, biasFn_kwargs=biasFn_kwargs)
+
+def _makeOneRunWrapper(x, x_params_names, fixed_params_names, fixed_params_vals,
+                       logicFn_x_idxs, logicFn_fix_idxs,
+                       biasFn_x_idxs,  biasFn_fix_idxs,
+                       driftFn_x_idxs, driftFn_fix_idxs,
+                       noiseFn_x_idxs, noiseFn_fix_idxs,
+                       ):
+    assert len(x_params_names) == len(x)
+    return makeOneRun(**_candidate_to_makeOneRun_kwargs(
+        x, x_params_names, fixed_params_names, fixed_params_vals,
+        logicFn_x_idxs, logicFn_fix_idxs, biasFn_x_idxs, biasFn_fix_idxs,
+        driftFn_x_idxs, driftFn_fix_idxs, noiseFn_x_idxs, noiseFn_fix_idxs))
 
 
 def _mleVectorizedObjectiveWrapper(x_matrix, x_params_names, subject_df,
@@ -101,6 +117,68 @@ def _mleVectorizedObjectiveWrapper(x_matrix, x_params_names, subject_df,
     """
     return objective_from_population(
         x_matrix, x_params_names, subject_df, model_config)
+
+
+def _jointVectorizedObjectiveWrapper(
+        x_matrix, x_params_names, prepared_subject, model_config,
+        fixed_params_names, fixed_params_vals,
+        logicFn_x_idxs, logicFn_fix_idxs, biasFn_x_idxs, biasFn_fix_idxs,
+        driftFn_x_idxs, driftFn_fix_idxs, noiseFn_x_idxs, noiseFn_fix_idxs,
+        n_mle, n_chi2):
+    """Joint MLE + Chi² DE objective: ``w_mle·(MLE/N_mle) + w_chi2·(Chi2/N_chi2)``.
+
+    The MLE term stays on the GPU-vectorized whole-population path
+    (``objective_from_population`` — one solver call per generation). The Chi²
+    term is the existing generative Ratcliff-quantile loss, computed per
+    candidate on CPU via ``makeOneRun`` (numpy; independent of the GPU MLE
+    call). Each term is divided by its own valid-trial count so a single weight
+    transfers across subjects regardless of trial count. SciPy passes
+    ``x_matrix`` as ``(n_params, S)`` and expects ``(S,)`` back.
+
+    The Chi² simulation's ``df`` is taken from ``fixed_params_vals[0]`` (set to
+    the subject df in ``_processSubject``) via the dispatch index arrays — the
+    same wiring the chisq driver uses — so no separate df arg is needed.
+
+    A zero weight skips its term entirely (no GPU call / no simulation). Since
+    ``_processSubject`` only routes here when ``mle_chi2_weight > 0``, the Chi²
+    loop always runs; ``mle_mle_weight == 0`` is supported (Chi²-only via this
+    driver) but the pure vectorized-MLE path is preferred when Chi² is off.
+    """
+    x_matrix = np.asarray(x_matrix, dtype=float)
+    if x_matrix.ndim == 1:
+        x_matrix = x_matrix[:, None]
+    x_params_names = np.asanyarray(x_params_names)
+    n_cand = x_matrix.shape[1]
+    w_mle = float(model_config.mle_mle_weight)
+    w_chi2 = float(model_config.mle_chi2_weight)
+
+    if w_mle > 0.0:
+        mle_negll = np.asarray(
+            objective_from_population(
+                x_matrix, x_params_names, prepared_subject, model_config),
+            dtype=float)
+        mle_pt = mle_negll / max(int(n_mle), 1)
+    else:
+        mle_pt = np.zeros(n_cand, dtype=float)
+
+    if w_chi2 > 0.0:
+        chi2_pt = np.empty(n_cand, dtype=float)
+        for s in range(n_cand):
+            kwargs = _candidate_to_makeOneRun_kwargs(
+                x_matrix[:, s], x_params_names,
+                fixed_params_names, fixed_params_vals,
+                logicFn_x_idxs, logicFn_fix_idxs, biasFn_x_idxs, biasFn_fix_idxs,
+                driftFn_x_idxs, driftFn_fix_idxs, noiseFn_x_idxs, noiseFn_fix_idxs)
+            chi2_raw = float(makeOneRun(**kwargs))
+            if not np.isfinite(chi2_raw):
+                # Keep DE selection finite; a degenerate sim ranks as worst.
+                chi2_raw = 1e12
+            chi2_pt[s] = chi2_raw / max(int(n_chi2), 1)
+    else:
+        chi2_pt = np.zeros(n_cand, dtype=float)
+
+    return w_mle * mle_pt + w_chi2 * chi2_pt
+
 
 class _NoDaemonProcess(multiprocessing.Process):
     @property
@@ -205,6 +283,35 @@ def _processSubject(subject_df, fixed_params_names, fixed_params_vals,
         )
         print("MLE population info:", population_info)
 
+        # Joint MLE+Chi² mode: a non-zero --mle-chi2-weight augments the MLE
+        # objective with the generative Ratcliff-quantile Chi² loss, each term
+        # made trial-count-invariant by ÷ valid-trial count. mle_chi2_weight==0
+        # (default) keeps the byte-identical pure-MLE driver below.
+        joint_mode = float(model_config.mle_chi2_weight) > 0.0
+        n_mle = max(int(prepared_subject.valid.sum()), 1)
+        n_chi2 = max(int(subject_df.valid.sum()), 1) if joint_mode else 1
+
+        def _add_joint_diag(payload, x_vec):
+            """Attach the per-trial MLE / Chi² split + weights at ``x_vec``.
+
+            Reuses the pure-MLE ``neg_loglik`` already in ``payload`` for the
+            MLE term; recomputes Chi² at ``x_vec`` via the generative
+            simulation (``makeOneRun``)."""
+            chi2_raw = float(makeOneRun(**_candidate_to_makeOneRun_kwargs(
+                np.asarray(x_vec, dtype=float), fit_params_names,
+                fixed_params_names, fixed_params_vals,
+                logicFn_x_idxs, logicFn_fix_idxs, biasFn_x_idxs, biasFn_fix_idxs,
+                driftFn_x_idxs, driftFn_fix_idxs, noiseFn_x_idxs,
+                noiseFn_fix_idxs)))
+            payload.update(
+                joint_mode=True,
+                mle_mle_weight=float(model_config.mle_mle_weight),
+                mle_chi2_weight=float(model_config.mle_chi2_weight),
+                n_mle=int(n_mle), n_chi2=int(n_chi2),
+                mle_loss_pt=float(payload["neg_loglik"]) / n_mle,
+                chi2_loss_pt=chi2_raw / n_chi2)
+            return payload
+
         if dry_run:
             payload = result_payload(
                 optim_res=None,
@@ -215,6 +322,13 @@ def _processSubject(subject_df, fixed_params_names, fixed_params_vals,
                 model_config=model_config,
                 population_info=population_info,
             )
+            if joint_mode:
+                _add_joint_diag(payload, fit_params_init)
+                print("MLE+Chi² joint dry-run: "
+                      f"mle_loss_pt={payload['mle_loss_pt']:.6g}, "
+                      f"chi2_loss_pt={payload['chi2_loss_pt']:.6g}, "
+                      f"weights=({payload['mle_mle_weight']}, "
+                      f"{payload['mle_chi2_weight']})")
             print("MLE backend info:", payload["mle_backend_info"])
             return payload
 
@@ -227,10 +341,24 @@ def _processSubject(subject_df, fixed_params_names, fixed_params_vals,
         #   generation, so a worker pool would only add IPC/pickle overhead.
         # The upstream warning in ``simulateDDM`` rejects --num-cpus != 1
         # for MLE for the same reason.
+        if joint_mode:
+            # Joint objective: MLE term stays on the GPU-vectorized population
+            # path; Chi² is looped per candidate on CPU and combined. The Chi²
+            # histogram term is non-smooth, so polish stays False (as below).
+            objective = _jointVectorizedObjectiveWrapper
+            objective_args = (
+                fit_params_names, prepared_subject, model_config,
+                fixed_params_names, fixed_params_vals,
+                logicFn_x_idxs, logicFn_fix_idxs, biasFn_x_idxs, biasFn_fix_idxs,
+                driftFn_x_idxs, driftFn_fix_idxs, noiseFn_x_idxs,
+                noiseFn_fix_idxs, n_mle, n_chi2)
+        else:
+            objective = _mleVectorizedObjectiveWrapper
+            objective_args = (fit_params_names, prepared_subject, model_config)
         res = differential_evolution(
-            _mleVectorizedObjectiveWrapper,
+            objective,
             bounds=fit_params_bounds,
-            args=(fit_params_names, prepared_subject, model_config),
+            args=objective_args,
             x0=fit_params_init,
             disp=True,
             workers=num_workers,
@@ -249,6 +377,12 @@ def _processSubject(subject_df, fixed_params_names, fixed_params_vals,
             model_config=model_config,
             population_info=population_info,
         )
+        if joint_mode:
+            _add_joint_diag(dict_res, res.x)
+            print("MLE+Chi² joint fit: "
+                  f"mle_loss_pt={dict_res['mle_loss_pt']:.6g}, "
+                  f"chi2_loss_pt={dict_res['chi2_loss_pt']:.6g}, "
+                  f"joint={float(res.fun):.6g}")
         print("MLE backend info:", dict_res["mle_backend_info"])
         with open(evolve_dump_FP_subject, 'wb') as f:
             pickle.dump(dict_res, f)
@@ -395,6 +529,9 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
                 mle_terminal_c=MLE_TERMINAL_C.Default,
                 mle_min_population_candidates=None,
                 mle_condition_columns=(),
+                mle_choice_weight=1.0, mle_rt_weight=1.0,
+                mle_choice_norm="conditional",
+                mle_mle_weight=1.0, mle_chi2_weight=0.0,
                 bias_fn_str=None, drift_fn_str=None,
                 uses_asym_q=False, uses_asym_rr=False,
                 scale_bound=False):
@@ -731,6 +868,22 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
             # pickle. ``tuple(...)`` for the frozen dataclass and to
             # neutralize any list the caller passes.
             mle_condition_columns=tuple(mle_condition_columns or ()),
+            # Weighted choice-vs-RT loss. Like the conditions above, NOT
+            # reflected in the filename (evolveFP doesn't see these), so
+            # A/B tests overwrite the same pickle. mle_choice_norm
+            # defaults to "conditional" at this user-facing boundary
+            # (the dataclass default is "marginal" for back-compat with
+            # old pickles / direct-construct tests). See mle.py.
+            mle_choice_weight=float(mle_choice_weight),
+            mle_rt_weight=float(mle_rt_weight),
+            mle_choice_norm=mle_choice_norm,
+            # Outer joint-loss weights (--mle-mle-weight / --mle-chi2-weight).
+            # Default (1.0, 0.0) ⇒ pure MLE; mle_chi2_weight > 0 switches
+            # _processSubject to the joint MLE+Chi² driver. Also NOT reflected
+            # in the filename (evolveFP doesn't see these), so A/B tests
+            # overwrite the same pickle.
+            mle_mle_weight=float(mle_mle_weight),
+            mle_chi2_weight=float(mle_chi2_weight),
             # The flag-gated asymmetric-LR contract on MLEModelConfig
             # (see mle.py:_compute_latent_arrays). True ⇒ ALPHA_UNREWARDED
             # / BETA_UNREWARDED MUST be in the params dict at eval time —

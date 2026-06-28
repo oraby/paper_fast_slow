@@ -15,7 +15,7 @@ from .mle_batch import (
     batched_choice_rt_loglik,
     estimate_flat_trial_capacity_for_memory,
 )
-from .mle_likelihood import trial_choice_rt_loglik
+from .mle_likelihood import trial_choice_rt_loglik, LOGLIK_FLOOR
 
 
 # "Q-Val-asym (Offset)" enables asymmetric ALPHA via the gating in
@@ -90,6 +90,40 @@ class MLEModelConfig:
     # ``prepare_mle_data._compute_trial_weights`` for the formula:
     # ``weight[i] = total_valid / (num_groups * group_size[gid(i)])``.
     mle_condition_columns: tuple = ()
+    # Weighted choice-vs-RT loss (``--mle-choice-weight`` /
+    # ``--mle-rt-weight``). The joint per-trial loglik is split into a
+    # choice component and an RT-given-choice component (see
+    # ``_apply_choice_rt_weights``) and recombined as
+    # ``w_choice·log P(c) + w_rt·log p(rt|c)``. Defaults 1.0/1.0.
+    # EXCLUDED from ``fit.evolveFP`` (filename invariant — A/B by
+    # overwriting), preserved in the saved ``model_config``.
+    mle_choice_weight: float = 1.0
+    mle_rt_weight: float = 1.0
+    # Choice-probability normalization for the weighted split.
+    # ``"marginal"`` uses the raw bound-hit prob P_mix(c) — at weights
+    # (1,1) this reproduces today's joint loss bit-exactly (legacy).
+    # ``"conditional"`` divides by P_mix(L)+P_mix(R), i.e. conditions
+    # on a decision being made (chat Answer 29), isolating side-bias
+    # from overall decisiveness. The DATACLASS default is ``"marginal"``
+    # for back-compat: existing direct-construct tests and old pickles
+    # (whose saved config predates this field) keep the legacy
+    # objective. The CLI / ``fit.simulateDDM`` default is
+    # ``"conditional"`` (the user-facing recommended form). Same
+    # back-compat pattern as ``uses_asymmetric_alpha``.
+    mle_choice_norm: str = "marginal"
+    # Outer joint-loss weights (``--mle-mle-weight`` / ``--mle-chi2-weight``).
+    # The DE objective becomes
+    # ``w_mle·(MLE_negloglik/N_mle) + w_chi2·(Chi2/N_chi2)`` — a composite of
+    # the teacher-forced per-trial MLE term and the generative Ratcliff-quantile
+    # Chi² term, each made trial-count-invariant by ÷ valid-trial count. Default
+    # ``(1.0, 0.0)`` ⇒ pure MLE: when ``mle_chi2_weight == 0`` the joint path is
+    # never taken (``fit._processSubject`` keeps the unchanged, byte-identical
+    # vectorized-MLE driver and never runs the Chi² simulation). EXCLUDED from
+    # ``fit.evolveFP`` (filename invariant — A/B by overwriting), preserved in
+    # the saved ``model_config``. Joint mode is no longer pure MLE, so the
+    # ``aic``/``bic`` in ``result_payload`` reflect only the MLE component.
+    mle_mle_weight: float = 1.0
+    mle_chi2_weight: float = 0.0
 
     @property
     def uses_q_bias(self):
@@ -175,6 +209,16 @@ def validate_mle_config(model_config):
         raise ValueError(
             f"mle_terminal_c must satisfy "
             f"{MLE_TERMINAL_C.Min} <= C <= {MLE_TERMINAL_C.Max}; got {c}.")
+    for name in ("mle_choice_weight", "mle_rt_weight",
+                 "mle_mle_weight", "mle_chi2_weight"):
+        w = float(getattr(model_config, name))
+        if not np.isfinite(w) or w < 0.0:
+            raise ValueError(
+                f"{name} must be a finite, non-negative number; got {w!r}.")
+    if model_config.mle_choice_norm not in ("conditional", "marginal"):
+        raise ValueError(
+            "mle_choice_norm must be 'conditional' or 'marginal'; "
+            f"got {model_config.mle_choice_norm!r}.")
 
 
 def params_from_vector(x, params_names):
@@ -194,7 +238,21 @@ def evaluate_neg_loglik(params, df, model_config, return_df=False):
     like_result, backend_info = _evaluate_trial_likelihoods(
         data, latents, params, model_config)
     valid_mask = latents["valid_for_loss"]
-    loglik_values = like_result.loglik
+    # Choice-vs-RT reweighting: transform the per-trial joint loglik into
+    # ``w_choice·log P(c) + w_rt·log p(rt|c)`` before any further summing.
+    # Identity (returns the same array) on the marginal + (1,1) fast path,
+    # so the legacy sum below stays bit-exact. See
+    # ``_apply_choice_rt_weights``.
+    loglik_values = _apply_choice_rt_weights(
+        like_result.loglik,
+        like_result.upper_hit_prob_tmax,
+        like_result.lower_hit_prob_tmax,
+        data.choice_left,
+        latents["no_choice"],
+        float(latents["lapse_rate"]),
+        model_config.mle_choice_weight,
+        model_config.mle_rt_weight,
+        model_config.mle_choice_norm)
     finite_valid = valid_mask & np.isfinite(loglik_values)
     # ``trial_weights is None`` → unweighted legacy sum (bit-exact).
     # Otherwise multiply the per-trial loglik by the sample-balancing
@@ -205,7 +263,6 @@ def evaluate_neg_loglik(params, df, model_config, return_df=False):
     else:
         total_loglik = float(
             (loglik_values * data.trial_weights)[finite_valid].sum())
-        print(f"data.trial_weights total loglik: {total_loglik:.4f}")
     n_trials_loss = int(finite_valid.sum())
 
     mle_df = None
@@ -372,12 +429,27 @@ def objective_from_population(x_matrix, params_names, df, model_config):
     )
 
     # Phase 6: reshape (S_valid * N,) → (S_valid, N) and aggregate.
+    per_cand_loglik = batch_result.loglik.reshape(n_valid, n_trials)
+    # Choice-vs-RT reweighting across the whole population at once. Static
+    # observations (choice_left, no_choice) broadcast over the candidate
+    # axis; the per-candidate LAPSE_RATE is brought to host and column-
+    # broadcast over trials. Identity (returns the same array) on the
+    # marginal + (1,1) fast path, so the legacy sums below stay bit-exact.
+    per_cand_loglik = _apply_choice_rt_weights(
+        per_cand_loglik,
+        batch_result.upper_hit_prob_tmax.reshape(n_valid, n_trials),
+        batch_result.lower_hit_prob_tmax.reshape(n_valid, n_trials),
+        prepared.choice_left[None, :],
+        np.isnan(prepared.choice_left)[None, :],
+        asnumpy(backend.xp, lapse_per_cand[valid_cand_idx])[:, None],
+        model_config.mle_choice_weight,
+        model_config.mle_rt_weight,
+        model_config.mle_choice_norm)
     # ``trial_weights is None`` → unweighted legacy sum (bit-exact).
     # Otherwise broadcast the per-trial sample-balancing weight across
     # the candidate axis before summing. The weights are stable across
     # DE generations (data-only), so they're computed once in
     # ``prepare_mle_data`` and live on ``prepared``.
-    per_cand_loglik = batch_result.loglik.reshape(n_valid, n_trials)
     per_cand_valid = valid_stack[valid_cand_idx]
     finite_valid = per_cand_valid & np.isfinite(per_cand_loglik)
     if prepared.trial_weights is None:
@@ -385,7 +457,6 @@ def objective_from_population(x_matrix, params_names, df, model_config):
     else:
         weighted = per_cand_loglik * prepared.trial_weights[None, :]
         total_loglik = np.where(finite_valid, weighted, 0.0).sum(axis=1)
-        print(f"data.trial_weights per-candidate loglik: {-total_loglik.max():.4f}")
     neg_loglik = -total_loglik
     # Defensive: any candidate that somehow produced a non-finite sum gets
     # the penalty. Should not happen given the LOGLIK_FLOOR clamp inside the
@@ -393,22 +464,6 @@ def objective_from_population(x_matrix, params_names, df, model_config):
     bad = ~np.isfinite(neg_loglik)
     neg_loglik[bad] = penalty
     losses[valid_cand_idx] = neg_loglik
-    # # Per-DE-generation visibility for ``--mle-conditions``: prints
-    # # between each ``differential_evolution step k: f(x)= …`` line so
-    # # the user can confirm the weighting actually fired this batch.
-    # # Gated on ``trial_weights is not None`` — silent under the
-    # # legacy unweighted path.
-    # if prepared.trial_weights is not None:
-    #     good_losses = neg_loglik[~bad]
-    #     if good_losses.size:
-    #         distinct_weights = np.unique(np.round(
-    #             prepared.trial_weights[prepared.trial_weights > 0], 6))
-    #         print(
-    #             f"--mle-conditions: weighted batch "
-    #             f"(n_cand={n_valid}, "
-    #             f"trial weights={distinct_weights.tolist()}): "
-    #             f"neg_loglik best={float(good_losses.min()):.4f}, "
-    #             f"worst={float(good_losses.max()):.4f}")
     return losses
 
 
@@ -556,6 +611,61 @@ def _compute_trial_weights(sorted_df, condition_columns, valid_mask):
     weights = np.zeros(len(sorted_df), dtype=float)
     weights[valid_mask] = per_valid_weight
     return weights
+
+
+def _apply_choice_rt_weights(loglik, upper_hit_prob, lower_hit_prob,
+                             choice_left, no_choice, lapse_rate,
+                             w_choice, w_rt, choice_norm):
+    """Split the joint per-trial loglik into choice + RT components and
+    recombine with per-component weights.
+
+    Implements (lapse-exact) the decomposition of chat Answer 29:
+
+        (1) choice component   log P(c_i)
+              marginal:     log P_mix(c_i)
+              conditional:  log P_mix(c_i) - log P_mix_total
+        (2) RT component       log p(rt_i | c_i) = loglik_i - log P_mix(c_i)
+        (3) weighted loss      w_choice * (1) + w_rt * (2)
+
+    with the lapse-consistent masses
+
+        P_mix(c)    = (1 - lapse) * P_DDM(c) + lapse / 2
+        P_mix_total = (1 - lapse) * (P_L + P_R) + lapse
+
+    where ``P_DDM(c)`` is the chosen side's pure-DDM bound-hit prob
+    (``upper_hit_prob`` for a left/upper choice, else ``lower_hit_prob``)
+    and ``loglik_i`` is the already-lapse-mixed joint log-density.
+
+    Shapes broadcast over an optional leading candidate axis: the single
+    path passes ``(n_trials,)`` arrays with scalar ``lapse_rate``; the
+    population path passes ``(n_candidates, n_trials)`` hit-prob/loglik
+    arrays with ``choice_left``/``no_choice`` as ``(1, n_trials)`` and
+    ``lapse_rate`` as ``(n_candidates, 1)``. Pure host-numpy — the GPU
+    work already happened in the solver.
+
+    No-choice trials (NaN ``choice_left``) get the choice-only form
+    ``w_choice * loglik_i`` (no RT term). In production they're already
+    ``valid=False`` and excluded at the sum site; this branch is a
+    defensive fallback. Returns ``loglik`` unchanged on the
+    ``marginal`` + ``(1, 1)`` fast path (bit-exact legacy).
+    """
+    if choice_norm == "marginal" and w_choice == 1.0 and w_rt == 1.0:
+        return loglik
+    is_left = choice_left == 1
+    p_ddm_chosen = np.where(is_left, upper_hit_prob, lower_hit_prob)
+    p_mix_chosen = (1.0 - lapse_rate) * p_ddm_chosen + lapse_rate / 2.0
+    log_choice = np.log(np.clip(p_mix_chosen, LOGLIK_FLOOR, None))
+    log_rt = loglik - log_choice
+    weighted = w_choice * log_choice + w_rt * log_rt
+    if choice_norm == "conditional":
+        p_mix_total = (
+            (1.0 - lapse_rate) * (upper_hit_prob + lower_hit_prob) + lapse_rate)
+        log_norm = np.log(np.clip(p_mix_total, LOGLIK_FLOOR, None))
+        weighted = weighted - w_choice * log_norm
+    # No-choice: choice-only weighting (no RT density to condition on).
+    no_choice_arr = np.broadcast_to(no_choice, weighted.shape)
+    weighted = np.where(no_choice_arr, w_choice * loglik, weighted)
+    return weighted
 
 
 def _param(params, name, default=None):
@@ -1299,6 +1409,22 @@ def _build_mle_df(data, latents, like_result):
     else:
         mu_display = mu[:, 0]
     n_rows = len(data.sorted_index)
+    # Choice / RT decomposition components (unweighted, norm-agnostic) so the
+    # user can audit the split per trial and reconstruct either choice-norm.
+    # See ``_apply_choice_rt_weights``. NaN on invalid/no-choice trials (their
+    # hit-probs are NaN) — diagnostic only.
+    _lapse = float(latents.get("lapse_rate", 0.0))
+    _p_ddm_chosen = np.where(
+        data.choice_left == 1,
+        like_result.upper_hit_prob_tmax,
+        like_result.lower_hit_prob_tmax)
+    _p_mix_chosen = (1.0 - _lapse) * _p_ddm_chosen + _lapse / 2.0
+    _log_choice = np.log(np.clip(_p_mix_chosen, LOGLIK_FLOOR, None))
+    _p_mix_total = (
+        (1.0 - _lapse)
+        * (like_result.upper_hit_prob_tmax + like_result.lower_hit_prob_tmax)
+        + _lapse)
+    _log_choice_norm = np.log(np.clip(_p_mix_total, LOGLIK_FLOOR, None))
     latent_df = pd.DataFrame({
         "_row_index": data.sorted_index,
         "mle_Q_left_before": latents["q_left_before"],
@@ -1313,6 +1439,13 @@ def _build_mle_df(data, latents, like_result):
         "mle_decision_time_observed": like_result.decision_time,
         "mle_choice_prob_or_density": like_result.choice_prob_or_density,
         "mle_loglik": like_result.loglik,
+        # Choice / RT split components (lapse-exact, unweighted):
+        # mle_log_choice = log P_mix(c); mle_rt_loglik = loglik - log P_mix(c);
+        # mle_log_choice_normalizer = log(P_mix(L)+P_mix(R)) for the
+        # conditional norm. log P(c)_conditional = mle_log_choice - normalizer.
+        "mle_log_choice": _log_choice,
+        "mle_rt_loglik": like_result.loglik - _log_choice,
+        "mle_log_choice_normalizer": _log_choice_norm,
         "mle_valid_for_loss": latents["valid_for_loss"],
         "mle_survival_at_tmax": like_result.survival_at_tmax,
         "mle_upper_hit_prob_tmax": like_result.upper_hit_prob_tmax,

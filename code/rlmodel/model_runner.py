@@ -190,6 +190,7 @@ def runModel(df, bias_fn_str, drift_fn_str, noise_fn_str, is_loss_no_dir,
              mle_condition_columns=(),
              mle_choice_weight=1.0, mle_rt_weight=1.0,
              mle_choice_norm="conditional",
+             mle_mle_weight=1.0, mle_chi2_weight=0.0,
              init_val_overrides=None,
              uses_asym_q=False, uses_asym_rr=False,
              scale_bound=False):
@@ -229,6 +230,8 @@ def runModel(df, bias_fn_str, drift_fn_str, noise_fn_str, is_loss_no_dir,
                                      mle_choice_weight=mle_choice_weight,
                                      mle_rt_weight=mle_rt_weight,
                                      mle_choice_norm=mle_choice_norm,
+                                     mle_mle_weight=mle_mle_weight,
+                                     mle_chi2_weight=mle_chi2_weight,
                                      bias_fn_str=bias_fn_str,
                                      drift_fn_str=drift_fn_str,
                                      uses_asym_q=uses_asym_q,
@@ -352,6 +355,23 @@ def main():
             "'--mle-choice-norm marginal --mle-choice-weight 1 "
             "--mle-rt-weight 1' to reproduce the exact legacy fit."))
     parser.add_argument(
+        "--mle-mle-weight", type=float, default=1.0,
+        help=(
+            "Outer weight on the MLE term of the joint loss "
+            "`w_mle*(MLE/N) + w_chi2*(Chi2/N)`. Default 1.0. Each term is "
+            "divided by its valid-trial count so the weights transfer across "
+            "subjects regardless of trial count."))
+    parser.add_argument(
+        "--mle-chi2-weight", type=float, default=0.0,
+        help=(
+            "Outer weight on the generative Ratcliff-quantile Chi² term of the "
+            "joint loss. Default 0.0 ⇒ pure MLE (the Chi² simulation is never "
+            "run; the fit is byte-identical to today). >0 switches to the "
+            "joint MLE+Chi² objective and REQUIRES --fit-mode mle. NOTE: joint "
+            "mode is no longer pure MLE (AIC/BIC/standard errors don't apply) "
+            "and does NOT affect the filename, so it overwrites any existing "
+            "fit at the same path."))
+    parser.add_argument(
         "--asym-q", action="store_true", default=False,
         help=(
             "Fit a separate ALPHA_UNREWARDED rate for Q-value updates on "
@@ -415,6 +435,17 @@ def main():
         parser.error(
             f"--mle-min-population must be a positive integer; "
             f"got {args.mle_min_population}")
+    for _wname, _wval in (("--mle-mle-weight", args.mle_mle_weight),
+                          ("--mle-chi2-weight", args.mle_chi2_weight)):
+        if not np.isfinite(_wval) or _wval < 0.0:
+            parser.error(f"{_wname} must be a finite, non-negative number; "
+                         f"got {_wval}")
+    if args.mle_mle_weight == 0.0 and args.mle_chi2_weight == 0.0:
+        parser.error("--mle-mle-weight and --mle-chi2-weight cannot both be 0 "
+                     "(the loss would be identically zero).")
+    if args.mle_chi2_weight > 0.0 and args.fit_mode != "mle":
+        parser.error("--mle-chi2-weight > 0 requires --fit-mode mle (the joint "
+                     "MLE+Chi² objective runs in the MLE driver).")
     # Resolve the RewardRate drift alias into the canonical DRIFT_FN_DICT
     # key. Must run before _expand_asym_shorthand so its column-based
     # detection sees the resolved name.
@@ -457,6 +488,12 @@ def main():
                  else "  (NOTE: differs from the legacy joint loss; "
                       "filename unchanged so this overwrites any existing "
                       "fit at the same path)"))
+        if args.mle_chi2_weight > 0.0:
+            print(f"Joint MLE+Chi² loss ENABLED: mle_weight="
+                  f"{args.mle_mle_weight}, chi2_weight={args.mle_chi2_weight} "
+                  f"(each term ÷ valid-trial count). NOTE: no longer pure MLE; "
+                  f"AIC/BIC don't apply and the filename is unchanged so this "
+                  f"overwrites any existing fit at the same path.")
 
     # Translate the user-facing CPU/GPU knob into the two internal flags that
     # mle.MLEModelConfig + array_backend.resolve_array_backend understand:
@@ -525,6 +562,8 @@ def main():
              mle_choice_weight=args.mle_choice_weight,
              mle_rt_weight=args.mle_rt_weight,
              mle_choice_norm=args.mle_choice_norm,
+             mle_mle_weight=args.mle_mle_weight,
+             mle_chi2_weight=args.mle_chi2_weight,
              init_val_overrides=init_val_overrides,
              uses_asym_q=args.asym_q,
              uses_asym_rr=args.asym_rr,
