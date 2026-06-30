@@ -6,7 +6,6 @@ from .model.drift import (
 from .model.bias import BIAS_FN_DICT
 from .model.noise import NOISE_FN_DICT
 import numpy as np
-import matplotlib.pyplot as plt
 import pandas as pd
 import argparse
 import pickle
@@ -652,12 +651,14 @@ def runTest():
 
 
 if __name__ == "__main__":
-    import matplotlib.pyplot as plt
-    # Save SVG with text as text, not paths
-    plt.rcParams['svg.fonttype'] = 'none'
-    plt.rcParams['font.family'] = 'sans-serif'
-    plt.rcParams['font.sans-serif'] = ['Arial']
-
+    try:
+        import matplotlib.pyplot as plt
+        # Save SVG with text as text, not paths
+        plt.rcParams['svg.fonttype'] = 'none'
+        plt.rcParams['font.family'] = 'sans-serif'
+        plt.rcParams['font.sans-serif'] = ['Arial']
+    except ImportError:
+        pass
     # Enable loading from relative packes
     if False and "PKG" not in globals():
         import importlib, importlib.util, sys, pathlib # https://stackoverflow.com/a/50395128/11996983
