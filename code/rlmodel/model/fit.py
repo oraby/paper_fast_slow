@@ -20,7 +20,6 @@ from functools import partial
 import inspect
 import datetime
 import multiprocessing
-import multiprocessing.pool
 import os
 import pathlib
 import pickle
@@ -92,21 +91,64 @@ def _candidate_to_makeOneRun_kwargs(x, x_params_names,
             "noiseFn_kwargs": noiseFn_kwargs, "biasFn_kwargs": biasFn_kwargs}
 
 
+def _trace_population(trace, x_matrix, losses):
+    """Append each candidate's ``(param values, loss)`` to the DE trace.
+
+    ``trace`` is a list (in-process MLE/joint path) or a
+    ``multiprocessing.Manager().list()`` proxy (pooled chisq path); both support
+    ``.append``. ``None`` disables tracing. Params are stored as plain lists so
+    the row pickles cheaply across the pool boundary."""
+    if trace is None:
+        return
+    xm = np.asarray(x_matrix, dtype=float)
+    if xm.ndim == 1:
+        xm = xm[:, None]
+    losses = np.asarray(losses, dtype=float)
+    for s in range(xm.shape[1]):
+        trace.append((xm[:, s].tolist(), float(losses[s])))
+
+
+def _build_candidate_loss_df(trace, params_names, model_config=None):
+    """Assemble the per-candidate DE loss trace into a DataFrame: ``loss`` + one
+    column per fit param, plus (MLE) the weights / conditions the fit ran with
+    (constant per fit, so the frame is self-describing). ``None`` if empty."""
+    rows = list(trace) if trace is not None else []
+    if not rows:
+        return None
+    names = [str(n) for n in params_names]
+    xs = np.array([np.asarray(x, dtype=float) for (x, _loss) in rows])
+    df = pd.DataFrame(xs, columns=names)
+    df.insert(0, "loss", [float(loss) for (_x, loss) in rows])
+    if model_config is not None:
+        df["mle_choice_weight"] = float(getattr(model_config, "mle_choice_weight", np.nan))
+        df["mle_rt_weight"] = float(getattr(model_config, "mle_rt_weight", np.nan))
+        df["mle_choice_norm"] = str(getattr(model_config, "mle_choice_norm", ""))
+        df["mle_mle_weight"] = float(getattr(model_config, "mle_mle_weight", np.nan))
+        df["mle_chi2_weight"] = float(getattr(model_config, "mle_chi2_weight", np.nan))
+        df["mle_condition_columns"] = str(
+            tuple(getattr(model_config, "mle_condition_columns", ())))
+    return df
+
+
 def _makeOneRunWrapper(x, x_params_names, fixed_params_names, fixed_params_vals,
                        logicFn_x_idxs, logicFn_fix_idxs,
                        biasFn_x_idxs,  biasFn_fix_idxs,
                        driftFn_x_idxs, driftFn_fix_idxs,
                        noiseFn_x_idxs, noiseFn_fix_idxs,
+                       trace=None,
                        ):
     assert len(x_params_names) == len(x)
-    return makeOneRun(**_candidate_to_makeOneRun_kwargs(
+    loss = makeOneRun(**_candidate_to_makeOneRun_kwargs(
         x, x_params_names, fixed_params_names, fixed_params_vals,
         logicFn_x_idxs, logicFn_fix_idxs, biasFn_x_idxs, biasFn_fix_idxs,
         driftFn_x_idxs, driftFn_fix_idxs, noiseFn_x_idxs, noiseFn_fix_idxs))
+    if trace is not None:
+        trace.append((np.asarray(x, dtype=float).tolist(), float(loss)))
+    return loss
 
 
 def _mleVectorizedObjectiveWrapper(x_matrix, x_params_names, subject_df,
-                                   model_config):
+                                   model_config, trace=None):
     """Vectorized DE objective.
 
     SciPy calls this once per generation with ``x_matrix.shape == (n_params, S)``
@@ -115,8 +157,10 @@ def _mleVectorizedObjectiveWrapper(x_matrix, x_params_names, subject_df,
     the multiprocessing.Pool boundary, and pay one parameter-vector transfer
     per generation instead of one per candidate.
     """
-    return objective_from_population(
+    losses = objective_from_population(
         x_matrix, x_params_names, subject_df, model_config)
+    _trace_population(trace, x_matrix, losses)
+    return losses
 
 
 def _jointVectorizedObjectiveWrapper(
@@ -183,28 +227,9 @@ def _jointVectorizedObjectiveWrapper(
     else:
         chi2_pt = np.zeros(n_cand, dtype=float)
 
-
     total = w_mle * mle_pt + w_chi2 * chi2_pt
+    _trace_population(trace, x_matrix, total)
     return total
-
-class _NoDaemonProcess(multiprocessing.Process):
-    @property
-    def daemon(self):
-        return False
-
-    @daemon.setter
-    def daemon(self, value):
-        pass
-
-class _NoDaemonContext(type(multiprocessing.get_context())):
-    Process = _NoDaemonProcess
-
-# We sub-class multiprocessing.pool.Pool instead of multiprocessing.Pool
-# because the latter is only a wrapper function, not a proper class.
-class NestablePool(multiprocessing.pool.Pool):
-    def __init__(self, *args, **kwargs):
-        kwargs['context'] = _NoDaemonContext()
-        super(NestablePool, self).__init__(*args, **kwargs)
 
 
 # Cache result if we are running in parallel
@@ -364,6 +389,9 @@ def _processSubject(subject_df, fixed_params_names, fixed_params_vals,
         #   generation, so a worker pool would only add IPC/pickle overhead.
         # The upstream warning in ``simulateDDM`` rejects --num-cpus != 1
         # for MLE for the same reason.
+        # Per-candidate DE loss trace (in-process: MLE/joint is single-process
+        # vectorized). Appended to by the objective wrapper each generation.
+        candidate_trace = []
         if joint_mode:
             # Joint objective: MLE term stays on the GPU-vectorized population
             # path; Chi² is looped per candidate on CPU and combined. The Chi²
@@ -374,10 +402,11 @@ def _processSubject(subject_df, fixed_params_names, fixed_params_vals,
                 fixed_params_names, fixed_params_vals,
                 logicFn_x_idxs, logicFn_fix_idxs, biasFn_x_idxs, biasFn_fix_idxs,
                 driftFn_x_idxs, driftFn_fix_idxs, noiseFn_x_idxs,
-                noiseFn_fix_idxs, n_mle, n_chi2)
+                noiseFn_fix_idxs, ref_mle, ref_chi2, candidate_trace)
         else:
             objective = _mleVectorizedObjectiveWrapper
-            objective_args = (fit_params_names, prepared_subject, model_config)
+            objective_args = (fit_params_names, prepared_subject, model_config,
+                              candidate_trace)
         res = differential_evolution(
             objective,
             bounds=fit_params_bounds,
@@ -385,7 +414,7 @@ def _processSubject(subject_df, fixed_params_names, fixed_params_vals,
             x0=fit_params_init,
             disp=True,
             workers=num_workers,
-            polish=True,
+            polish=False,
             popsize=population_info["scipy_popsize"],
             updating="deferred",
             vectorized=True,
@@ -409,6 +438,8 @@ def _processSubject(subject_df, fixed_params_names, fixed_params_vals,
                   f"(ref_chi2={dict_res['ref_chi2']:.6g}), "
                   f"total={dict_res['total_loss']:.6g}, "
                   f"de_fun={float(res.fun):.6g}")
+        dict_res["candidate_losses_df"] = _build_candidate_loss_df(
+            candidate_trace, fit_params_names, model_config)
         print("MLE backend info:", dict_res["mle_backend_info"])
         with open(evolve_dump_FP_subject, 'wb') as f:
             pickle.dump(dict_res, f)
@@ -430,6 +461,16 @@ def _processSubject(subject_df, fixed_params_names, fixed_params_vals,
                                   )
         return loss
 
+    # Per-candidate DE loss trace. The chisq DE may parallelize candidate evals
+    # across a process pool (workers=_pool.map), so when pooled we accumulate
+    # through a Manager().list() proxy that workers can append to across the
+    # process boundary; single-process runs use a plain in-process list.
+    if callable(workers):
+        trace_manager = multiprocessing.Manager()
+        candidate_trace = trace_manager.list()
+    else:
+        trace_manager = None
+        candidate_trace = []
     res = differential_evolution(_makeOneRunWrapper,
                                  bounds=fit_params_bounds,
                                  args=(fit_params_names,
@@ -439,6 +480,7 @@ def _processSubject(subject_df, fixed_params_names, fixed_params_vals,
                                        biasFn_x_idxs, biasFn_fix_idxs,
                                        driftFn_x_idxs, driftFn_fix_idxs,
                                        noiseFn_x_idxs, noiseFn_fix_idxs,
+                                       candidate_trace,
                                        ),
                                  x0=fit_params_init,
                                  disp=True,
@@ -449,6 +491,9 @@ def _processSubject(subject_df, fixed_params_names, fixed_params_vals,
                                 popsize=100,
                                 mutation=(0.5, 1.5),
                                 )
+    candidate_trace = list(candidate_trace)  # drain proxy → plain list
+    if trace_manager is not None:
+        trace_manager.shutdown()
 
     dict_res = dict(OptimRes=res,
                     fixed_params_names=fixed_params_names,
@@ -466,6 +511,8 @@ def _processSubject(subject_df, fixed_params_names, fixed_params_vals,
                     noise_dt_scaling="sqrt_dt",
                     fit_finish_time=datetime.datetime.now().isoformat(
                         timespec="seconds"),
+                    candidate_losses_df=_build_candidate_loss_df(
+                        candidate_trace, fit_params_names, model_config=None),
                     )
 
     with open(evolve_dump_FP_subject, 'wb') as f:
@@ -1008,7 +1055,6 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
                            uses_asym_q=uses_asym_q, uses_asym_rr=uses_asym_rr,
                            uses_scaled_bound=scale_bound)
 
-    IS_PARALLEL_EXECUTION_ENABLED = False
     is_gpu_mle = fit_mode == "mle" and model_config.requires_gpu
     if num_cpus is None:
         if is_gpu_mle:
@@ -1026,20 +1072,18 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
                     f"fit_mode='mle' with GPU backend {model_config.mle_array_backend} "
                     f"requires num_cpus=1; got {num_cpus}.")
 
-    if IS_PARALLEL_EXECUTION_ENABLED:
-        workers = num_cpus / 2
-        workers = max(workers, 1)
+    if num_cpus != 1:
+        # Reusable pool to avoid ulimit file exhaustion. This parallelizes the
+        # chisq DE's per-candidate evaluations across cores (scipy `workers`);
+        # MLE forces num_cpus=1 above, so it never builds a pool.
+        if _pool is None or _pool._processes != num_cpus:
+            _pool = multiprocessing.Pool(num_cpus)
+        workers = _pool.map
     else:
-        if num_cpus != 1:
-            # Reusable pool to avoid ulimit file exhaustion
-            if _pool is None or _pool._processes != num_cpus:
-                _pool = multiprocessing.Pool(num_cpus)
-            workers = _pool.map
-        else:
-            assert num_cpus == 1
-            workers = num_cpus
-            global _running_locally
-            _running_locally = True
+        assert num_cpus == 1
+        workers = num_cpus
+        global _running_locally
+        _running_locally = True
 
 
     partialProcess = partial(_processSubject,
@@ -1061,40 +1105,25 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
                              model_config=model_config,
                              ref_mle_FP=ref_mle_FP,
                              ref_chi2_FP=ref_chi2_FP)
-    if not IS_PARALLEL_EXECUTION_ENABLED:
-        for subject in remaining_subjects:
-            subject_df = df[df.Name == subject]
-            if not _running_locally:
-                dump_FP = pathlib.Path(f"data/RLModel/df_dump/{fit_mode}_"
-                                       f"{subject}_{driftFn_str}"
-                                       f"_{noiseFn_str}_{biasFn_str}.pkl")
-                if not dump_FP.parent.exists():
-                    dump_FP.parent.mkdir(exist_ok=True)
-                print("Dumping:", dump_FP)
-                subject_df.to_pickle(dump_FP)
-                subject_df = dump_FP
-            dict_res = partialProcess(subject_df)
-            evolvs_res[subject] = dict_res
-            if not dry_run:
-                # Reload-merge save (not a full overwrite) so concurrent
-                # processes fitting other subjects aren't clobbered.
-                _merge_save_evolve(evolve_dump_FP, subject, dict_res)
-            print("Subject:", subject, "done")
-            if dry_run:
-                break
-    else:
-        with NestablePool(3) as p:
-            for dict_res in p.imap_unordered(partialProcess,
-                                             [df[df.Name == subject] for subject in remaining_subjects]):
-                subject_df = dict_res["subject_df"]
-                subject = subject_df.Name.iloc[0]
-                evolvs_res[subject] = dict_res
-                if not dry_run:
-                    # Reload-merge save (not a full overwrite) so concurrent
-                    # processes fitting other subjects aren't clobbered.
-                    _merge_save_evolve(evolve_dump_FP, subject, dict_res)
-                print("Subject:", subject, "done")
-                if dry_run:
-                    break
+    for subject in remaining_subjects:
+        subject_df = df[df.Name == subject]
+        if not _running_locally:
+            dump_FP = pathlib.Path(f"data/RLModel/df_dump/{fit_mode}_"
+                                   f"{subject}_{driftFn_str}"
+                                   f"_{noiseFn_str}_{biasFn_str}.pkl")
+            if not dump_FP.parent.exists():
+                dump_FP.parent.mkdir(exist_ok=True)
+            print("Dumping:", dump_FP)
+            subject_df.to_pickle(dump_FP)
+            subject_df = dump_FP
+        dict_res = partialProcess(subject_df)
+        evolvs_res[subject] = dict_res
+        if not dry_run:
+            # Reload-merge save (not a full overwrite) so concurrent
+            # processes fitting other subjects aren't clobbered.
+            _merge_save_evolve(evolve_dump_FP, subject, dict_res)
+        print("Subject:", subject, "done")
+        if dry_run:
+            break
 
     return evolvs_res
