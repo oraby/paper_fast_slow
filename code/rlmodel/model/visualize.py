@@ -18,6 +18,8 @@ import pandas as pd
 from inspect import signature
 import pathlib
 import os
+import pickle
+import re
 
 
 # Sliders that are NOT a kwarg of any drift/bias/noise/logic function but
@@ -103,6 +105,70 @@ def _scaled_bound_suffix(all_widgets):
             else "")
 
 
+def _weight_mode_suffix(all_widgets):
+    """Return the joint-loss weight suffix selected in the "Joint Wt" dropdown
+    (e.g. ``_mleW1_chi2W0.5``), or ``""`` for the pure / "None" option.
+
+    A fourth orthogonal variant axis alongside asym / Scale-How: the dropdown
+    value IS the suffix ``fit.evolveFP`` appends to joint MLE+Chi² fits, so the
+    GUI looks up the exact weight variant. Appended LAST (after scaledB),
+    matching evolveFP's suffix order and the notebook's ``fit_key``.
+    """
+    if "Joint Wt" in all_widgets:
+        return str(all_widgets["Joint Wt"].value)
+    return ""
+
+
+def _variant_suffix(all_widgets):
+    """The composed model-variant filename suffix — asym, then scaledB, then
+    joint weights — in ``fit.evolveFP`` order.
+
+    Single source of truth so the two consumers can't drift apart:
+    ``_preferred_modes_for`` (which builds the saved-fit mode key for the
+    title / Reset / auto-apply lookups) and ``updateGUI``'s variant-change
+    detector (which decides whether to re-pull a fit's params into the
+    sliders). They were independently concatenating these parts, and when the
+    "Joint Wt" axis was added to only the former, changing the dropdown updated
+    the title but never re-triggered the auto-apply — the figure stayed stale
+    until a manual Reset.
+    """
+    return (_asym_mode_suffix(all_widgets) + _scaled_bound_suffix(all_widgets)
+            + _weight_mode_suffix(all_widgets))
+
+
+# Joint-loss weight suffix as written by fit.evolveFP (``_mleW{m}_chi2W{c}``).
+_WEIGHT_SUFFIX_IN_KEY_RE = re.compile(
+    r"(_mleW[-+0-9.eE]+_chi2W[-+0-9.eE]+)")
+
+
+def _discover_weight_suffixes(subjects_defaults):
+    """``[(label, suffix)]`` joint-weight options for the "Joint Wt" dropdown,
+    discovered from the loaded fit cache. Always leads with the pure
+    ``("None", "")`` option; each joint variant present anywhere in the cache
+    adds one entry (``_mleW1_chi2W0.5`` → label ``mleW=1 chi2W=0.5``)."""
+    suffixes = set()
+    stack = [subjects_defaults]
+    while stack:
+        node = stack.pop()
+        if not isinstance(node, dict):
+            continue
+        # A fit-entry leaf — match nothing, don't descend into the payload.
+        if "result" in node or "params" in node:
+            continue
+        for key, val in node.items():
+            m = _WEIGHT_SUFFIX_IN_KEY_RE.search(str(key))
+            if m:
+                suffixes.add(m.group(1))
+            else:
+                stack.append(val)
+    options = [("None", "")]
+    for suffix in sorted(suffixes):
+        label = (suffix.lstrip("_").replace("_", " ")
+                 .replace("mleW", "mleW=").replace("chi2W", "chi2W="))
+        options.append((label, suffix))
+    return options
+
+
 def _resolved_drift_fn_value(all_widgets):
     """Read the Drift Fn dropdown's value and resolve any
     ``RewardRate*`` alias to the canonical ``DRIFT_FN_DICT`` key.
@@ -123,10 +189,11 @@ def _resolved_drift_fn_value(all_widgets):
 def _preferred_modes_for(base_mode, all_widgets):
     """Build the strict saved-fit mode key for the current checkbox state.
 
-    Each ticked checkbox contributes a suffix to the key we look up:
-    ``mle_asymQ`` / ``mle_asymRR`` / ``mle_asymQRR`` for asym + Q/RR, and
-    ``_scaledB`` for the BOUND-fitted axis. Suffix ordering matches
-    ``fit.evolveFP``: asym first, then scaledB.
+    Each ticked checkbox / dropdown contributes a suffix to the key we look
+    up: ``mle_asymQ`` / ``mle_asymRR`` / ``mle_asymQRR`` for asym + Q/RR,
+    ``_scaledB`` for the BOUND-fitted axis, and ``_mleW{m}_chi2W{c}`` for the
+    "Joint Wt" joint-loss variant. Suffix ordering matches ``fit.evolveFP``:
+    asym, then scaledB, then joint weights.
 
     Returns a SINGLE-ELEMENT tuple by design — strict matching only.
     Earlier versions returned a fallback chain (``mle_asymQ`` → ``mle``
@@ -145,9 +212,7 @@ def _preferred_modes_for(base_mode, all_widgets):
     which iterate over the returned value — strict matching is just the
     1-element case of "walk the chain".
     """
-    asym_suffix = _asym_mode_suffix(all_widgets)
-    scaled_b_suffix = _scaled_bound_suffix(all_widgets)
-    return (f"{base_mode}{asym_suffix}{scaled_b_suffix}",)
+    return (f"{base_mode}{_variant_suffix(all_widgets)}",)
 
 
 def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
@@ -168,8 +233,11 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
                 "Bound" if cached_drift.startswith("Bound-RewardRate")
                 else "Noise")
 
-    drop_downs_labels = ["Scale-How", "Subject", "DV", "Drift Fn", "Bias Fn",
-                         "Psychometric", "Noise Fn"]
+    drop_downs_labels = ["Scale-How", "Joint Wt", "Subject", "DV", "Drift Fn",
+                         "Bias Fn", "Psychometric", "Noise Fn"]
+    # Joint-loss weight variants discovered from the loaded fit cache (the
+    # "Joint Wt" dropdown), leading with the pure ("None", "") option.
+    weight_suffix_options = _discover_weight_suffixes(subjects_defaults)
 
     # The two asym checkboxes are orthogonal to the bias / drift / noise
     # dropdown selection — they enable ALPHA_UNREWARDED / BETA_UNREWARDED
@@ -259,6 +327,16 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
             options_str = ["Noise", "Bound"]
             values = options_str
             default_val_idx = 0
+        elif label == "Joint Wt":
+            # Joint MLE+Chi² weight variant, a fourth orthogonal model axis
+            # (like asym / Scale-How). ``None`` (value "") is the pure fit;
+            # other entries are the ``_mleW{m}_chi2W{c}`` suffixes discovered
+            # in the loaded cache. The selected suffix flows into the saved-fit
+            # mode key via ``_weight_mode_suffix`` / ``_preferred_modes_for``.
+            options_str = [label_text for label_text, _suffix
+                           in weight_suffix_options]
+            values = [suffix for _label_text, suffix in weight_suffix_options]
+            default_val_idx = 0
         else:
             raise ValueError(f"Unknown label: {label}")
 
@@ -337,6 +415,7 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
                   checkbox_widgets.pop("Asymmetric Q-update"),
                   slider_widgets.pop("ALPHA_UNREWARDED"),]
     third_col = [drop_down_widgets.pop("Subject"),
+                 drop_down_widgets.pop("Joint Wt"),
                  drop_down_widgets.pop("DV"),
                  drop_down_widgets.pop("Psychometric"),
                  drop_down_widgets.pop("Noise Fn"),
@@ -371,7 +450,7 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
     last_driftFn = None
     last_biasFn = None
     last_noiseFn = None
-    last_variant_suffix = None   # composed asym + Scale-How filename suffix
+    last_variant_suffix = None   # composed asym + Scale-How + Joint-Wt suffix
     last_loss = None
     last_mle_loss = None
     last_mle_loss_source = None
@@ -398,8 +477,12 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
         # title's "MLE Loss:" (label says MLE) stay strict-MLE-or-
         # nothing. Here we'd rather show *some* fit's params than leave
         # the sliders stale from the previous subject.
-        cur_variant_suffix = (
-            _asym_mode_suffix(all_widgets) + _scaled_bound_suffix(all_widgets))
+        # Same composition the saved-fit mode key uses (see _variant_suffix):
+        # this MUST include the "Joint Wt" weight suffix, else changing the
+        # dropdown wouldn't register as a variant change and the auto-apply
+        # below wouldn't re-pull the fit's params — the title would update but
+        # the figure would stay stale until a manual Reset.
+        cur_variant_suffix = _variant_suffix(all_widgets)
         cur_driftFn_resolved = _resolved_drift_fn_value(all_widgets)
         if ((last_subject != cur_subject) or (last_driftFn != cur_driftFn_resolved) or
             (last_biasFn != all_widgets["Bias Fn"].value) or
@@ -606,6 +689,10 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
             fit_entry, _preferred_modes_for("mle", all_widgets))
         if stored_mle_loss is None:
             stored_mle_loss = _stored_mle_loss_from_df(df)
+        # Joint MLE+Chi² breakdown for the saved variant (None for non-joint
+        # fits) → second title line reconstructing how the total was built.
+        joint_info = _joint_breakdown_from_fit_entry(
+            fit_entry, _preferred_modes_for("mle", all_widgets))
         if run_mle:
             run_mle_btn = all_widgets["Run MLE"]
             old_desc = run_mle_btn.description
@@ -666,6 +753,7 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
                                is_small_fig_mode=is_small_fig_mode,
                                mle_loss=last_mle_loss,
                                mle_loss_source=last_mle_loss_source,
+                               joint_info=joint_info,
                                **updatePlots_kwargs)
         # Copied from pyddm.plot.model_gui_jupyter
         # Set the "update" button back to False, but don't trigger a redraw
@@ -1004,6 +1092,97 @@ def _stored_mle_loss_from_fit_entry(fit_entry, preferred_modes=("mle",)):
             if _is_finite_number(value):
                 return float(value)
     return None
+
+
+def _joint_breakdown_from_fit_entry(fit_entry, preferred_modes=("mle",)):
+    """Pull the joint MLE+Chi² breakdown (weights, part losses, references and
+    their obtain times) from a saved fit entry for the loss-title's second
+    line. Returns ``None`` unless the matched mode is a joint fit
+    (``joint_mode``). Mirrors ``_stored_mle_loss_from_fit_entry``'s strict
+    mode walk, so the breakdown reflects the EXACT variant the GUI selected."""
+    for mode in preferred_modes:
+        mode_entry = _fit_entry_for_mode(fit_entry, mode)
+        if mode_entry is None:
+            continue
+        result = _fit_entry_result(mode_entry)
+        if not result.get("joint_mode"):
+            continue
+        return {k: result.get(k) for k in (
+            "total_loss", "mle_mle_weight", "mle_chi2_weight",
+            "mle_part_loss", "chi2_part_loss", "ref_mle", "ref_chi2",
+            "ref_mle_time", "ref_chi2_time")}
+    return None
+
+
+# Joint-loss weight suffix written by fit.evolveFP (``_mleW{m}_chi2W{c}``).
+_FIT_WEIGHT_SUFFIX_RE = re.compile(
+    r"_mleW(?P<m>[-+0-9.eE]+)_chi2W(?P<c>[-+0-9.eE]+)$")
+
+
+def _parse_fit_filename(stem):
+    """``(fit_mode, mle_weight, chi2_weight)`` from a result-file stem; weights
+    default to ``(1.0, 0.0)`` when the joint suffix is absent (pure MLE/chisq)."""
+    fit_mode = stem.split("_", 1)[0]
+    m = _FIT_WEIGHT_SUFFIX_RE.search(stem)
+    if m:
+        return fit_mode, float(m.group("m")), float(m.group("c"))
+    return fit_mode, 1.0, 0.0
+
+
+def discover_saved_fits(subject, results_dir="data/RLModel"):
+    """List the saved fits available on disk for ``subject``.
+
+    Scans ``results_dir`` for ``mle_*`` / ``chisq_*`` ``{subject: payload}``
+    pickles and returns one dict per fit that has an entry for the subject:
+    ``{label, fit_mode, model_file, drift_fn, bias_fn, noise_fn, mle_weight,
+    chi2_weight, save_time, path}``. Model identity / weights come from the
+    saved ``model_config`` when present (MLE), with the filename as fallback.
+
+    Drives a 'saved fit' selector in the GUI: the user picks among the
+    (model x weight) combinations that actually exist on disk rather than
+    hand-configuring widgets and hoping a matching file was fit. Sorted by
+    fit_mode, model, then weights for a stable dropdown order."""
+    fits = []
+    results_path = pathlib.Path(results_dir)
+    if not results_path.exists():
+        return fits
+    for fp in sorted(results_path.glob("*.pkl")):
+        if not (fp.name.startswith("mle_") or fp.name.startswith("chisq_")):
+            continue
+        try:
+            with open(fp, "rb") as f:
+                data = pickle.load(f)
+        except Exception:  # noqa: BLE001 — skip any unreadable pickle
+            continue
+        if not isinstance(data, dict) or subject not in data:
+            continue
+        payload = data[subject]
+        cfg = payload.get("model_config") if isinstance(payload, dict) else None
+        fit_mode, w_mle, w_chi2 = _parse_fit_filename(fp.stem)
+        if cfg is not None:
+            w_mle = float(getattr(cfg, "mle_mle_weight", w_mle))
+            w_chi2 = float(getattr(cfg, "mle_chi2_weight", w_chi2))
+        drift = getattr(cfg, "drift_fn_str", None)
+        bias = getattr(cfg, "bias_fn_str", None)
+        noise = getattr(cfg, "noise_fn_str", None)
+        save_time = (payload.get("fit_finish_time")
+                     if isinstance(payload, dict) else None)
+        model_desc = (f"{drift}/{bias}/{noise}" if drift is not None
+                      else fp.stem)
+        if w_chi2 and w_chi2 > 0.0:
+            label = f"{fit_mode} (mleW={w_mle:g}, chi2W={w_chi2:g}) | {model_desc}"
+        else:
+            label = f"{fit_mode} | {model_desc}"
+        if save_time:
+            label += f"  [{save_time}]"
+        fits.append(dict(
+            label=label, fit_mode=fit_mode, model_file=fp.stem,
+            drift_fn=drift, bias_fn=bias, noise_fn=noise,
+            mle_weight=w_mle, chi2_weight=w_chi2, save_time=save_time,
+            path=str(fp)))
+    fits.sort(key=lambda d: (d["fit_mode"], d["model_file"],
+                             d["mle_weight"], d["chi2_weight"]))
+    return fits
 
 
 def _evaluate_mle_loss_for_gui(df, params, driftFn_str, biasFn_str, noiseFn_str,

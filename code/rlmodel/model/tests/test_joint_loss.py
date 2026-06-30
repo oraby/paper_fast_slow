@@ -65,9 +65,9 @@ def _config(w_mle, w_chi2):
 # ---------------------------------------------------------------------------
 
 def _call_wrapper(monkeypatch, w_mle, w_chi2, mle_val, chi2_val,
-                  n_mle, n_chi2, n_cand=4):
+                  ref_mle, ref_chi2, n_cand=4):
     """Drive ``_jointVectorizedObjectiveWrapper`` with both terms stubbed to
-    constants so only the weighting/÷N arithmetic is exercised."""
+    constants so only the weighting / loss÷reference arithmetic is exercised."""
     monkeypatch.setattr(fit, "objective_from_population",
                         lambda xm, names, df, cfg: np.full(xm.shape[1], mle_val))
     monkeypatch.setattr(fit, "_candidate_to_makeOneRun_kwargs",
@@ -77,31 +77,33 @@ def _call_wrapper(monkeypatch, w_mle, w_chi2, mle_val, chi2_val,
     return fit._jointVectorizedObjectiveWrapper(
         x, np.array(["A", "B", "C"]), object(), _config(w_mle, w_chi2),
         None, None, None, None, None, None, None, None, None, None,
-        n_mle, n_chi2)
+        ref_mle, ref_chi2)
 
 
 def test_combiner_weighted_sum(monkeypatch):
     out = _call_wrapper(monkeypatch, 2.0, 3.0, mle_val=8.0, chi2_val=6.0,
-                        n_mle=4, n_chi2=2)
+                        ref_mle=4.0, ref_chi2=2.0)
     # 2*(8/4) + 3*(6/2) = 4 + 9 = 13, for every candidate.
     assert out.shape == (4,)
     assert np.allclose(out, 13.0)
 
 
 def test_combiner_equal_weights(monkeypatch):
-    out = _call_wrapper(monkeypatch, 1.0, 1.0, 8.0, 6.0, n_mle=8, n_chi2=6)
+    out = _call_wrapper(monkeypatch, 1.0, 1.0, 8.0, 6.0, ref_mle=8.0, ref_chi2=6.0)
     assert np.allclose(out, 2.0)  # (8/8) + (6/6)
 
 
-def test_trial_count_invariance(monkeypatch):
-    """Each term ÷ its own valid-trial count → the per-trial value is invariant
-    when the raw term and the count scale together (the whole point of ÷N)."""
-    small = _call_wrapper(monkeypatch, 0.0, 1.0, 0.0, chi2_val=6.0,
-                          n_mle=1, n_chi2=6)
-    big = _call_wrapper(monkeypatch, 0.0, 1.0, 0.0, chi2_val=60.0,
-                        n_mle=1, n_chi2=60)
-    assert np.allclose(small, 1.0)
-    assert np.allclose(small, big)
+def test_part_is_one_at_reference(monkeypatch):
+    """Each component = loss / reference, so when a candidate's loss equals the
+    component's reference (its standalone optimum) that part is exactly 1 — the
+    property that makes the two terms commensurable."""
+    out = _call_wrapper(monkeypatch, 1.0, 1.0, mle_val=30.0, chi2_val=6.0,
+                        ref_mle=30.0, ref_chi2=6.0)
+    assert np.allclose(out, 2.0)  # 30/30 + 6/6
+    # A worse Chi² (loss above its reference) pushes that part above 1.
+    worse = _call_wrapper(monkeypatch, 0.0, 1.0, 0.0, chi2_val=12.0,
+                          ref_mle=1.0, ref_chi2=6.0)
+    assert np.allclose(worse, 2.0)  # 12/6
 
 
 def test_chi2_skipped_when_weight_zero(monkeypatch):
@@ -192,28 +194,36 @@ def _dry_run(monkeypatch, **weight_kwargs):
 
 
 def test_simulateDDM_joint_dry_run_reports_components(monkeypatch):
-    # Stub the Chi² simulation to a constant — its numerics are covered by the
-    # chisq tests; here we verify the dispatch + diagnostics wiring.
+    # Stub the Chi² simulation + the on-disk references so the test needs no
+    # files; here we verify the dispatch + breakdown wiring.
     monkeypatch.setattr(fit, "makeOneRun", lambda **k: 12.0)
+    monkeypatch.setattr(fit, "_load_reference_loss",
+                        lambda fp, subject: (4.0, "2026-01-01T00:00:00"))
     payload = _dry_run(monkeypatch, mle_mle_weight=1.0, mle_chi2_weight=1.0)["S1"]
     assert payload["joint_mode"] is True
     assert payload["mle_mle_weight"] == 1.0
     assert payload["mle_chi2_weight"] == 1.0
-    assert payload["n_mle"] >= 1 and payload["n_chi2"] >= 1
-    assert np.isfinite(payload["mle_loss_pt"])
-    # Chi² term is the stubbed value ÷ valid-trial count.
-    assert payload["chi2_loss_pt"] == pytest.approx(12.0 / payload["n_chi2"])
+    assert payload["ref_mle"] == 4.0 and payload["ref_chi2"] == 4.0
+    assert payload["ref_mle_time"] == "2026-01-01T00:00:00"
+    assert np.isfinite(payload["mle_part_loss"])
+    # Chi² part = stubbed Chi² ÷ reference.
+    assert payload["chi2_part_loss"] == pytest.approx(12.0 / 4.0)
+    # total = w_mle*mle_part + w_chi2*chi2_part, reconstructable from the fields.
+    assert payload["total_loss"] == pytest.approx(
+        payload["mle_part_loss"] + payload["chi2_part_loss"])
 
 
 def test_simulateDDM_pure_mle_dry_run_skips_chi2(monkeypatch):
-    # Default mle_chi2_weight=0.0 ⇒ the joint path is never taken and the Chi²
-    # simulation is never invoked (the stub would raise if it were).
+    # Default mle_chi2_weight=0.0 ⇒ the joint path is never taken: no Chi²
+    # simulation and no reference lookup (both stubs would raise if hit).
     def _boom(**k):
         raise AssertionError("Chi² must not run when chi2-weight == 0")
     monkeypatch.setattr(fit, "makeOneRun", _boom)
+    monkeypatch.setattr(fit, "_load_reference_loss", lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError("references must not load when chi2-weight == 0")))
     payload = _dry_run(monkeypatch)["S1"]
     assert "joint_mode" not in payload
-    assert "chi2_loss_pt" not in payload
+    assert "chi2_part_loss" not in payload
     assert np.isfinite(payload["neg_loglik"])
 
 
@@ -237,13 +247,18 @@ def test_default_weights_validate():
     validate_mle_config(_config(1.0, 0.0))
 
 
-def test_weights_excluded_from_evolveFP():
+def test_evolveFP_weight_suffix():
     params = inspect.signature(fit.evolveFP).parameters
-    assert "mle_mle_weight" not in params
-    assert "mle_chi2_weight" not in params
-    # The joint weights don't enter the saved-fit path, so an A/B run overwrites
-    # the same pickle (by design).
-    path = fit.evolveFP(
-        drift_fn_str="Classic", bias_fn_str="None_", noise_fn_str="Normal(0, 1)",
-        t_dur=3, dt=0.005, is_loss_no_dir=False, fit_mode="mle")
-    assert str(path).endswith("_3s_dt0.005.pkl")
+    assert "mle_mle_weight" in params and "mle_chi2_weight" in params
+    base = dict(drift_fn_str="Classic", bias_fn_str="None_",
+                noise_fn_str="Normal(0, 1)", t_dur=3, dt=0.005,
+                is_loss_no_dir=False, fit_mode="mle")
+    # Pure MLE (chi2_weight=0) keeps the canonical name → it stays the reference
+    # and old pickles still resolve; the mle weight alone adds no suffix.
+    assert str(fit.evolveFP(**base)).endswith("_3s_dt0.005.pkl")
+    assert str(fit.evolveFP(**base, mle_mle_weight=2.0)).endswith(
+        "_3s_dt0.005.pkl")
+    # Joint (chi2_weight>0) encodes BOTH weights so variants don't collide.
+    assert str(fit.evolveFP(**base, mle_mle_weight=1.0,
+                            mle_chi2_weight=0.5)).endswith(
+        "_3s_dt0.005_mleW1_chi2W0.5.pkl")

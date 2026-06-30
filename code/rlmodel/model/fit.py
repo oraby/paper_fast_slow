@@ -124,16 +124,20 @@ def _jointVectorizedObjectiveWrapper(
         fixed_params_names, fixed_params_vals,
         logicFn_x_idxs, logicFn_fix_idxs, biasFn_x_idxs, biasFn_fix_idxs,
         driftFn_x_idxs, driftFn_fix_idxs, noiseFn_x_idxs, noiseFn_fix_idxs,
-        n_mle, n_chi2):
-    """Joint MLE + Chi² DE objective: ``w_mle·(MLE/N_mle) + w_chi2·(Chi2/N_chi2)``.
+        ref_mle, ref_chi2, trace=None):
+    """Joint MLE + Chi² DE objective:
+    ``w_mle·(MLE/ref_mle) + w_chi2·(Chi2/ref_chi2)``.
 
     The MLE term stays on the GPU-vectorized whole-population path
     (``objective_from_population`` — one solver call per generation). The Chi²
     term is the existing generative Ratcliff-quantile loss, computed per
     candidate on CPU via ``makeOneRun`` (numpy; independent of the GPU MLE
-    call). Each term is divided by its own valid-trial count so a single weight
-    transfers across subjects regardless of trial count. SciPy passes
-    ``x_matrix`` as ``(n_params, S)`` and expects ``(S,)`` back.
+    call). Each term is divided by a fixed per-subject **reference loss** — the
+    component's standalone-best loss (``ref_mle`` = pure-MLE chi2_weight=0;
+    ``ref_chi2`` = ``--fit-mode chisq``) — so each lands near 1 at its own
+    optimum and the two are commensurable despite different raw scales (both
+    references are guaranteed positive at load time). SciPy passes ``x_matrix``
+    as ``(n_params, S)`` and expects ``(S,)`` back.
 
     The Chi² simulation's ``df`` is taken from ``fixed_params_vals[0]`` (set to
     the subject df in ``_processSubject``) via the dispatch index arrays — the
@@ -151,13 +155,15 @@ def _jointVectorizedObjectiveWrapper(
     n_cand = x_matrix.shape[1]
     w_mle = float(model_config.mle_mle_weight)
     w_chi2 = float(model_config.mle_chi2_weight)
+    ref_mle = float(ref_mle)
+    ref_chi2 = float(ref_chi2)
 
     if w_mle > 0.0:
         mle_negll = np.asarray(
             objective_from_population(
                 x_matrix, x_params_names, prepared_subject, model_config),
             dtype=float)
-        mle_pt = mle_negll / max(int(n_mle), 1)
+        mle_pt = mle_negll / ref_mle
     else:
         mle_pt = np.zeros(n_cand, dtype=float)
 
@@ -173,12 +179,13 @@ def _jointVectorizedObjectiveWrapper(
             if not np.isfinite(chi2_raw):
                 # Keep DE selection finite; a degenerate sim ranks as worst.
                 chi2_raw = 1e12
-            chi2_pt[s] = chi2_raw / max(int(n_chi2), 1)
+            chi2_pt[s] = chi2_raw / ref_chi2
     else:
         chi2_pt = np.zeros(n_cand, dtype=float)
 
-    return w_mle * mle_pt + w_chi2 * chi2_pt
 
+    total = w_mle * mle_pt + w_chi2 * chi2_pt
+    return total
 
 class _NoDaemonProcess(multiprocessing.Process):
     @property
@@ -212,7 +219,8 @@ def _processSubject(subject_df, fixed_params_names, fixed_params_vals,
                     biasFn_x_idxs, biasFn_fix_idxs,
                     include_Q, include_RewardRate, dt, t_dur,
                     is_loss_no_dir, workers, evolve_dump_FP, dry_run,
-                    fit_mode, model_config=None):
+                    fit_mode, model_config=None,
+                    ref_mle_FP=None, ref_chi2_FP=None):
 
     if not _running_locally:
         assert isinstance(subject_df, (str, pathlib.Path))
@@ -284,32 +292,44 @@ def _processSubject(subject_df, fixed_params_names, fixed_params_vals,
         print("MLE population info:", population_info)
 
         # Joint MLE+Chi² mode: a non-zero --mle-chi2-weight augments the MLE
-        # objective with the generative Ratcliff-quantile Chi² loss, each term
-        # made trial-count-invariant by ÷ valid-trial count. mle_chi2_weight==0
-        # (default) keeps the byte-identical pure-MLE driver below.
+        # objective with the generative Ratcliff-quantile Chi² loss. Each
+        # component is normalized by a fixed per-subject REFERENCE loss — the
+        # component's standalone-best loss (pure-MLE chi2_weight=0 for ref_mle,
+        # --fit-mode chisq for ref_chi2) — so the two terms are commensurable.
+        # References are loaded once here; a missing one fails loudly.
+        # mle_chi2_weight==0 (default) keeps the byte-identical pure-MLE driver.
         joint_mode = float(model_config.mle_chi2_weight) > 0.0
-        n_mle = max(int(prepared_subject.valid.sum()), 1)
-        n_chi2 = max(int(subject_df.valid.sum()), 1) if joint_mode else 1
+        ref_mle = ref_chi2 = 1.0
+        ref_mle_time = ref_chi2_time = None
+        if joint_mode:
+            ref_mle, ref_mle_time = _load_reference_loss(ref_mle_FP, subject)
+            ref_chi2, ref_chi2_time = _load_reference_loss(ref_chi2_FP, subject)
 
         def _add_joint_diag(payload, x_vec):
-            """Attach the per-trial MLE / Chi² split + weights at ``x_vec``.
-
-            Reuses the pure-MLE ``neg_loglik`` already in ``payload`` for the
-            MLE term; recomputes Chi² at ``x_vec`` via the generative
-            simulation (``makeOneRun``)."""
+            """Attach the MLE / Chi² breakdown + references at ``x_vec`` so the
+            joint total ``w_mle·(mle/ref_mle) + w_chi2·(chi2/ref_chi2)`` is
+            reconstructable. Reuses the pure-MLE ``neg_loglik`` already in
+            ``payload`` for the MLE component; recomputes Chi² at ``x_vec`` via
+            the generative simulation (``makeOneRun``)."""
+            w_mle = float(model_config.mle_mle_weight)
+            w_chi2 = float(model_config.mle_chi2_weight)
+            mle_raw = float(payload["neg_loglik"])
             chi2_raw = float(makeOneRun(**_candidate_to_makeOneRun_kwargs(
                 np.asarray(x_vec, dtype=float), fit_params_names,
                 fixed_params_names, fixed_params_vals,
                 logicFn_x_idxs, logicFn_fix_idxs, biasFn_x_idxs, biasFn_fix_idxs,
                 driftFn_x_idxs, driftFn_fix_idxs, noiseFn_x_idxs,
                 noiseFn_fix_idxs)))
+            mle_part = mle_raw / ref_mle
+            chi2_part = chi2_raw / ref_chi2
             payload.update(
                 joint_mode=True,
-                mle_mle_weight=float(model_config.mle_mle_weight),
-                mle_chi2_weight=float(model_config.mle_chi2_weight),
-                n_mle=int(n_mle), n_chi2=int(n_chi2),
-                mle_loss_pt=float(payload["neg_loglik"]) / n_mle,
-                chi2_loss_pt=chi2_raw / n_chi2)
+                mle_mle_weight=w_mle, mle_chi2_weight=w_chi2,
+                mle_raw_loss=mle_raw, chi2_raw_loss=chi2_raw,
+                ref_mle=ref_mle, ref_chi2=ref_chi2,
+                ref_mle_time=ref_mle_time, ref_chi2_time=ref_chi2_time,
+                mle_part_loss=mle_part, chi2_part_loss=chi2_part,
+                total_loss=w_mle * mle_part + w_chi2 * chi2_part)
             return payload
 
         if dry_run:
@@ -325,8 +345,11 @@ def _processSubject(subject_df, fixed_params_names, fixed_params_vals,
             if joint_mode:
                 _add_joint_diag(payload, fit_params_init)
                 print("MLE+Chi² joint dry-run: "
-                      f"mle_loss_pt={payload['mle_loss_pt']:.6g}, "
-                      f"chi2_loss_pt={payload['chi2_loss_pt']:.6g}, "
+                      f"mle_part={payload['mle_part_loss']:.6g} "
+                      f"(ref_mle={payload['ref_mle']:.6g}), "
+                      f"chi2_part={payload['chi2_part_loss']:.6g} "
+                      f"(ref_chi2={payload['ref_chi2']:.6g}), "
+                      f"total={payload['total_loss']:.6g}, "
                       f"weights=({payload['mle_mle_weight']}, "
                       f"{payload['mle_chi2_weight']})")
             print("MLE backend info:", payload["mle_backend_info"])
@@ -380,9 +403,12 @@ def _processSubject(subject_df, fixed_params_names, fixed_params_vals,
         if joint_mode:
             _add_joint_diag(dict_res, res.x)
             print("MLE+Chi² joint fit: "
-                  f"mle_loss_pt={dict_res['mle_loss_pt']:.6g}, "
-                  f"chi2_loss_pt={dict_res['chi2_loss_pt']:.6g}, "
-                  f"joint={float(res.fun):.6g}")
+                  f"mle_part={dict_res['mle_part_loss']:.6g} "
+                  f"(ref_mle={dict_res['ref_mle']:.6g}), "
+                  f"chi2_part={dict_res['chi2_part_loss']:.6g} "
+                  f"(ref_chi2={dict_res['ref_chi2']:.6g}), "
+                  f"total={dict_res['total_loss']:.6g}, "
+                  f"de_fun={float(res.fun):.6g}")
         print("MLE backend info:", dict_res["mle_backend_info"])
         with open(evolve_dump_FP_subject, 'wb') as f:
             pickle.dump(dict_res, f)
@@ -457,18 +483,36 @@ def _evolveFPSubject(evolveFP : pathlib.Path, subject):
     print("evolve_subj_FP:", evolve_subj_FP)
     return pathlib.Path(evolve_subj_FP)
 
+def _weight_suffix(mle_mle_weight=1.0, mle_chi2_weight=0.0):
+    """Filename suffix encoding the joint-loss weights.
+
+    Only joint fits (``mle_chi2_weight > 0``) get a suffix; pure MLE
+    (chi2 weight 0) and chisq keep the canonical name so they remain the
+    normalization references and existing pickles still resolve. ``{:g}``
+    drops trailing zeros so the suffix round-trips cleanly (1.0 -> "1").
+    """
+    if float(mle_chi2_weight) > 0.0:
+        return (f"_mleW{float(mle_mle_weight):g}"
+                f"_chi2W{float(mle_chi2_weight):g}")
+    return ""
+
+
 def evolveFP(drift_fn_str, bias_fn_str, noise_fn_str, t_dur, dt,
             is_loss_no_dir, fit_mode,
             uses_asym_q=False, uses_asym_rr=False,
-            uses_scaled_bound=False):
+            uses_scaled_bound=False,
+            mle_mle_weight=1.0, mle_chi2_weight=0.0):
     """Build the saved-fit pickle path.
 
     The optional ``_asymQ`` / ``_asymRR`` / ``_asymQRR`` suffix carries
     the asymmetric-LR opt-ins orthogonally to the bias / drift / noise
     model identity. ``_scaledB`` further marks fits where BOUND is the
-    fitted axis (NOISE_SIGMA frozen) — see ``--scale-bound``. Suffix
-    ordering: asym first, then scaledB. Symmetric / fixed-bound fits
-    keep the original filename format unchanged.
+    fitted axis (NOISE_SIGMA frozen) — see ``--scale-bound``. A trailing
+    ``_mleW{m}_chi2W{c}`` marks joint MLE+Chi² fits so weight variants
+    don't overwrite each other (and the pure-MLE/chisq references
+    survive). Suffix ordering: asym, then scaledB, then weights.
+    Symmetric / fixed-bound / pure-MLE / chisq fits keep the original
+    filename format unchanged.
     """
     loss_no_dir_str = "" if not is_loss_no_dir else "_loss_no_dir"
     if uses_asym_q and uses_asym_rr:
@@ -480,11 +524,50 @@ def evolveFP(drift_fn_str, bias_fn_str, noise_fn_str, t_dur, dt,
     else:
         asym_suffix = ""
     scaled_bound_suffix = "_scaledB" if uses_scaled_bound else ""
+    weight_suffix = _weight_suffix(mle_mle_weight, mle_chi2_weight)
     main_str = (f"data/RLModel/{fit_mode}_{drift_fn_str}_"
                 f"bias{bias_fn_str}_{noise_fn_str}"
                 f"{loss_no_dir_str}_{t_dur}s_dt{dt}"
-                f"{asym_suffix}{scaled_bound_suffix}.pkl")
+                f"{asym_suffix}{scaled_bound_suffix}{weight_suffix}.pkl")
     return pathlib.Path(main_str)
+
+
+def _load_reference_loss(ref_FP, subject):
+    """Load a subject's reference loss for joint-loss normalization.
+
+    Returns ``(loss, fit_finish_time)`` from the saved merged result file
+    ``ref_FP`` (a ``{subject: payload}`` dict), using ``OptimRes.fun`` — the
+    fit's minimized loss. Raises with an actionable message if the file or the
+    subject entry is missing, or the reference isn't a positive finite number:
+    the ``loss / reference`` normalization needs a positive reference, else the
+    ratio would invert the optimization.
+    """
+    if ref_FP is None:
+        raise ValueError("Joint-loss normalization requires a reference path; "
+                         "got None (this should be set in simulateDDM).")
+    ref_path = pathlib.Path(ref_FP)
+    if not ref_path.exists():
+        raise FileNotFoundError(
+            f"Joint-loss normalization needs a reference fit at {ref_path}, "
+            f"which does not exist. Run that fit first: pure MLE with "
+            f"--mle-chi2-weight 0 (for ref_mle), and --fit-mode chisq "
+            f"(for ref_chi2), before the joint fit.")
+    with open(ref_path, "rb") as f:
+        ref_dict = pickle.load(f)
+    if subject not in ref_dict:
+        raise KeyError(
+            f"Reference fit {ref_path} has no entry for subject {subject!r}; "
+            f"available subjects: {sorted(ref_dict)}.")
+    payload = ref_dict[subject]
+    optim = payload.get("OptimRes") if isinstance(payload, dict) else None
+    loss = getattr(optim, "fun", None)
+    if loss is None or not np.isfinite(loss) or float(loss) <= 0.0:
+        raise ValueError(
+            f"Reference fit {ref_path} subject {subject!r} has a non-positive "
+            f"or non-finite reference loss ({loss!r}); reference normalization "
+            f"requires a positive reference loss.")
+    fit_time = payload.get("fit_finish_time") if isinstance(payload, dict) else None
+    return float(loss), fit_time
 
 
 def _merge_save_evolve(evolve_dump_FP, subject, dict_res):
@@ -908,7 +991,22 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
                               is_loss_no_dir, fit_mode,
                               uses_asym_q=uses_asym_q,
                               uses_asym_rr=uses_asym_rr,
-                              uses_scaled_bound=scale_bound)
+                              uses_scaled_bound=scale_bound,
+                              mle_mle_weight=mle_mle_weight,
+                              mle_chi2_weight=mle_chi2_weight)
+
+    # Joint-loss references (loss/ref normalization): the pure-MLE
+    # (chi2_weight=0) and chisq merged result files for THIS model. Built always
+    # (cheap path construction); only loaded per-subject in _processSubject when
+    # mle_chi2_weight>0.
+    ref_mle_FP = evolveFP(driftFn_str, biasFn_str, noiseFn_str, t_dur, dt,
+                          is_loss_no_dir, "mle",
+                          uses_asym_q=uses_asym_q, uses_asym_rr=uses_asym_rr,
+                          uses_scaled_bound=scale_bound)  # chi2_weight=0 → canonical
+    ref_chi2_FP = evolveFP(driftFn_str, biasFn_str, noiseFn_str, t_dur, dt,
+                           is_loss_no_dir, "chisq",
+                           uses_asym_q=uses_asym_q, uses_asym_rr=uses_asym_rr,
+                           uses_scaled_bound=scale_bound)
 
     IS_PARALLEL_EXECUTION_ENABLED = False
     is_gpu_mle = fit_mode == "mle" and model_config.requires_gpu
@@ -960,7 +1058,9 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
                              evolve_dump_FP=evolve_dump_FP,
                              dry_run=dry_run,
                              fit_mode=fit_mode,
-                             model_config=model_config)
+                             model_config=model_config,
+                             ref_mle_FP=ref_mle_FP,
+                             ref_chi2_FP=ref_chi2_FP)
     if not IS_PARALLEL_EXECUTION_ENABLED:
         for subject in remaining_subjects:
             subject_df = df[df.Name == subject]

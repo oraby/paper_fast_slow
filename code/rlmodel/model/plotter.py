@@ -52,7 +52,7 @@ def runAndPlot(df, fig, axs, include_Q, include_RewardRate, biasFn, driftFn,
                driftFn_df_cols=[], driftFn_kwargs={},
                noiseFn_df_cols=[], noiseFn_kwargs={},
                is_loss_no_dir=False, cached_subject_df=None,
-               mle_loss=None, mle_loss_source=None,
+               mle_loss=None, mle_loss_source=None, joint_info=None,
                verbose=True):
     # print("Updating plots")
 
@@ -130,7 +130,7 @@ def runAndPlot(df, fig, axs, include_Q, include_RewardRate, biasFn, driftFn,
     num_trials = len(df)
     fig.suptitle(_loss_title(
         subject, num_trials=num_trials, chi_square_loss=loss, mle_loss=mle_loss,
-        mle_loss_source=mle_loss_source), y=0.99)
+        mle_loss_source=mle_loss_source, joint_info=joint_info), y=0.99)
 
     global last_df
     last_df = df
@@ -144,14 +144,32 @@ def runAndPlot(df, fig, axs, include_Q, include_RewardRate, biasFn, driftFn,
 
 
 def _loss_title(subject, num_trials, chi_square_loss, mle_loss=None,
-                mle_loss_source=None):
+                mle_loss_source=None, joint_info=None):
     chi_text = _format_loss_value(chi_square_loss)
     mle_text = _format_loss_value(mle_loss)
     if mle_loss_source:
         mle_text = f"{mle_text} ({mle_loss_source})"
-    return (
+    title = (
         f"{subject} - Chi-Square Loss: {chi_text}, "
         f"MLE Loss: {mle_text} - {num_trials:,} Trials")
+    if joint_info:
+        title += "\n" + _format_joint_info(joint_info)
+    return title
+
+
+def _format_joint_info(info):
+    """Second title line reconstructing a joint MLE+Chi² total:
+    ``total = w_mle·(MLE/ref_mle) + w_chi2·(Chi2/ref_chi2)`` — shows the
+    weights, both part losses, and the reference losses + their obtain times so
+    the total is fully reconstructable from the title."""
+    def f(key):
+        return _format_loss_value(info.get(key))
+    return (
+        f"Joint total {f('total_loss')} = "
+        f"{f('mle_mle_weight')}·(MLE_part {f('mle_part_loss')}) + "
+        f"{f('mle_chi2_weight')}·(Chi²_part {f('chi2_part_loss')})  |  "
+        f"ref_MLE {f('ref_mle')} @ {info.get('ref_mle_time') or '?'}, "
+        f"ref_Chi² {f('ref_chi2')} @ {info.get('ref_chi2_time') or '?'}")
 
 
 def _format_loss_value(value):

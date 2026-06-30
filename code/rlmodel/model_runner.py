@@ -489,10 +489,12 @@ def main():
                       "fit at the same path)"))
         if args.mle_chi2_weight > 0.0:
             print(f"Joint MLE+Chi² loss ENABLED: mle_weight="
-                  f"{args.mle_mle_weight}, chi2_weight={args.mle_chi2_weight} "
-                  f"(each term ÷ valid-trial count). NOTE: no longer pure MLE; "
-                  f"AIC/BIC don't apply and the filename is unchanged so this "
-                  f"overwrites any existing fit at the same path.")
+                  f"{args.mle_mle_weight}, chi2_weight={args.mle_chi2_weight}. "
+                  f"Each term is normalized by its reference loss "
+                  f"(loss/ref): ref_mle = the pure-MLE (--mle-chi2-weight 0) "
+                  f"fit, ref_chi2 = the --fit-mode chisq fit — run those first. "
+                  f"NOTE: no longer pure MLE (AIC/BIC don't apply); the joint "
+                  f"weights are encoded in the saved filename.")
 
     # Translate the user-facing CPU/GPU knob into the two internal flags that
     # mle.MLEModelConfig + array_backend.resolve_array_backend understand:
@@ -532,7 +534,9 @@ def main():
                                       fit_mode=args.fit_mode,
                                       uses_asym_q=args.asym_q,
                                       uses_asym_rr=args.asym_rr,
-                                      uses_scaled_bound=args.scale_bound)
+                                      uses_scaled_bound=args.scale_bound,
+                                      mle_mle_weight=args.mle_mle_weight,
+                                      mle_chi2_weight=args.mle_chi2_weight)
         assert load_evolve_fp.exists(), f"File not found: {load_evolve_fp}"
         with open(load_evolve_fp, "rb") as f:
             evolve_res = pickle.load(f)
