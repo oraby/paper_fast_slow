@@ -17,16 +17,21 @@ DF_FP = "data/behavior/df_behavior.pkl"
 def loadDF(min_valid_trials=0, accepts_subjects=[], df_fp=DF_FP):
     df_behavior = pd.read_pickle(df_fp)
     if "EarlyWithdrawal" in df_behavior.columns:
-        df_ewd = df_behavior[df_behavior.EarlyWithdrawal == 1]
-        # Earlywithdrawl trials are never rewarded
-        df_behavior.loc[df_ewd.index, "ChoiceCorrect"] = 0
-        df_behavior.loc[df_ewd.index, "valid"] = False # Don't contribute to calculations
-        # print(df_ewd.ChoiceCorrect.isnull().sum(), df_ewd.ChoiceLeft.notnull().sum())
-        df_ewd_unknown_choices = df_behavior[df_behavior.index.isin(df_ewd.index) &
-                                             df_behavior.ChoiceLeft.isnull()]
+        df_ewd_mask = df_behavior.EarlyWithdrawal == 1
+        # df_ewd_index = df_behavior[df_ewd_mask].index
+        # df_ewd = df_behavior[df_ewd_mask]
+        # Mark those trials where we don't know the chosen direction as invalid
+        unknown_choice_ewd_mask = df_ewd_mask & df_behavior.ChoiceLeft.isnull()
+        df_behavior.loc[unknown_choice_ewd_mask, "valid"] = False # Don't contribute to calculations
         # Assign them as random decisions directions
-        df_behavior.loc[df_ewd_unknown_choices.index, "ChoiceLeft"] = \
-                        np.random.choice([0, 1], size=len(df_ewd), p=[0.5, 0.5])
+        df_behavior.loc[unknown_choice_ewd_mask, "ChoiceLeft"] = \
+                        np.random.choice([0, 1],
+                                         size=unknown_choice_ewd_mask.sum(),
+                                         p=[0.5, 0.5])
+        # Earlywithdrawl trials are never rewarded
+        df_behavior.loc[df_ewd_mask, "ChoiceCorrect"] = 0
+        # print(df_ewd.ChoiceCorrect.isnull().sum(), df_ewd.ChoiceLeft.notnull().sum())
+
     else:
         print("TODO: EarlyWithdrawal trials are not included, results may differ")
 
