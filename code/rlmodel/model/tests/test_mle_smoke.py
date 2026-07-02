@@ -368,6 +368,34 @@ def test_objective_from_population_handles_1d_input():
     assert np.isfinite(out[0])
 
 
+def test_prepared_session_cache_evicts_on_gc_avoiding_id_reuse():
+    """Regression: the ``id(data)``-keyed backend session cache must drop a
+    PreparedMLEData's entry when that object is garbage-collected, so a later
+    object allocated at a recycled address cannot read stale, wrong-shape
+    arrays. That aliasing caused an order-dependent reshape crash in
+    ``objective_from_population`` (passed in isolation, failed once another
+    test's data had been allocated and freed at the same address).
+    """
+    import gc
+
+    backend = mle_module.resolve_array_backend(
+        "numpy", device_id=None, cupy_fallback="error")
+    data = mle_module.prepare_mle_data(_two_session_padded_df())
+    mle_module._prepared_session_arrays_for_backend(data, backend)
+    data_id = id(data)
+    assert any(k[0] == data_id
+               for k in mle_module._PREPARED_SESSION_BACKEND_CACHE), (
+        "expected a cache entry keyed by the data object's id")
+
+    del data
+    gc.collect()
+
+    assert not any(k[0] == data_id
+                   for k in mle_module._PREPARED_SESSION_BACKEND_CACHE), (
+        "cache entry for a garbage-collected PreparedMLEData was not evicted; "
+        "a recycled id() could alias another object's session arrays")
+
+
 def test_objective_from_population_enables_solver_progress(monkeypatch):
     captured = []
     original_init = mle_module.BatchedDiffusionSolver.__init__
