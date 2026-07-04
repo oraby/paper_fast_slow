@@ -275,6 +275,13 @@ def main():
                         help="Show a transient tqdm progress bar for each "
                              "vectorized MLE diffusion solve. Enabled "
                              "automatically for --mle-backend GPU.")
+    parser.add_argument("--mle-no-progress", action="store_true",
+                        help="Force-disable the MLE tqdm progress bar even under "
+                             "--mle-backend GPU (which otherwise auto-enables "
+                             "it) and --mle-progress. Use for batch / Slurm runs "
+                             "whose stdout is redirected to a log file, where "
+                             "tqdm's in-place \\r updates don't overwrite and "
+                             "instead accumulate, bloating the log.")
     parser.add_argument(
         "--init-val", action="append", default=[],
         metavar="NAME=MIN,MAX[,DEFAULT]",
@@ -509,7 +516,8 @@ def main():
         # CPU mode for MLE, or any value for chisq (unused on the chisq path).
         mle_array_backend = "numpy"
         mle_cupy_fallback = "error"
-    mle_show_progress = bool(args.mle_progress or args.mle_backend == "GPU")
+    mle_show_progress = bool((args.mle_progress or args.mle_backend == "GPU")
+                             and not args.mle_no_progress)
 
     df_behavior = loadDF(min_valid_trials=0)
     # --only-subject: restrict to the named subjects before the per-subject
