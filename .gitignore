@@ -1,2 +1,6 @@
 *.pyc
+__pycache__/
+
+# uv-managed virtualenv (recreate with `uv sync`); uv.lock IS committed.
+.venv/
 

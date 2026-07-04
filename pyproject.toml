@@ -1,0 +1,34 @@
+[project]
+name = "paper-fast-slow"
+version = "0.0.0"
+description = "RL / DDM fast-slow model. This pyproject only pins the Python dependency environment (managed by uv). The source is imported as paper_fast_slow.code.rlmodel.* and is NOT installed as a package."
+# Parity with the existing conda env (CPython 3.14), kept as a range so uv can
+# fall back to 3.13/3.12 if a wheel is missing for a dependency on 3.14.
+requires-python = ">=3.12,<3.15"
+dependencies = [
+    "pandas<3.0.0",
+    "numpy",
+    "scipy",
+    "matplotlib",
+    "tqdm",
+    "statsmodels",
+    "ipykernel",
+    "scikit-posthocs",
+    "ipympl",
+    "pytest",
+]
+
+[tool.uv]
+# Not a distributable package: uv only builds the dependency virtualenv, it
+# does not try to install this project. The source tree is put on the import
+# path by pytest itself (see [tool.pytest.ini_options] below).
+package = false
+
+[tool.pytest.ini_options]
+# Run the suite with the `pytest` console script from THIS directory:
+#     uv run pytest                 (optionally: uv run pytest -k <expr>)
+# Using the console script (not `python -m pytest`) means cwd is not prepended
+# to sys.path; pytest instead adds the repo's parent via the package __init__
+# chain, so the local `code/` package never shadows the stdlib `code` module.
+# That is why no parent-directory dance is needed any more.
+testpaths = ["code/rlmodel/model/tests"]
