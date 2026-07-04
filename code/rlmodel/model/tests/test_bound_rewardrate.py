@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 
 from ..mle import MLEModelConfig, evaluate_neg_loglik
+from ..state_updates import bound_scale_from_reward_rate
 
 
 def _build_fixture(n_sessions=2, trials_per_session=15, seed=0):
@@ -46,11 +47,10 @@ def _params():
     """Pin BETA=0 so reward_rate stays at its 0.5 init throughout.
 
     This keeps the test in the regime where the rowwise reference's
-    spatial grid (n_x = 2·BOUND·r_t / dx ≈ 50 bins) is well-resolved
-    — the rescaling identity is exact in the continuum but at finite
-    dx the path-A grid coarsens with shrinking r_t. With BETA=0 the
-    per-trial bound is uniformly 0.5, so the comparison isolates the
-    rescaling math from grid-coarsening artifacts.
+    spatial grid (n_x = 2·BOUND·(2 - r_t) / dx ≈ 150 bins) is
+    well-resolved. With BETA=0 the per-trial bound is uniformly
+    BOUND·(2 - 0.5) = 1.5, so the comparison isolates the rescaling
+    math from any grid-coarsening artifacts.
     """
     return {
         "DRIFT_COEF":        1.2,
@@ -120,10 +120,10 @@ def test_bound_rewardrate_emits_per_trial_bound_in_latents():
         "rowwise reference path; missing it would silently fall back to "
         "the scalar BOUND and skip the varying-bound math")
     bound_per_trial = latents["bound_per_trial"]
-    # bound_per_trial = BOUND_base * reward_rate_before, both per-trial.
+    # bound_per_trial = BOUND_base * (2 - reward_rate_before), both per-trial.
     np.testing.assert_array_equal(
         bound_per_trial,
-        latents["reward_rate_before"] * 1.0)  # BOUND_base=1.0 from _params()
+        (2.0 - latents["reward_rate_before"]) * 1.0)  # BOUND_base=1.0 from _params()
 
 
 def test_bound_rewardrate_decay_q_rescale_broadcasts_against_2d_mu():
@@ -178,3 +178,76 @@ def test_symmetric_path_unaffected_by_bound_rewardrate_flag_off():
     )
     res = evaluate_neg_loglik(params, df, legacy_config)
     assert np.isfinite(res.neg_loglik)
+
+
+def test_bound_scale_from_reward_rate_maps_r_to_2_minus_r():
+    """Lock the scale-bound equation: s = 2 - r, i.e.
+    b_t = BOUND·(2 - r) = BOUND + (1 - r)·BOUND. r=1 → s=1 (floor =
+    BOUND); r=0 → s=2 (2·BOUND); monotone decreasing; s ∈ [1, 2] for
+    r ∈ [0, 1] so the 1/s rescale is always finite (no eps floor)."""
+    assert bound_scale_from_reward_rate(0.0) == 2.0
+    assert bound_scale_from_reward_rate(0.5) == 1.5
+    assert bound_scale_from_reward_rate(1.0) == 1.0
+    r = np.array([0.0, 0.25, 0.5, 0.75, 1.0])
+    s = bound_scale_from_reward_rate(r)
+    np.testing.assert_array_equal(s, 2.0 - r)
+    assert np.all(np.diff(s) < 0)                 # decreasing in reward rate
+    assert s.min() >= 1.0 and s.max() <= 2.0      # bounded → 1/s finite
+
+
+def test_bound_per_trial_widens_as_reward_rate_falls():
+    """End-to-end direction check on the MLE latents: with a real
+    reward-rate trajectory (BETA>0) the per-trial bound equals
+    BOUND·(2 - reward_rate_before) and therefore moves *opposite* to the
+    reward rate — higher reward rate ⇒ tighter bound, never below the
+    BOUND floor nor above 2·BOUND."""
+    from ..mle import _compute_latent_arrays, prepare_mle_data
+    df = _build_fixture(n_sessions=1, trials_per_session=12)
+    params = dict(_params())
+    params["BETA"] = 0.5     # let the reward rate actually move
+    params["BOUND"] = 1.3    # non-unit floor to catch a bad scale
+    data = prepare_mle_data(df)
+    latents = _compute_latent_arrays(data, params, _config(use_batched=False))
+    rr = latents["reward_rate_before"]
+    bpt = latents["bound_per_trial"]
+    np.testing.assert_allclose(bpt, 1.3 * (2.0 - rr))
+    assert np.all(bpt >= 1.3 - 1e-9)             # floor = BOUND at r=1
+    assert np.all(bpt <= 2.0 * 1.3 + 1e-9)       # ceiling = 2·BOUND at r=0
+    order = np.argsort(rr)                        # sort ascending in reward rate
+    assert np.all(np.diff(bpt[order]) <= 1e-9)   # ⇒ bound non-increasing
+
+
+def test_bound_rewardrate_decay_q_population_matches_reference():
+    """Decay-Q + Bound-RewardRate: the population (DE) path must apply the
+    per-trial bound scaling (μ /= s_t = 2 - r_t) to the Decay-Q *drift* term,
+    matching the rowwise/batched reference. Pre-fix, the population path rebuilt
+    base_mu_pop / q_drift_coef_pop WITHOUT /s_t, so DE fitting saw a different
+    (much larger) drift than the final eval — a large, systematic divergence.
+    """
+    from ..mle import objective_from_population
+    df = _build_fixture(n_sessions=2, trials_per_session=15)
+    params = dict(_params())
+    params["BETA"] = 0.4              # reward rate moves → non-trivial s_t sweep
+    params["Q_VAL_DECAY_RATE"] = 1.0
+    params["Q_VAL_COEF"] = 0.5
+    config = MLEModelConfig(
+        drift_fn_str="Bound-RewardRate Decay Q (Offset)",
+        bias_fn_str="None_", noise_fn_str="Normal(0, 1)",
+        include_Q=True, include_RewardRate=True,
+        dt=0.005, t_dur=0.8, dx=0.02,
+        mle_use_batched_likelihood=True,
+        uses_per_trial_bound=True,
+    )
+    ref = evaluate_neg_loglik(params, df, config).neg_loglik
+    names = ["DRIFT_COEF", "NOISE_SIGMA", "BOUND", "NON_DECISION_TIME",
+             "ALPHA", "BETA", "BIAS_COEF", "Q_VAL_OFFSET", "LAPSE_RATE",
+             "Q_VAL_DECAY_RATE", "Q_VAL_COEF"]
+    cand = np.array([[params[k] for k in names]], dtype=float).T   # (n_params, 1)
+    pop = objective_from_population(cand, np.array(names), df, config)
+    assert np.isfinite(pop[0]) and np.isfinite(ref)
+    # For a single candidate the population path builds the SAME per-trial latents
+    # as the batched reference and makes the same solver call, so they agree to
+    # ~machine precision (measured ~1e-12). The pre-fix gap (Decay-Q drift term
+    # missing its /s_t) breaks this by ~0.5 for this config, so a tight tolerance
+    # is what makes this test actually sensitive to the bug.
+    assert abs(pop[0] - ref) < 1e-6, f"population={pop[0]}, reference={ref}"

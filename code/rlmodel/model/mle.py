@@ -1,4 +1,5 @@
 import datetime
+import weakref
 from dataclasses import dataclass
 from functools import partial
 
@@ -70,10 +71,12 @@ class MLEModelConfig:
     uses_asymmetric_beta: bool = False
     # Bound-RewardRate per-trial bound flag. Set True when the user
     # selects a "Bound-RewardRate*" drift; ``fit.simulateDDM`` derives
-    # it from ``drift_fn_str``. The MLE compute paths then apply the
-    # standard DDM rescaling identity per trial: μ /= r_t, σ /= r_t,
-    # z = clip(absolute_bias, ±BOUND·r_t) / r_t. Solver still receives
-    # the scalar BOUND — no solver changes needed; see
+    # it from ``drift_fn_str``. The per-trial bound is
+    # b_t = BOUND * (2 - r_t) = BOUND + (1 - r_t) * BOUND (see
+    # state_updates.bound_scale_from_reward_rate); the MLE compute paths
+    # apply the DDM rescaling identity per trial with scale s_t = 2 - r_t:
+    # μ /= s_t, σ /= s_t, z = clip(absolute_bias, ±b_t) / s_t. Solver still
+    # receives the scalar BOUND — no solver changes needed; see
     # scale_bound_equivalence.ipynb for the equivalence derivation.
     uses_per_trial_bound: bool = False
     # ``--scale-bound`` flag. Swaps which of (BOUND, NOISE_SIGMA) is
@@ -714,6 +717,23 @@ def _equal_session_shape(data):
     return n_sessions, trials_per_session
 
 
+def _evict_prepared_session_cache(data_id):
+    """GC hook: drop cached session arrays for a collected ``PreparedMLEData``.
+
+    ``id()`` is unique only among *live* objects — CPython recycles an id once
+    the object it named is freed. Keying the cache by ``id(data)`` alone let a
+    new PreparedMLEData allocated at a recycled address read a *previous*
+    object's session arrays: a wrong-shape cache hit that surfaced as an
+    order-dependent reshape crash in ``objective_from_population`` (it passed in
+    isolation but failed after another test's data had been allocated and freed
+    at the same address). Registered on ``data`` via ``weakref.finalize``, this
+    evicts its entries the moment it is collected, so a recycled id always
+    misses and recomputes.
+    """
+    for k in [k for k in _PREPARED_SESSION_BACKEND_CACHE if k[0] == data_id]:
+        _PREPARED_SESSION_BACKEND_CACHE.pop(k, None)
+
+
 def _prepared_session_arrays_for_backend(data, backend):
     key = (id(data), backend.actual_backend, backend.device_id)
     cached = _PREPARED_SESSION_BACKEND_CACHE.get(key)
@@ -736,6 +756,11 @@ def _prepared_session_arrays_for_backend(data, backend):
         "choice_flat": xp.asarray(data.choice_left, dtype=float),
         "observed_rt_flat": xp.asarray(data.observed_rt, dtype=float),
     }
+    # Evict this data's entries on GC so a recycled id() can't alias another
+    # object's arrays. Register the finalizer once per data object (the first
+    # backend we cache for it); id(data) is stable while data is alive.
+    if not any(k[0] == key[0] for k in _PREPARED_SESSION_BACKEND_CACHE):
+        weakref.finalize(data, _evict_prepared_session_cache, key[0])
     _PREPARED_SESSION_BACKEND_CACHE[key] = shaped
     return shaped
 
@@ -855,27 +880,42 @@ def _compute_latent_population_equal_sessions(data, x_matrix, params_names,
         q_sign_pop = None
         sigma_for_noise_pop = None
 
+    # Per-trial bound scale s_t = 2 - r_t, stashed per (cand, sess, trial) so the
+    # factored-mu drift terms (base_mu_pop, q_drift_coef_pop) can be divided by
+    # s_t after the loop. Only the time-varying (Decay-Q) path rebuilds those
+    # post-loop; the non-decay path scales base_mu inline. The diffusion sigma/z
+    # and sigma_for_noise_pop are already divided by s_t inline in the loop.
+    bound_scale_pop = (
+        xp.empty((n_candidates, n_sessions, trials_per_session), dtype=float)
+        if (model_config.uses_per_trial_bound and time_varying) else None)
+
     for trial_pos in range(trials_per_session):
         # Delegate Q-value normalization + starting-point bias to
         # state_updates (same math as the scalar path).
         q_rel = state_updates.compute_q_value(q_left, q_right, xp=xp)
         # Bound-RewardRate vectorized path: apply the Phase-1-validated
-        # rescaling (mu/r_t, sigma/r_t, z/r_t with z clipped to ±b_t in
-        # absolute units first). reward_rate here is the per-(candidate,
-        # session) state BEFORE the current trial — the same value the
-        # NoiseGain branch uses, just consumed differently. The solver
-        # still receives the scalar BOUND per candidate; no solver work.
+        # rescaling (mu/s_t, sigma/s_t, z/s_t with s_t = 2 - r_t and z
+        # clipped to ±b_t = ±BOUND*(2-r_t) in absolute units first).
+        # reward_rate here is the per-(candidate, session) state BEFORE
+        # the current trial — the same value the NoiseGain branch uses,
+        # just consumed differently. The solver still receives the scalar
+        # BOUND per candidate; no solver work.
+        base_mu = drift_coef[:, None] * dv[None, :, trial_pos]
         if model_config.uses_per_trial_bound:
-            b_t = bounds[:, None] * reward_rate
+            bound_scale = state_updates.bound_scale_from_reward_rate(reward_rate)
+            if bound_scale_pop is not None:
+                bound_scale_pop[:, :, trial_pos] = bound_scale
+            b_t = bounds[:, None] * bound_scale
             if model_config.uses_q_bias:
                 z_abs = xp.clip(
                     bias_coef[:, None] * q_rel + q_offset[:, None],
                     -b_t, b_t)
-                z_t = z_abs / reward_rate
+                z_t = z_abs / bound_scale
             else:
                 z_t = xp.zeros_like(q_rel)
-            # σ /= r_t  (opposite of NoiseGain's σ *= r_t)
-            sigma_t = noise_sigma[:, None] / reward_rate
+            # σ /= s_t  (opposite of NoiseGain's σ *= r_t)
+            sigma_t = noise_sigma[:, None] / bound_scale
+            base_mu = base_mu / bound_scale       # μ /= s_t
         else:
             if model_config.uses_q_bias:
                 z_t = state_updates.compute_starting_point_z(
@@ -890,9 +930,6 @@ def _compute_latent_population_equal_sessions(data, x_matrix, params_names,
                 if model_config.include_RewardRate
                 else xp.broadcast_to(noise_sigma[:, None], q_rel.shape)
             )
-        base_mu = drift_coef[:, None] * dv[None, :, trial_pos]
-        if model_config.uses_per_trial_bound:
-            base_mu = base_mu / reward_rate
         z[:, :, trial_pos] = z_t
         sigma[:, :, trial_pos] = sigma_t
 
@@ -943,6 +980,16 @@ def _compute_latent_population_equal_sessions(data, x_matrix, params_names,
                 beta_unrewarded=beta_unrewarded, xp=xp)
             reward_rate = xp.where(valid_t, new_rr, reward_rate)
 
+    # Bound-RewardRate (per-trial bound), factored-mu drift term: the loop
+    # already divided the diffusion sigma/z and sigma_for_noise_pop by
+    # s_t = 2 - r_t (they are built from sigma_t), but q_drift_coef_pop is the
+    # Decay-Q drift factor built straight from the Q-state, so divide it by the
+    # per-trial s_t here (base_mu_pop is handled where it is built below).
+    # Without this the Decay-Q drift term ignores the per-trial bound during
+    # population (DE) fits and diverges from the rowwise/batched reference.
+    if bound_scale_pop is not None and q_drift_coef_pop is not None:
+        q_drift_coef_pop = q_drift_coef_pop / bound_scale_pop
+
     # --scale-bound: apply the path-D rescaling identity per candidate
     # (mu/B, sigma/B, z/B) so every candidate's effective bound becomes
     # 1.0. Same trick the Bound-RewardRate batched path uses, generalized
@@ -988,6 +1035,8 @@ def _compute_latent_population_equal_sessions(data, x_matrix, params_names,
         # factor arrays are flattened to (n_candidates * n_trials,) so the
         # solver can index by valid_idx directly.
         base_mu_pop = drift_coef[:, None, None] * dv[None, :, :]
+        if bound_scale_pop is not None:
+            base_mu_pop = base_mu_pop / bound_scale_pop    # per-trial bound: μ /= s_t
         if inv_b_3d is not None:
             base_mu_pop = base_mu_pop * inv_b_3d
         flat_n = n_candidates * n_trials
@@ -1137,7 +1186,8 @@ def _compute_latent_arrays(data, params, model_config):
     # _compute_latent_population_equal_sessions.
     if model_config.uses_per_trial_bound:
         bound_base = float(_param(params, "BOUND", 1.0))
-        bound_per_trial = bound_base * reward_rate_before
+        bound_per_trial = bound_base * state_updates.bound_scale_from_reward_rate(
+            reward_rate_before)
         latents["bound_per_trial"] = bound_per_trial
         # Bias is in absolute DDM-state units: re-clip z to ±b_t. The
         # default _compute_z_array clip is [-1, 1] which collapses the
@@ -1318,7 +1368,7 @@ def _evaluate_trial_likelihoods_batched(data, latents, params, model_config,
     # path-A-shaped latents (absolute mu, sigma, z; per-trial bound)
     # for the rowwise reference; the batched solver expects a single
     # scalar bound across the batch, so we rescale per-trial
-    # (mu, sigma, z) by BOUND/bound_per_trial = 1/r_t. The rescaling
+    # (mu, sigma, z) by BOUND/bound_per_trial = 1/(2 - r_t). The rescaling
     # identity (proven in Phase 1) guarantees this gives identical
     # observable densities. When ``uses_per_trial_bound=False`` this
     # branch is a no-op and the production path is bit-exact.

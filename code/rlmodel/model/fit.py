@@ -710,7 +710,7 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
     if uses_per_trial_bound and not scale_bound:
         raise ValueError(
             f"Drift {drift_fn_str!r} uses per-trial bound scaling "
-            f"(BOUND * r_t), but --scale-bound is OFF so BOUND is "
+            f"(BOUND*(2-r_t)), but --scale-bound is OFF so BOUND is "
             f"frozen at 1.0. This collapses to NoiseGain-RewardRate "
             f"semantics with extra compute. Either add --scale-bound "
             f"to actually fit BOUND in [0.3, 5.0], or use a "

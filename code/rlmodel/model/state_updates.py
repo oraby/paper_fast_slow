@@ -120,6 +120,26 @@ def update_reward_rate(reward_rate, observed_reward, beta, beta_unrewarded=None,
     return new_reward_rate
 
 
+def bound_scale_from_reward_rate(reward_rate):
+    """Per-trial bound scale for the Bound-RewardRate ("scale-bound") drift.
+
+    Maps the reward rate ``r`` to the factor multiplying the base bound::
+
+        b_t = BOUND * bound_scale_from_reward_rate(r)
+            = BOUND * (2 - r)
+            = BOUND + (1 - r) * BOUND
+
+    ``BOUND`` is the floor (half-width at ``r = 1``); the bound widens to
+    ``2 * BOUND`` as reward rate falls toward 0. Because the reward rate is
+    an EMA in ``[0, 1]``, the scale ``s_t = 2 - r`` stays in ``[1, 2]`` — so
+    the path-D rescale ``1 / s_t`` (drift/noise divided by the scale) is
+    always finite; no divide-by-zero floor is needed. Pure arithmetic:
+    backend-agnostic (NumPy or CuPy ``xp`` arrays) and NaN-preserving, so
+    NaN-padded trial slots propagate through unchanged.
+    """
+    return 2.0 - reward_rate
+
+
 def compute_starting_point_z(q_left, q_right, delta, offset, include_Q,
                               *, xp=np, bound=None):
     """Return normalized starting point z.

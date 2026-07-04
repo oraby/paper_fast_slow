@@ -1,4 +1,5 @@
 from .util import decayingQ, partialWithNames
+from .state_updates import bound_scale_from_reward_rate
 import numpy as np
 import numpy.typing as npt
 from scipy import ndimage
@@ -8,15 +9,6 @@ run_logger = None
 # This should be set by the logic class
 # rnd_default_rng = np.random.default_rng()
 rnd_default_rng = None
-
-# Floor applied to per-trial RewardRate before the path-D rescale in
-# the Bound-RewardRate drift variants. ``r_t = 0`` is reachable when
-# BETA fits near 1 and a trial is unrewarded; without the floor,
-# ``1 / r_t`` would emit divide-by-zero + ±inf cascades that show up
-# as warnings at the drift + noise summation site. ``np.maximum``
-# preserves NaN (the NaN-padded slots beyond actual session length
-# in logic.py still propagate downstream as-is).
-_BOUND_REWARDRATE_EPS = 1e-12
 
 
 def _driftClassic(starting_point : npt.NDArray,
@@ -157,9 +149,11 @@ def _boundGainRewardRate(starting_point : npt.NDArray,
     """Bound-RewardRate Chisqr drift via the path-D rescaling.
 
     Mathematically equivalent to simulating with per-trial bound
-    ``BOUND * r_t``, but implemented as a fixed-bound diffusion with
-    drift and noise divided by ``r_t``. Proven observationally
-    identical to the varying-bound ground truth in Phase 1
+    ``BOUND * (2 - r_t) = BOUND + (1 - r_t) * BOUND``, but implemented as
+    a fixed-bound diffusion with drift and noise divided by the scale
+    ``s_t = 2 - r_t``. ``BOUND`` is the floor (half-width at r_t = 1); the
+    bound widens toward ``2 * BOUND`` as reward rate falls to 0. Proven
+    observationally identical to the varying-bound ground truth in Phase 1
     (scale_bound_equivalence.ipynb). NOTE: starting_point inherits
     the existing simulateDDMTrial convention (``z_norm * BOUND``) —
     bias is "fraction of base bound", not absolute. This Chisqr
@@ -168,21 +162,20 @@ def _boundGainRewardRate(starting_point : npt.NDArray,
     """
     global run_logger
 
-    # Floor RewardRate to a tiny positive value before dividing.
-    # ``r_t = 0`` is reachable when BETA fits near 1 and a trial is
-    # unrewarded (recurrence pins to 0). The per-trial bound B*r_t
-    # then collapses to ~0 — a degenerate trial that should absorb
-    # immediately. ``np.maximum`` preserves NaN (the NaN-padded slots
-    # beyond actual session length in logic.py:94 still propagate).
-    rr_safe = np.maximum(RewardRate, _BOUND_REWARDRATE_EPS)
-    inv_rr = 1.0 / rr_safe[:, np.newaxis]
+    # Per-trial bound scale s_t = 2 - r_t (see
+    # bound_scale_from_reward_rate): b_t = BOUND * (2 - r_t). The path-D
+    # rescale divides drift and noise by s_t. Since r_t is an EMA in
+    # [0, 1], s_t stays in [1, 2] — always finite, so no divide-by-zero
+    # floor is needed. NaN-padded slots beyond actual session length in
+    # logic.py still propagate (2 - NaN = NaN).
+    inv_scale = 1.0 / bound_scale_from_reward_rate(RewardRate)[:, np.newaxis]
     drift = drift_coef * dvs * dt
     non_decision_dt = int(nondectime / dt)
     noise *= noise_sigma
-    noise *= inv_rr               # σ / r_t per trial
+    noise *= inv_scale            # σ / s_t per trial
     noise[:, :non_decision_dt] = 0
     drift = np.repeat(drift, noise.shape[1]).reshape(-1, noise.shape[1])
-    drift *= inv_rr               # μ / r_t per trial
+    drift *= inv_scale            # μ / s_t per trial
     drift[:, :non_decision_dt] = 0
 
     isolated_drifts = drift + noise
@@ -215,19 +208,19 @@ def _boundGainDecayingQ(starting_point: npt.NDArray,
     """
     global run_logger
 
-    # Floor r_t before dividing — see _boundGainRewardRate for the
-    # full explanation of why r_t = 0 is reachable and why this is
-    # mathematically the right degenerate behavior.
-    rr_safe = np.maximum(RewardRate, _BOUND_REWARDRATE_EPS)
-    inv_rr = 1.0 / rr_safe[:, np.newaxis]
+    # Per-trial bound scale s_t = 2 - r_t (see _boundGainRewardRate /
+    # bound_scale_from_reward_rate): b_t = BOUND * (2 - r_t), with drift +
+    # Q-decay noise all divided by s_t. s_t in [1, 2] so 1/s_t is always
+    # finite; NaN-padded slots propagate (2 - NaN = NaN).
+    inv_scale = 1.0 / bound_scale_from_reward_rate(RewardRate)[:, np.newaxis]
     non_decsision_dt = int(nondectime / dt)
     noise *= noise_sigma
-    noise *= inv_rr
+    noise *= inv_scale
     noise[:, :non_decsision_dt] = 0
 
     drift = drift_coef * dvs * dt
     drift = np.repeat(drift, noise.shape[1]).reshape(-1, noise.shape[1])
-    drift *= inv_rr
+    drift *= inv_scale
     drift[:, :non_decsision_dt] = 0
 
     Q_val = np.clip(Q_val + Q_VAL_OFFSET, -1, 1)
@@ -235,7 +228,7 @@ def _boundGainDecayingQ(starting_point: npt.NDArray,
     Q_val_decay_form = (1 - indices / noise.shape[1]) ** Q_VAL_DECAY_RATE
     Q_val_noise = Q_val[:, np.newaxis] * Q_val_decay_form
     Q_val_noise *= Q_VAL_COEF * dt
-    Q_val_noise *= inv_rr     # Q-decay drift also rescales
+    Q_val_noise *= inv_scale     # Q-decay drift also rescales
 
     if not nondectime_Q:
         Q_val_noise = ndimage.shift(Q_val_noise, non_decsision_dt, cval=0)
@@ -292,8 +285,9 @@ DRIFT_FN_DICT = {
     "Classic": _driftClassic,
     "NoiseGain-RewardRate": _noiseGainRewardRate,
     # Bound-RewardRate variants implement the path-D rescaling
-    # (drift / r_t, noise / r_t) so the *observable* behavior is the
-    # one a fixed-noise, varying-bound (b_t = BOUND * r_t) model would
+    # (drift / s_t, noise / s_t with s_t = 2 - r_t) so the *observable*
+    # behavior is the one a fixed-noise, varying-bound
+    # (b_t = BOUND * (2 - r_t) = BOUND + (1 - r_t) * BOUND) model would
     # produce — proven in Phase 1 (scale_bound_equivalence.ipynb).
     # The math is genuinely different from NoiseGain (sigma * r_t),
     # so these are separate Python functions, not aliases.
