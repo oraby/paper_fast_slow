@@ -268,24 +268,7 @@ def plotPlots(df, axs, include_Q, include_RewardRate,
         _plotPrevOutcomeQuantile(df, ax_prev_out_cur_q)
         # print(f"Prev Outcome Cur Quantile: {time.time() - time_now:.2f}"); time_now = time.time()
         #_plotPrevOutcomeCount(df, ax_prev_outs_rt)
-        subject = df.Name.iloc[0]
-        MIN_TRIALS_PER_SESS_RR = 1
-        REWARD_RATE_NUM_PAST_TRIALS = 5
-        REWARD_RATE_BY_SESS = False
-        reward_rate_kwargs = dict(subject=subject, num_past_trials=REWARD_RATE_NUM_PAST_TRIALS,
-                                  BY_SESS=REWARD_RATE_BY_SESS, save_figs=False, RT_ZSCORE=False,
-                                  min_trials_per_sess_rr=MIN_TRIALS_PER_SESS_RR,
-                                  plot_distinct_timeouts=False, use_ax=ax_prev_outs_rt,
-                                  plot=True)
-        # Zero reward-rate is noisy as it doesn't happen often that the subject goes for 5
-        # trials without reward.
-        plotSubjectRewardRateRt(subject_df=df[df.RewardRate5 != 0], col_postfix="",  rt_col="calcStimulusTime", linecolor="gray",
-                                **reward_rate_kwargs)
-        plotSubjectRewardRateRt(subject_df=df[df.RewardRateSim5 != 0], col_postfix="Sim", rt_col="SimRT", linecolor="k",
-                                **reward_rate_kwargs)
-        ax_prev_outs_rt.set_title("Reward Rate vs RT")
-        lines, labels = ax_prev_outs_rt.get_legend_handles_labels()
-        ax_prev_outs_rt.legend(lines, ["Real Reward Rate", "Model Reward Rate"], loc='upper right')
+        _plotRewardRateVsRt(df, ax_prev_outs_rt)
         if SINGLE_WIN_LOSE_UPDATE:
             _plotStaySwitch(df, ax_win_lose_update)
         else:
@@ -835,20 +818,43 @@ def _plotHists(df, ax_hist_corr_up, ax_hist_corr_down, ax_hist_dir_up, ax_hist_d
 def _plotDists(df, ax_qval, ax_reward_rate, ax_bias, plot_bias_dir,
                include_Q, include_RewardRate, bound, biasFn_kwargs,
                is_small_fig_mode):
-    bins_0_1 = np.linspace(0, 1, 10, endpoint=True)
-    bins_m1_1 = np.linspace(-1, 1, 20, endpoint=True)
+    # Orchestrator kept for the interactive GUI's fixed 3-axis layout. The
+    # three panels are also exposed individually (``_plotQDist`` /
+    # ``_plotRewardRateDist`` / ``_plotBiasDist``) so model_compare can drive
+    # each as a standalone grid row. Behavior here is unchanged: Q panel,
+    # then bias panel (full-fig only), then reward-rate panel.
+    _plotQDist(df, ax_qval, plot_bias_dir, include_Q, bound, biasFn_kwargs,
+               is_small_fig_mode)
+    if not is_small_fig_mode:
+        _plotBiasDist(df, ax_bias, bound, biasFn_kwargs)
+    _plotRewardRateDist(df, ax_reward_rate, include_RewardRate)
 
-    bias_bin_size = bound/20
+
+def _startingPointSplit(df, bound, biasFn_kwargs):
+    """(start_pt_corr, start_pt_dir) from the simulated starting points.
+
+    ``adapt_correct`` biases store the correct/incorrect-referenced point
+    directly, so the direction view is the DV-sign-flipped one; otherwise
+    it's the reverse. Shared by the Q-panel's direction overlay and the
+    bias panel."""
     start_pt_raw = df.SimStartingPoint
     start_pt_updated = start_pt_raw.copy()
     start_pt_updated[df.DV < 0] = -start_pt_updated[df.DV < 0]
-    if "adapt_correct" in biasFn_kwargs: # It was fixed twice now
-        start_pt_corr, start_pt_dir = start_pt_updated, start_pt_raw
-    else:
-        start_pt_corr, start_pt_dir = start_pt_raw, start_pt_updated
+    if "adapt_correct" in biasFn_kwargs:  # It was fixed twice now
+        return start_pt_updated, start_pt_raw
+    return start_pt_raw, start_pt_updated
 
+
+def _plotQDist(df, ax_qval, plot_bias_dir, include_Q, bound, biasFn_kwargs,
+               is_small_fig_mode):
+    """Q-value distribution panel (Q_val + Q_R/Q_L steps). Optionally overlays
+    the direction-referenced starting-point histogram first. When the model
+    has no Q-learning the axis is blanked."""
+    bins_0_1 = np.linspace(0, 1, 10, endpoint=True)
+    bins_m1_1 = np.linspace(-1, 1, 20, endpoint=True)
 
     if plot_bias_dir:
+        _, start_pt_dir = _startingPointSplit(df, bound, biasFn_kwargs)
         ax_qval.hist(start_pt_dir/bound, bins=np.arange(-1, 1.1, .1), color='r')
         ax_qval.set_title("Starting Point (Direction)")
         legend = ax_qval.get_legend()
@@ -872,12 +878,20 @@ def _plotDists(df, ax_qval, ax_reward_rate, ax_bias, plot_bias_dir,
         ax_qval.set_xticks([])
         ax_qval.set_yticks([])
 
-    # Convert to correct/incorrect if needed
-    if not is_small_fig_mode:
-        ax_bias.hist(start_pt_corr,
-                    bins=np.arange(-bound, bound+bias_bin_size, bias_bin_size),
-                    color='brown')
 
+def _plotBiasDist(df, ax_bias, bound, biasFn_kwargs):
+    """Starting-point (bias) distribution panel — correct/incorrect view."""
+    bias_bin_size = bound/20
+    start_pt_corr, _ = _startingPointSplit(df, bound, biasFn_kwargs)
+    ax_bias.hist(start_pt_corr,
+                 bins=np.arange(-bound, bound+bias_bin_size, bias_bin_size),
+                 color='brown')
+
+
+def _plotRewardRateDist(df, ax_reward_rate, include_RewardRate):
+    """Reward-rate value distribution panel. Blanks the axis when the model
+    doesn't learn a reward rate."""
+    bins_0_1 = np.linspace(0, 1, 10, endpoint=True)
     if include_RewardRate:
         ax_reward_rate.set_title("Reward Rate Dist.")
         ax_reward_rate.hist(df.RewardRate, bins=bins_0_1, color='b')
@@ -887,7 +901,27 @@ def _plotDists(df, ax_qval, ax_reward_rate, ax_bias, plot_bias_dir,
         ax_reward_rate.clear()
         ax_reward_rate.set_xticks([])
         ax_reward_rate.set_yticks([])
-        # df.RewardRate.hist(ax=ax_reward_rate, bins=bins_0_1, color='b')
-    # if include_Q:
-    #     df.Q_val.hist(ax=ax_qval, bins=bins_m1_1, color='r')
-        # df.starting_point.hist(ax=ax_bias, bins=bins_m1_1, color='brown')
+
+
+def _plotRewardRateVsRt(df, ax, subject=None):
+    """Reward-Rate-vs-RT overlay: real data (gray) + model (black). Extracted
+    verbatim from ``plotPlots`` so model_compare can render it on a standalone
+    axis. Zero reward-rate trials are dropped (noisy — a subject rarely goes 5
+    trials without reward)."""
+    if subject is None:
+        subject = df.Name.iloc[0]
+    MIN_TRIALS_PER_SESS_RR = 1
+    REWARD_RATE_NUM_PAST_TRIALS = 5
+    REWARD_RATE_BY_SESS = False
+    reward_rate_kwargs = dict(subject=subject, num_past_trials=REWARD_RATE_NUM_PAST_TRIALS,
+                              BY_SESS=REWARD_RATE_BY_SESS, save_figs=False, RT_ZSCORE=False,
+                              min_trials_per_sess_rr=MIN_TRIALS_PER_SESS_RR,
+                              plot_distinct_timeouts=False, use_ax=ax,
+                              plot=True)
+    plotSubjectRewardRateRt(subject_df=df[df.RewardRate5 != 0], col_postfix="", rt_col="calcStimulusTime", linecolor="gray",
+                            **reward_rate_kwargs)
+    plotSubjectRewardRateRt(subject_df=df[df.RewardRateSim5 != 0], col_postfix="Sim", rt_col="SimRT", linecolor="k",
+                            **reward_rate_kwargs)
+    ax.set_title("Reward Rate vs RT")
+    lines, labels = ax.get_legend_handles_labels()
+    ax.legend(lines, ["Real Reward Rate", "Model Reward Rate"], loc='upper right')
