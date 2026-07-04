@@ -249,6 +249,11 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
         "Real-time": gui_cache.get("Real-time", True),
         "Asymmetric Q-update":  gui_cache.get("Asymmetric Q-update", False),
         "Asymmetric RR-update": gui_cache.get("Asymmetric RR-update", False),
+        # Convenience toggle that sets both Asym checkboxes together.
+        # Excluded from all_widgets_wo_btns (has its own .observe callback
+        # below) to avoid double-firing interactive_output when the two
+        # individual boxes are updated in sequence.
+        "Asym: Both": (gui_cache.get("Asym: Both") or False),
     }
     # NOTE: ``Scale Bound`` was a checkbox in earlier work; the same
     # capability is now driven by the ``Scale-How`` dropdown (top of
@@ -413,7 +418,8 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
                   slider_widgets.pop("BIAS_SIGMA"),
                   slider_widgets.pop("ALPHA"),
                   checkbox_widgets.pop("Asymmetric Q-update"),
-                  slider_widgets.pop("ALPHA_UNREWARDED"),]
+                  slider_widgets.pop("ALPHA_UNREWARDED"),
+                  checkbox_widgets.pop("Asym: Both"),]
     third_col = [drop_down_widgets.pop("Subject"),
                  drop_down_widgets.pop("Joint Wt"),
                  drop_down_widgets.pop("DV"),
@@ -446,6 +452,12 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
     include_Q, include_RewardRate = False, False
     checkbox_last_val = all_widgets["Real-time"].value
     fig = None
+    # Suppress counter for the "Asym: Both" batch-checkbox. When > 0,
+    # outHandler skips updateGUI so the two individual-box writes that
+    # "Asym: Both" triggers are coalesced into a single update.
+    # Also used inside updateGUI when syncing "Asym: Both" back, to
+    # prevent the .observe callback from cascading.
+    _asym_suppress = [0]
     last_subject = None
     last_driftFn = None
     last_biasFn = None
@@ -594,6 +606,25 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
             all_widgets["ALPHA_UNREWARDED"].disabled = True
         if not (include_RewardRate and asym_rr_cb.value):
             all_widgets["BETA_UNREWARDED"].disabled = True
+
+        # Sync "Asym: Both": enabled only when both Q and RR are meaningful
+        # for the current model AND both individual boxes agree on their state.
+        # When the two individual boxes differ we gray it out (mixed state).
+        # Setting .value here is safe: "Asym: Both" is not in
+        # all_widgets_wo_btns so interactive_output won't fire; but its own
+        # .observe callback would cascade — suppress that with the counter.
+        asym_all_cb = all_widgets.get("Asym: Both")
+        if asym_all_cb is not None:
+            both_supported = include_Q and include_RewardRate
+            if not both_supported:
+                asym_all_cb.disabled = True
+            else:
+                both_same = asym_q_cb.value == asym_rr_cb.value
+                asym_all_cb.disabled = not both_same
+                if both_same:
+                    _asym_suppress[0] += 1
+                    asym_all_cb.value = asym_q_cb.value
+                    _asym_suppress[0] -= 1
 
         # Gray out the Reset buttons when the EXACT variant for the
         # current (Asym-Q × Asym-RR × Scale-How) checkbox state has no
@@ -779,13 +810,16 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
 
 
     # Run the display
-    all_widgets_wo_btns = {k:v for k,v in all_widgets.items()
-                           if not isinstance(v, widgets.Button)}
+    # "Asym: Both" is excluded from the auto-observed set: it has its own
+    # .observe callback below that batches the two individual-box writes into
+    # one updateGUI call. Including it here would trigger extra calls.
+    all_widgets_wo_btns = {k: v for k, v in all_widgets.items()
+                           if not isinstance(v, widgets.Button)
+                           and k != "Asym: Both"}
     def outHandler(*args, **kwargs):
-        # print("Args:", args)
-        # print("Kwargs:", kwargs)
+        if _asym_suppress[0] > 0:
+            return
         updateGUI()
-        # return updateGUI()
 
     # The Reset buttons consult the asym checkboxes so the variant the
     # user is sweeping in the GUI (Q-update / RR-update) gets its own
@@ -804,6 +838,26 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
     all_widgets["Run MLE"].on_click(
         lambda _button: updateGUI(force_update=True, run_mle=True))
     out = widgets.interactive_output(outHandler, all_widgets_wo_btns)
+
+    def _on_asym_all_change(change):
+        """Batch-set both asym checkboxes then trigger exactly one update.
+
+        Suppresses outHandler for the Q-update write (counter > 0) so only the
+        RR-update write fires interactive_output — one updateGUI call total.
+        The suppress also blocks cascade: this callback checks the counter at
+        entry so programmatic value-sets from updateGUI's sync block don't
+        re-enter here.
+        """
+        if _asym_suppress[0] > 0:
+            return
+        new_val = change['new']
+        _asym_suppress[0] += 1
+        all_widgets['Asymmetric Q-update'].value = new_val
+        _asym_suppress[0] -= 1
+        # Counter is 0 again — the RR-update write fires outHandler once.
+        all_widgets['Asymmetric RR-update'].value = new_val
+
+    all_widgets["Asym: Both"].observe(_on_asym_all_change, names='value')
 
     display_widget = display(layout, out)
     if save_figs and subjects_defaults is not None:

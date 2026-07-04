@@ -541,6 +541,118 @@ def test_variant_suffix_drives_both_mode_key_and_auto_apply_detector():
     assert visualize._variant_suffix(widgets) == "_asymQ_scaledB_mleW1_chi2W0.5"
 
 
+def test_asym_both_excluded_from_auto_observed_set():
+    """'Asym: Both' must NOT be in all_widgets_wo_btns.
+
+    interactive_output observes all_widgets_wo_btns. If 'Asym: Both' were in
+    that set, setting the two individual checkboxes from its callback would
+    trigger 3 outHandler calls instead of 1, and every updateGUI-internal sync
+    of 'Asym: Both' (which sets its .value) would trigger another re-render.
+    Pin this at the source level via the AST so the exclusion can't be
+    accidentally removed.
+    """
+    import ast
+
+    src = Path(visualize.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == "createWidget")
+
+    # Find the all_widgets_wo_btns assignment — it must reference "Asym: Both"
+    # in a negative test (i.e. the string literal must appear in the node that
+    # builds all_widgets_wo_btns, as an exclusion).
+    found_exclusion = False
+    for node in ast.walk(fn):
+        if (isinstance(node, ast.Assign)
+                and any(isinstance(t, ast.Name) and t.id == "all_widgets_wo_btns"
+                        for t in node.targets)):
+            src_seg = ast.unparse(node)
+            assert "Asym: Both" in src_seg, (
+                "all_widgets_wo_btns assignment must explicitly exclude 'Asym: Both'")
+            found_exclusion = True
+    assert found_exclusion, "all_widgets_wo_btns assignment not found in createWidget"
+
+
+def test_asym_both_suppresses_intermediate_outhandler_calls():
+    """When 'Asym: Both' is toggled, outHandler is called exactly once (from
+    the RR-update write); the Q-update write is suppressed by the counter.
+
+    Also verifies the reverse sync: updateGUI-style direct writes to
+    'Asym: Both' (with the counter held) don't re-enter the callback.
+    """
+
+    calls = []
+
+    # Minimal widget stubs
+    class _W:
+        def __init__(self, value=False, disabled=False):
+            self.value = value
+            self.disabled = disabled
+            self._obs = []
+
+        def observe(self, fn, names='value'):
+            self._obs.append(fn)
+
+        def _fire(self, new_val):
+            old = self.value
+            self.value = new_val
+            if old != new_val:
+                for fn in self._obs:
+                    fn({'new': new_val, 'old': old, 'owner': self})
+
+    q_cb  = _W(False)
+    rr_cb = _W(False)
+    asym_all_cb = _W(False)
+
+    _asym_suppress = [0]
+
+    def outHandler():
+        if _asym_suppress[0] > 0:
+            return
+        calls.append('update')
+
+    # Wire individual boxes to outHandler (simulating interactive_output)
+    q_cb.observe(lambda _: outHandler(), names='value')
+    rr_cb.observe(lambda _: outHandler(), names='value')
+
+    all_widgets = {
+        'Asymmetric Q-update':  q_cb,
+        'Asymmetric RR-update': rr_cb,
+        'Asym: Both':           asym_all_cb,
+    }
+
+    def _on_asym_all_change(change):
+        if _asym_suppress[0] > 0:
+            return
+        new_val = change['new']
+        _asym_suppress[0] += 1
+        all_widgets['Asymmetric Q-update']._fire(new_val)
+        _asym_suppress[0] -= 1
+        all_widgets['Asymmetric RR-update']._fire(new_val)
+
+    asym_all_cb.observe(_on_asym_all_change, names='value')
+
+    # Toggle "Asym: Both" ON → exactly one updateGUI call
+    asym_all_cb._fire(True)
+    assert calls == ['update'], f"Expected 1 call, got {calls}"
+    assert q_cb.value is True
+    assert rr_cb.value is True
+
+    # Simulate updateGUI syncing "Asym: Both" back (suppress prevents cascade)
+    calls.clear()
+    _asym_suppress[0] += 1
+    asym_all_cb._fire(True)   # already True — no _obs fires (same value guard)
+    _asym_suppress[0] -= 1
+    assert calls == []  # no extra update triggered
+
+    # Toggle OFF → exactly one call
+    calls.clear()
+    asym_all_cb._fire(False)
+    assert calls == ['update']
+    assert q_cb.value is False
+    assert rr_cb.value is False
+
+
 def test_stored_mle_loss_from_positional_fit_entry_tuple():
     fit_entry = (
         {"params": {"DRIFT_COEF": 1.0}, "result": {"neg_loglik": 456.7}},
