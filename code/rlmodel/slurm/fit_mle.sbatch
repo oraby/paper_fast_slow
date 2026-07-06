@@ -9,7 +9,15 @@
 # mask, so we do NOT pass --mle-device-id (CuPy uses the single visible GPU).
 # --mle-no-progress silences the tqdm bar so it doesn't bloat the log file.
 #
-# Usage (submit from the project ROOT — one level above `code/`):
+# PREFERRED entry point is the Python launcher, which computes the array size
+# dynamically and routes logs into a per-model directory:
+#
+#   python -m code.rlmodel.slurm.launch mle \
+#       --drift "RewardRate" --bias "Q-Val (Offset)" --mle-gpu-memory-gb 16
+#
+# Direct submit also works (submit from the project ROOT — one level above
+# `code/`); the `#SBATCH --array` / `--output` defaults below apply unless the
+# launcher overrides them on the command line:
 #
 #   mkdir -p code/rlmodel/slurm/logs   # once, if the dir is missing
 #   sbatch code/rlmodel/slurm/fit_mle.sbatch \
@@ -22,8 +30,9 @@
 #   --conda-env NAME   (default: py314)
 # selects the conda env to activate and is consumed here (not forwarded).
 #
-# The `--array` range below must equal the number of subjects in subjects.txt
-# minus one (regenerate with `python -m code.rlmodel.slurm.gen_subjects`).
+# The `--array` range below is a fallback for direct sbatch use; it must equal
+# the number of subjects in subjects.txt minus one (regenerate with
+# `python -m code.rlmodel.slurm.gen_subjects`). The launcher overrides it.
 #
 #SBATCH --job-name=rl_mle
 #SBATCH --partition=gpu
