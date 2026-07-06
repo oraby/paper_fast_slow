@@ -66,7 +66,7 @@ class InitVals:
     BIAS_MU : InitVal           = InitVal(-1, 1, 0)
     BIAS_SIGMA : InitVal        = InitVal(0, 1, .1)
     NON_DECISION_TIME : InitVal = InitVal(0, 1, .3)
-    Q_VAL_DECAY_RATE : InitVal  = InitVal(.1, 30, 1)
+    Q_VAL_DECAY_RATE : InitVal  = InitVal(.1, 60, 1)
     Q_VAL_COEF : InitVal        = InitVal(1, 100, 5)
     Q_VAL_OFFSET : InitVal      = InitVal(-1, 1, 0)
     # MLE-only contamination / lapse mixture. λ ∈ [0, 1). Per-trial likelihood
@@ -113,7 +113,7 @@ class InitVals:
 
 
 DT = 0.005
-T_dur = 3
+T_dur = 4.8
 NUM_CPUS = os.cpu_count()
 
 
@@ -132,4 +132,4 @@ NUM_CPUS = os.cpu_count()
 # into the fit vector. Same machinery would handle MLE_TERMINAL_C
 # cleanly. Documented as a follow-up in
 # ``rlmodel/scale_bound_equivalence_plan.md``.
-MLE_TERMINAL_C = InitVal(Min=0.0, Max=1.0, Default=0.0)
+MLE_TERMINAL_C = InitVal(Min=0.0, Max=1.0, Default=1.0)
