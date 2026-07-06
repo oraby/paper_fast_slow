@@ -36,7 +36,7 @@ def _trace(length, window_slice, peak_pos, peak_val):
 
 
 def _twop_row(name, date, sess, trial, region, short, neuronal,
-              s=2, e=6):
+              s=2, e=6, dv=0.5, quantile=1):
     return {
         "Name": name, "Date": date, "SessionNum": sess, "TrialNumber": trial,
         "BrainRegion": int(region), "ShortName": short,
@@ -45,21 +45,29 @@ def _twop_row(name, date, sess, trial, region, short, neuronal,
         # sampling start = 2, movement start = 7 (matches the length-10 trace).
         "epochs_ranges": [(0, 1), (2, 6), (7, 9)],
         "epochs_names": ["-0.1s Sampling", "Sampling", "Movement to Lateral Port"],
+        "DV": dv, "quantile_idx": quantile,   # DVabs derived downstream
     }
 
 
 def _make_2p(region=nc.BrainRegion.M2_Bi, short="S1", name="rat",
-             date="2025-01-01", sess=1, n_trials=4, activities=None):
+             date="2025-01-01", sess=1, n_trials=4, activities=None,
+             dvs=None, quantiles=None):
     """One session, two neurons (n1, n2), ``n_trials`` trials. ``activities`` is
-    a dict {trace_id: [per-trial window-max]}. Window is indices 2..6."""
+    a dict {trace_id: [per-trial window-max]}. Window is indices 2..6. ``dvs`` /
+    ``quantiles`` give per-trial DV and quantile_idx (fast=1, slow=3)."""
     if activities is None:
         activities = {"n1": [1.0, 2.0, 3.0, 4.0],
                       "n2": [4.0, 3.0, 2.0, 1.0]}
+    if dvs is None:
+        dvs = [0.5] * n_trials
+    if quantiles is None:
+        quantiles = [1] * n_trials
     rows = []
     for t in range(n_trials):
         neuronal = {tid: _trace(10, slice(2, 7), 4, activities[tid][t])
                     for tid in activities}
-        rows.append(_twop_row(name, date, sess, t + 1, region, short, neuronal))
+        rows.append(_twop_row(name, date, sess, t + 1, region, short, neuronal,
+                              dv=dvs[t], quantile=quantiles[t]))
     return pd.DataFrame(rows)
 
 
@@ -384,6 +392,29 @@ def test_param_gradient_light_to_dark():
     assert brightness[0] > brightness[-1] + 0.5   # a clearly visible spread
 
 
+def test_range_colors_styles_signed_magnitude_and_dash():
+    # Symmetric ranges: negatives dashed, and mirror ranges share a shade
+    # (colour encodes |midpoint|, not the ordered position).
+    spec = nc.PARAM_BY_KEY["DV"]
+    ranges = [(-1.0, -0.5), (-0.5, 0.0), (0.0, 0.5), (0.5, 1.0)]
+    colors, styles = nc._range_colors_styles(spec, ranges)
+    assert styles == ["--", "--", "-", "-"]           # negative side dashed
+    # extremes (|mid|=0.75) match; inner (|mid|=0.25) match; extreme != inner
+    assert colors[0] == colors[3] and colors[1] == colors[2]
+    assert colors[0] != colors[1]
+    # extreme is darker (lower total brightness) than the inner range
+    assert sum(colors[0]) < sum(colors[1])
+
+
+def test_range_colors_styles_unsigned_all_solid():
+    spec = nc.PARAM_BY_KEY["DVabs"]
+    ranges = [(0.0, 0.35), (0.35, 0.65), (0.65, 1.0)]
+    colors, styles = nc._range_colors_styles(spec, ranges)
+    assert styles == ["-", "-", "-"]
+    # plain light -> dark gradient over the ordered ranges
+    assert sum(colors[0]) > sum(colors[-1])
+
+
 def test_plot_results_save_min_abs_corr_filters(tmp_path):
     df_2p = _make_2p(activities={"n1": [1.0, 2.0, 3.0, 4.0],
                                  "n2": [4.0, 3.0, 2.0, 1.0]})
@@ -416,3 +447,88 @@ def test_param_traces_save_runs_and_filters(tmp_path):
     assert len(files) == 2
     assert any(f.startswith("+1.000_S1_n1") for f in files)
     assert out.parts[-3:] == ("M", "param_traces", "Q_val")
+
+
+# --------------------------------------------------------------------------
+# Fast vs slow drift analysis (DV / DVabs)
+# --------------------------------------------------------------------------
+# 8 trials: 4 fast (quantile 1), 4 slow (quantile 3); DV = [-1,-.5,.5,1] each.
+# n1: activity tracks DV in fast (r=+1, tuned) but not slow (|r|=.32);
+# n2: mirror (r=-1 fast, |r|=.32 slow). Activities kept positive so nanmax works.
+_FS_DVS = [-1.0, -0.5, 0.5, 1.0, -1.0, -0.5, 0.5, 1.0]
+_FS_Q = [1, 1, 1, 1, 3, 3, 3, 3]
+_FS_ACT = {"n1": [1.0, 1.5, 2.5, 3.0, 1.0, 3.0, 1.0, 3.0],
+           "n2": [3.0, 2.5, 1.5, 1.0, 3.0, 1.0, 3.0, 1.0]}
+
+
+def _make_fastslow():
+    df_2p = _make_2p(n_trials=8, activities=_FS_ACT, dvs=_FS_DVS, quantiles=_FS_Q)
+    mle_pt = _make_mle_pt(n_trials=8, q_val=list(range(8)),
+                          loglik=[-1.0] * 8, valid=[True] * 8)
+    table = nc.build_neuron_trial_table(df_2p, mle_pt, PARAM_KEYS)
+    return table
+
+
+def test_build_table_carries_drift_and_quantile():
+    table = _make_fastslow()
+    for col in ("DV", "DVabs", "quantile_idx"):
+        assert col in table.columns
+    # DVabs == |DV|; quantile_idx preserved
+    assert np.allclose(table.DVabs, table.DV.abs())
+    assert set(table.quantile_idx.unique()) == {1, 3}
+
+
+def test_load_2p_activity_derives_dvabs(tmp_path):
+    import pickle
+    df = _make_2p(n_trials=2)           # has DV, no DVabs
+    df["epoch"] = "Sampling"
+    fp = tmp_path / "twop.pkl"
+    with open(fp, "wb") as f:
+        pickle.dump(df, f)
+    loaded = nc.load_2p_activity(fp)
+    assert "DVabs" in loaded.columns
+    assert np.allclose(loaded.DVabs, loaded.DV.abs())
+
+
+def test_split_fast_slow_and_drift_corr():
+    table = _make_fastslow()
+    fast, slow = nc.split_fast_slow(table)
+    assert (fast.quantile_idx == 1).all() and (slow.quantile_idx == 3).all()
+    corr_fast, corr_slow = nc.drift_correlations(table)
+    assert {"DV_r", "DVabs_r"} <= set(corr_fast.columns)
+    # n1: r=+1 fast, sub-threshold slow
+    n1_fast = corr_fast.loc[corr_fast.long_trace_id == "S1_n1", "DV_r"].iloc[0]
+    n1_slow = corr_slow.loc[corr_slow.long_trace_id == "S1_n1", "DV_r"].iloc[0]
+    assert np.isclose(n1_fast, 1.0)
+    assert abs(n1_slow) < 0.5
+
+
+def test_plot_fast_slow_bars_contrast():
+    table = _make_fastslow()
+    corr_fast, corr_slow = nc.drift_correlations(table)
+    summary = nc.plot_fast_slow_bars(corr_fast, corr_slow, "DV",
+                                     min_abs_corr=0.5, by_region=True)
+    assert set(summary.speed) == {"fast", "slow"}
+    assert (summary.BrainRegion == "MFC").all()          # one region
+    fast_pct = summary[summary.speed == "fast"].pct.iloc[0]
+    slow_pct = summary[summary.speed == "slow"].pct.iloc[0]
+    assert fast_pct == 100.0 and slow_pct == 0.0         # tuned only in fast
+    # combined -> still fast + slow rows
+    comb = nc.plot_fast_slow_bars(corr_fast, corr_slow, "DVabs",
+                                  min_abs_corr=0.5, by_region=False)
+    assert (comb.BrainRegion == "MFC & LFC").all() and len(comb) == 2
+
+
+def test_fastslow_scatter_and_traces_save(tmp_path):
+    table = _make_fastslow()
+    corr_fast, corr_slow = nc.drift_correlations(table)
+    sc = nc.plot_neuron_fastslow_scatter(
+        table, corr_fast, corr_slow, "DV", mode="save", min_abs_corr=0.5,
+        save_root=str(tmp_path), model_name="M")
+    assert len(list(sc.glob("*.svg"))) == 2               # n1, n2 both max|r|=1
+    assert sc.parts[-3:] == ("M", "drift_scatter", "DV")
+    tr = nc.plot_neuron_fastslow_traces(
+        table, corr_fast, corr_slow, "DV", [-1.001, 0.0, 1.001], mode="save",
+        min_abs_corr=0.5, save_root=str(tmp_path), model_name="M")
+    assert len(list(tr.glob("*.svg"))) == 2
+    assert tr.parts[-3:] == ("M", "drift_traces", "DV")

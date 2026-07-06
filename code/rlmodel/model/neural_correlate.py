@@ -54,27 +54,43 @@ class ParamSpec:
     """One model latent the notebook can correlate against neural activity.
 
     ``key``    — short column/folder name (e.g. ``"Q_L"``; matches the plan).
-    ``mle_col``— source column on the re-evaluated ``mle_df``.
-    ``family`` — ``"Q"`` (needs ``include_Q``) or ``"RR"`` (needs
-                 ``include_RewardRate``); used to omit unavailable latents.
+    ``mle_col``— source column on the re-evaluated ``mle_df`` (for ``"drift"``
+                 params this is the behavioral column on the 2-photon row).
+    ``family`` — ``"Q"`` (needs ``include_Q``) / ``"RR"`` (needs
+                 ``include_RewardRate``) — MLE latents gated by include flags;
+                 or ``"drift"`` — behavioral (DV / DVabs), always available.
     ``label``  — friendly axis label (e.g. ``"Q-Left"``).
     ``color``  — plot color, kept consistent between scatter and pie.
+    ``signed`` — the value can be negative (DV, Q-val). In the trace plots the
+                 gradient then encodes only the **magnitude** (0 → max), so the
+                 symmetric extremes (e.g. -1 and +1) share a shade, and the
+                 negative-side ranges are drawn dashed.
     """
     key: str
     mle_col: str
     family: str
     label: str
     color: str
+    signed: bool = False
 
 
 PARAM_SPECS = (
     ParamSpec("Q_L", "mle_Q_left_before", "Q", "Q-Left", "g"),
     ParamSpec("Q_R", "mle_Q_right_before", "Q", "Q-Right", "orange"),
-    ParamSpec("Q_val", "mle_Q_rel_before", "Q", "Q-val", "purple"),
+    ParamSpec("Q_val", "mle_Q_rel_before", "Q", "Q-val", "purple", signed=True),
     ParamSpec("RewardRate", "mle_reward_rate_before", "RR",
               "R-Learning RewardRate", "teal"),
+    # Drift: the neuron's evidence encoding — activity vs signed DV and vs |DV|.
+    # These live on the 2-photon trial row, not the MLE latents.
+    ParamSpec("DV", "DV", "drift", "DV", "steelblue", signed=True),
+    ParamSpec("DVabs", "DVabs", "drift", "|DV|", "sienna"),
 )
 PARAM_BY_KEY = {spec.key: spec for spec in PARAM_SPECS}
+
+# Behavioral (non-MLE) columns carried onto the neuron-trial table from the 2P
+# trial row, for the drift / fast-vs-slow analysis.
+DRIFT_KEYS = [s.key for s in PARAM_SPECS if s.family == "drift"]  # ["DV","DVabs"]
+_FAST_Q, _SLOW_Q = 1, 3  # quantile_idx: fastest / slowest RT tercile
 
 # The trial-identity key shared by the behavior/MLE and the 2-photon dataframes.
 IDENTITY_COLS = ["Name", "Date", "SessionNum", "TrialNumber"]
@@ -264,7 +280,9 @@ def load_2p_activity(path):
         if sampling.any():
             df = df[sampling]
     df = df[df.BrainRegion.isin(_ANALYSIS_REGIONS)]
-    df = df.drop_duplicates(subset=IDENTITY_COLS, keep="first")
+    df = df.drop_duplicates(subset=IDENTITY_COLS, keep="first").copy()
+    if "DV" in df.columns and "DVabs" not in df.columns:
+        df["DVabs"] = df["DV"].abs()   # evidence magnitude (mirrors prepare_behavior_df)
     return df.reset_index(drop=True)
 
 
@@ -371,6 +389,13 @@ def build_neuron_trial_table(df_2p, mle_pt, param_keys, *,
         short = trial.ShortName
         s = int(trial.trace_start_idx)
         e = int(trial.trace_end_idx) + 1
+        # Behavioral drift + speed columns, constant across this trial's neurons.
+        dv = float(trial["DV"]) if "DV" in df_2p.columns else np.nan
+        dvabs = (float(trial["DVabs"]) if "DVabs" in df_2p.columns
+                 else abs(dv))
+        quantile_idx = (int(trial["quantile_idx"])
+                        if "quantile_idx" in df_2p.columns
+                        and pd.notnull(trial["quantile_idx"]) else -1)
         neuronal = trial["traces_sets"]["neuronal"]
         for trace_id, full_trace in neuronal.items():
             window = np.asarray(full_trace)[s:e]
@@ -386,12 +411,15 @@ def build_neuron_trial_table(df_2p, mle_pt, param_keys, *,
                 "trace": np.asarray(full_trace),
                 "epochs_ranges": epochs_ranges,
                 "epochs_names": epochs_names,
+                "DV": dv,
+                "DVabs": dvabs,
+                "quantile_idx": quantile_idx,
             }
             row.update(params)
             rows.append(row)
     cols = (["trace_id", "long_trace_id", "BrainRegion", "ShortName",
              "TrialNumber", "max_activity", "trace", "epochs_ranges",
-             "epochs_names"] + param_cols)
+             "epochs_names", "DV", "DVabs", "quantile_idx"] + param_cols)
     return pd.DataFrame(rows, columns=cols)
 
 
@@ -466,6 +494,24 @@ def compute_neuron_correlations(table, param_keys, *, method="pearson"):
             rec[f"{col}_p"] = p
         out.append(rec)
     return pd.DataFrame(out)
+
+
+def split_fast_slow(table):
+    """``(fast, slow)`` subsets of the neuron-trial table — fast = fastest RT
+    tercile (``quantile_idx == 1``), slow = slowest (``quantile_idx == 3``); the
+    middle tercile is excluded, matching the notebooks' fast/slow convention."""
+    return (table[table["quantile_idx"] == _FAST_Q],
+            table[table["quantile_idx"] == _SLOW_Q])
+
+
+def drift_correlations(table, *, method="pearson"):
+    """``(corr_fast, corr_slow)`` — per-neuron correlations of max activity vs
+    the drift columns (``DV``, ``DVabs``), computed **within** the fast and slow
+    trial subsets separately (a neuron may be drift-correlated in one but not the
+    other)."""
+    fast, slow = split_fast_slow(table)
+    return (compute_neuron_correlations(fast, DRIFT_KEYS, method=method),
+            compute_neuron_correlations(slow, DRIFT_KEYS, method=method))
 
 
 # --------------------------------------------------------------------------
@@ -572,21 +618,41 @@ def plot_neuron_results(table, corr_df, param, *, mode="display", top_x=20,
 # --------------------------------------------------------------------------
 # 5b. Per-neuron trace averages, grouped by parameter value range
 # --------------------------------------------------------------------------
-def _param_gradient(base_color, n):
-    """``n`` shades of ``base_color``'s hue, **light → dark** (low value range =
-    pale, high value range = dark). Built in HSV — the pale end drops saturation
-    and raises brightness, the dark end saturates and dims — so the gradient is
-    clearly visible for any hue (a straight light-tint→base blend was invisible
-    for already-dark hues like purple)."""
+def _param_shade(base_color, t):
+    """A single shade of ``base_color``'s hue for ``t`` in ``[0, 1]`` — ``t=0``
+    lightest (pale, desaturated, bright), ``t=1`` darkest (saturated, dim).
+    Built in HSV so the light→dark span is visible for any hue (a straight
+    light-tint→base blend was invisible for already-dark hues like purple)."""
     h, s, _v = colorsys.rgb_to_hsv(*to_rgb(base_color))
     s = max(s, 0.55)                            # ensure the hue can be shaded
+    return colorsys.hsv_to_rgb(h, s * (0.30 + 0.70 * t), 0.98 - 0.55 * t)
+
+
+def _param_gradient(base_color, n):
+    """``n`` shades of ``base_color``'s hue, **light → dark** (low value range =
+    pale, high value range = dark)."""
     if n == 1:
-        return [colorsys.hsv_to_rgb(h, 0.7 * s, 0.72)]
-    shades = []
-    for t in np.linspace(0.0, 1.0, n):          # t=0 lightest … t=1 darkest
-        shades.append(colorsys.hsv_to_rgb(h, s * (0.30 + 0.70 * t),
-                                          0.98 - 0.55 * t))
-    return shades
+        return [_param_shade(base_color, 0.6)]
+    return [_param_shade(base_color, t) for t in np.linspace(0.0, 1.0, n)]
+
+
+def _range_colors_styles(spec, value_ranges):
+    """Per-range ``(colors, linestyles)`` for the trace overlay.
+
+    Unsigned params keep the plain light→dark gradient over the ordered ranges
+    (all solid). For a **signed** param (DV, Q-val) the gradient encodes only the
+    range's **magnitude** — each range's colour comes from ``|midpoint| / maxmag``
+    — so the symmetric extremes (e.g. ``[-1,-0.35]`` and ``[0.35,1]``) get the
+    same shade, and ranges on the negative side (midpoint < 0) are drawn dashed.
+    """
+    if not spec.signed:
+        return _param_gradient(spec.color, len(value_ranges)), \
+            ["-"] * len(value_ranges)
+    mids = [0.5 * (lo + hi) for lo, hi in value_ranges]
+    maxmag = max((abs(m) for m in mids), default=0.0) or 1.0
+    colors = [_param_shade(spec.color, abs(m) / maxmag) for m in mids]
+    styles = ["--" if m < 0 else "-" for m in mids]
+    return colors, styles
 
 
 def _draw_epoch_lines(ax, epochs_ranges, epochs_names):
@@ -603,15 +669,18 @@ def _draw_epoch_lines(ax, epochs_ranges, epochs_names):
     ax.set_xticklabels(labels, rotation=20, ha="right", fontsize="small")
 
 
-def _plot_one_neuron_traces(ax, neuron_df, spec, value_ranges, r):
+def _plot_one_neuron_traces(ax, neuron_df, spec, value_ranges, r, *,
+                            panel_label=None):
     """Overlay, in one axes, the mean ± SEM time-normalized trace for each
     value range of ``spec`` (gradient-coloured), with the sampling/movement
-    epoch lines."""
+    epoch lines. ``panel_label`` (e.g. "Fast") gives a short title instead of
+    the full neuron id — for multi-panel figures that carry the id in a
+    suptitle."""
     vals = neuron_df[spec.key].to_numpy(dtype=float)
     traces = np.vstack([np.asarray(t, dtype=float)
                         for t in neuron_df["trace"].to_numpy()])
     x = np.arange(traces.shape[1])
-    colors = _param_gradient(spec.color, len(value_ranges))
+    colors, styles = _range_colors_styles(spec, value_ranges)
     for i, (lo, hi) in enumerate(value_ranges):
         # Last range is closed on the right so the max value is included.
         in_range = (vals >= lo) & (vals <= hi if i == len(value_ranges) - 1
@@ -621,7 +690,7 @@ def _plot_one_neuron_traces(ax, neuron_df, spec, value_ranges, r):
             continue
         grp = traces[in_range]
         mean = np.nanmean(grp, axis=0)
-        ax.plot(x, mean, color=colors[i], lw=1.8,
+        ax.plot(x, mean, color=colors[i], lw=1.8, ls=styles[i],
                 label=f"[{lo:g}, {hi:g}]  n={m}")
         if m >= 2:  # SEM band needs >= 2 trials
             cnt = np.sum(~np.isnan(grp), axis=0)
@@ -637,9 +706,12 @@ def _plot_one_neuron_traces(ax, neuron_df, spec, value_ranges, r):
     ax.spines[["top", "right", "left"]].set_visible(False)
     ax.tick_params(left=False, labelleft=False)
     r_str = "n/a" if r is None or not np.isfinite(r) else f"{r:+.3f}"
-    ax.set_title(f"{neuron_df.iloc[0].long_trace_id}\n"
-                 f"{neuron_df.iloc[0].BrainRegion} · {spec.label} · r={r_str}",
-                 fontsize="small")
+    if panel_label is not None:
+        ax.set_title(f"{panel_label} · r={r_str}", fontsize="small")
+    else:
+        ax.set_title(f"{neuron_df.iloc[0].long_trace_id}\n"
+                     f"{neuron_df.iloc[0].BrainRegion} · {spec.label} · r={r_str}",
+                     fontsize="small")
     ax.legend(fontsize="x-small", frameon=False, title=spec.label)
 
 
@@ -924,3 +996,242 @@ def plot_region_bars(corr_df, table, param_keys=None, *, min_abs_corr=0.3,
         print(f"Saved tuning bars -> {out_dir}")
     plt.show()
     return summary
+
+
+# --------------------------------------------------------------------------
+# 7. Fast vs slow: drift-correlated neurons (DV / DVabs)
+# --------------------------------------------------------------------------
+_FAST_COLOR = "tomato"     # lab convention (behavior.ipynb): fast = red-ish,
+_SLOW_COLOR = "goldenrod"  # slow = yellow/gold.
+
+
+def _rfmt(v):
+    return f"{v:+.3f}" if v is not None and np.isfinite(v) else "nan"
+
+
+def _pct_stats(corr, rcol, min_abs_corr):
+    """(session-mean %, SEM, n_sessions) of drift-correlated neurons."""
+    pcts = _session_tuned_percent(corr, rcol, min_abs_corr)
+    mean = float(pcts.mean()) if len(pcts) else np.nan
+    sem = float(pcts.sem()) if len(pcts) > 1 else 0.0
+    return mean, sem, len(pcts)
+
+
+def plot_fast_slow_bars(corr_fast, corr_slow, param, *, min_abs_corr=0.3,
+                        by_region=True, save=False, save_root=None,
+                        model_name=None, ext="svg"):
+    """Fast-vs-slow % of drift-correlated neurons (no shuffle).
+
+    For ``param`` (``"DV"`` / ``"DVabs"``), a neuron is drift-correlated when
+    ``|r| >= min_abs_corr`` (Pearson, within its fast/slow subset). Each bar is
+    the session-mean ± SEM of that %; fast = tomato, slow = goldenrod.
+    ``by_region=True`` → a fast|slow pair per MFC/LFC (**4 bars**);
+    ``by_region=False`` → all regions pooled (**2 bars**). Returns a tidy summary
+    (region × speed). Always shown; ``save`` also writes the figure + summary.
+    """
+    spec = PARAM_BY_KEY[param]
+    rcol = f"{spec.key}_r"
+    for c in (corr_fast, corr_slow):
+        if rcol not in c.columns:
+            raise KeyError(f"{param!r} not in the correlation dataframe.")
+
+    if by_region:
+        regions = sorted(set(corr_fast.BrainRegion) | set(corr_slow.BrainRegion))
+    else:
+        regions = ["MFC & LFC"]
+
+    x = np.arange(len(regions))
+    w = 0.36
+    fig, ax = plt.subplots(figsize=(1.9 * len(regions) + 2.5, 4.4))
+    rows = []
+    for i, region in enumerate(regions):
+        cf = corr_fast if not by_region else corr_fast[corr_fast.BrainRegion == region]
+        cs = corr_slow if not by_region else corr_slow[corr_slow.BrainRegion == region]
+        fmean, fsem, fn = _pct_stats(cf, rcol, min_abs_corr)
+        smean, ssem, sn = _pct_stats(cs, rcol, min_abs_corr)
+        ax.bar(x[i] - w / 2, fmean, width=w, yerr=fsem, capsize=3,
+               color=_FAST_COLOR, edgecolor="k", linewidth=0.5)
+        ax.bar(x[i] + w / 2, smean, width=w, yerr=ssem, capsize=3,
+               color=_SLOW_COLOR, edgecolor="k", linewidth=0.5)
+        rows += [{"BrainRegion": region, "speed": "fast", "pct": fmean,
+                  "sem": fsem, "n_sessions": fn},
+                 {"BrainRegion": region, "speed": "slow", "pct": smean,
+                  "sem": ssem, "n_sessions": sn}]
+        print(f"\t{region}: fast {fmean:.2f}±{fsem:.2f}% ({fn} sess) | "
+              f"slow {smean:.2f}±{ssem:.2f}% ({sn} sess)")
+    ax.set_xticks(x)
+    ax.set_xticklabels(regions)
+    ax.set_ylabel(f"{spec.label}-correlated neurons (%)")
+    ax.set_title(f"{spec.label} drift tuning, fast vs slow (|r| ≥ {min_abs_corr:g})"
+                 f"\n{model_name or ''}", fontsize="medium")
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.legend(handles=[Patch(facecolor=_FAST_COLOR, edgecolor="k", label="fast"),
+                       Patch(facecolor=_SLOW_COLOR, edgecolor="k", label="slow")],
+              frameon=False, fontsize="small")
+    fig.tight_layout()
+
+    summary = pd.DataFrame(rows)
+    if save:
+        if save_root is None or model_name is None:
+            raise ValueError("save needs save_root and model_name")
+        out_dir = (pathlib.Path(save_root) / _safe_filename(model_name)
+                   / "fast_slow_bars" / spec.key)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        tag = "by_region" if by_region else "combined"
+        fig.savefig(out_dir / f"bars_{tag}.{ext}", bbox_inches="tight")
+        summary.to_csv(out_dir / f"summary_{tag}.csv", index=False)
+        print(f"Saved fast/slow bars -> {out_dir}")
+    plt.show()
+    return summary
+
+
+def _fastslow_ranking(corr_fast, corr_slow, rcol):
+    """Neuron table (long_trace_id, BrainRegion, r_fast, r_slow, max_abs) ranked
+    by ``max(|r_fast|, |r_slow|)`` descending; neurons undefined in both drop."""
+    meta = pd.concat([corr_fast[["long_trace_id", "BrainRegion"]],
+                      corr_slow[["long_trace_id", "BrainRegion"]]]) \
+             .drop_duplicates("long_trace_id").set_index("long_trace_id")
+    rank = meta.copy()
+    rank["r_fast"] = corr_fast.set_index("long_trace_id")[rcol]
+    rank["r_slow"] = corr_slow.set_index("long_trace_id")[rcol]
+    rank["max_abs"] = rank[["r_fast", "r_slow"]].abs().max(axis=1)
+    return rank.dropna(subset=["max_abs"]).sort_values("max_abs", ascending=False)
+
+
+def _plot_one_neuron_overlay(ax, neuron_fast, neuron_slow, spec):
+    """Scatter a neuron's fast (tomato) & slow (goldenrod) trials with per-speed
+    least-squares fit lines; legend carries each speed's r / p."""
+    for ndf, color, name in [(neuron_fast, _FAST_COLOR, "fast"),
+                             (neuron_slow, _SLOW_COLOR, "slow")]:
+        if ndf is None or len(ndf) == 0:
+            continue
+        x = ndf[spec.key].to_numpy(dtype=float)
+        y = ndf["max_activity"].to_numpy(dtype=float)
+        ax.scatter(x, y, s=14, color=color, alpha=0.5, edgecolors="none")
+        slope, intercept, r, p = _linfit(x, y)
+        if np.isfinite(slope):
+            xs = np.array([np.nanmin(x), np.nanmax(x)])
+            _pf = _fmt_p(p)
+            ptxt = f"p {_pf}" if _pf.startswith("<") else f"p = {_pf}"
+            ax.plot(xs, slope * xs + intercept, color=color, lw=2,
+                    label=f"{name}: r={r:+.3f}, {ptxt}")
+        else:
+            ax.plot([], [], color=color, label=f"{name}: r=n/a")
+    ax.set_xlabel(spec.label)
+    ax.set_ylabel("Neuron Activity")
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.legend(fontsize="small", frameon=False)
+
+
+def plot_neuron_fastslow_scatter(table, corr_fast, corr_slow, param, *,
+                                 mode="display", top_x=20, min_abs_corr=None,
+                                 display_figsize=(6, 5), display_dpi=110,
+                                 save_figsize=(9, 7), save_dpi=300,
+                                 save_root=None, model_name=None, ext="svg"):
+    """Per-neuron activity-vs-drift scatter, fast & slow overlaid.
+
+    Neurons ranked by ``max(|r_fast|, |r_slow|)``. ``mode="display"`` shows the
+    top-``top_x``; ``mode="save"`` writes each neuron under
+    ``{save_root}/{model_name}/drift_scatter/{param}/`` and, when ``min_abs_corr``
+    is set, only the subset with ``max(|r_fast|,|r_slow|) >= min_abs_corr``.
+    """
+    spec = PARAM_BY_KEY[param]
+    rcol = f"{spec.key}_r"
+    rank = _fastslow_ranking(corr_fast, corr_slow, rcol)
+    tf, ts = split_fast_slow(table)
+    by_fast = dict(tuple(tf.groupby("long_trace_id")))
+    by_slow = dict(tuple(ts.groupby("long_trace_id")))
+
+    def _draw(fig, ax, long_id, row):
+        _plot_one_neuron_overlay(ax, by_fast.get(long_id), by_slow.get(long_id),
+                                 spec)
+        ax.set_title(f"{long_id}\n{row.BrainRegion} · {spec.label}",
+                     fontsize="small")
+
+    if mode == "save":
+        if save_root is None or model_name is None:
+            raise ValueError("save mode needs save_root and model_name")
+        if min_abs_corr is not None:
+            rank = rank[rank["max_abs"] >= min_abs_corr]
+        out_dir = (pathlib.Path(save_root) / _safe_filename(model_name)
+                   / "drift_scatter" / spec.key)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        for long_id, row in rank.iterrows():
+            fig, ax = plt.subplots(figsize=save_figsize, dpi=save_dpi)
+            _draw(fig, ax, long_id, row)
+            fname = f"f{_rfmt(row.r_fast)}_s{_rfmt(row.r_slow)}_{_safe_filename(long_id)}"
+            if not _region_in_name(long_id, row.BrainRegion):
+                fname += f"_{row.BrainRegion}"
+            fig.savefig(out_dir / f"{fname}.{ext}", bbox_inches="tight",
+                        dpi=save_dpi)
+            plt.close(fig)
+        print(f"Saved {len(rank)} fast/slow scatters -> {out_dir}")
+        return out_dir
+
+    for long_id, row in rank.head(top_x).iterrows():
+        fig, ax = plt.subplots(figsize=display_figsize, dpi=display_dpi)
+        _draw(fig, ax, long_id, row)
+        plt.show()
+    return rank.head(top_x)
+
+
+def plot_neuron_fastslow_traces(table, corr_fast, corr_slow, param, bin_edges, *,
+                                mode="display", top_x=20, min_abs_corr=None,
+                                display_figsize=(11, 4), display_dpi=110,
+                                save_figsize=(16, 6), save_dpi=300,
+                                save_root=None, model_name=None, ext="svg"):
+    """Per-neuron normalized trace averages by value range, in two panels
+    (Fast | Slow). Each panel is the gradient-by-range mean ± SEM style with
+    sampling/movement epoch lines. Ranking / display / save behave like
+    :func:`plot_neuron_fastslow_scatter`; saved under
+    ``{save_root}/{model_name}/drift_traces/{param}/``."""
+    spec = PARAM_BY_KEY[param]
+    rcol = f"{spec.key}_r"
+    value_ranges = _edges_to_ranges(bin_edges)
+    rank = _fastslow_ranking(corr_fast, corr_slow, rcol)
+    tf, ts = split_fast_slow(table)
+    by_fast = dict(tuple(tf.groupby("long_trace_id")))
+    by_slow = dict(tuple(ts.groupby("long_trace_id")))
+
+    def _panel(ax, ndf, r, label):
+        if ndf is None or len(ndf) == 0:
+            ax.text(0.5, 0.5, f"no {label.lower()} trials", ha="center",
+                    va="center", transform=ax.transAxes, color="0.5")
+            ax.axis("off")
+            return
+        _plot_one_neuron_traces(ax, ndf, spec, value_ranges, r,
+                                panel_label=label)
+
+    def _draw(fig, axs, long_id, row):
+        _panel(axs[0], by_fast.get(long_id), row.r_fast, "Fast")
+        _panel(axs[1], by_slow.get(long_id), row.r_slow, "Slow")
+        fig.suptitle(f"{long_id}  ·  {row.BrainRegion}  ·  {spec.label}",
+                     fontsize="medium")
+
+    if mode == "save":
+        if save_root is None or model_name is None:
+            raise ValueError("save mode needs save_root and model_name")
+        if min_abs_corr is not None:
+            rank = rank[rank["max_abs"] >= min_abs_corr]
+        out_dir = (pathlib.Path(save_root) / _safe_filename(model_name)
+                   / "drift_traces" / spec.key)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        for long_id, row in rank.iterrows():
+            fig, axs = plt.subplots(1, 2, figsize=save_figsize, dpi=save_dpi,
+                                    sharey=True)
+            _draw(fig, axs, long_id, row)
+            fname = f"f{_rfmt(row.r_fast)}_s{_rfmt(row.r_slow)}_{_safe_filename(long_id)}"
+            if not _region_in_name(long_id, row.BrainRegion):
+                fname += f"_{row.BrainRegion}"
+            fig.savefig(out_dir / f"{fname}.{ext}", bbox_inches="tight",
+                        dpi=save_dpi)
+            plt.close(fig)
+        print(f"Saved {len(rank)} fast/slow trace figures -> {out_dir}")
+        return out_dir
+
+    for long_id, row in rank.head(top_x).iterrows():
+        fig, axs = plt.subplots(1, 2, figsize=display_figsize, dpi=display_dpi,
+                                sharey=True)
+        _draw(fig, axs, long_id, row)
+        plt.show()
+    return rank.head(top_x)
