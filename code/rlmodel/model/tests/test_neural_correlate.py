@@ -532,3 +532,94 @@ def test_fastslow_scatter_and_traces_save(tmp_path):
         min_abs_corr=0.5, save_root=str(tmp_path), model_name="M")
     assert len(list(tr.glob("*.svg"))) == 2
     assert tr.parts[-3:] == ("M", "drift_traces", "DV")
+
+
+# --------------------------------------------------------------------------
+# Significance helpers: paired permutation + hierarchical bootstrap
+# --------------------------------------------------------------------------
+def _corr_frame(rvals_by_session, rcol="DV_r", region="MFC"):
+    """A minimal per-neuron correlation frame: ``rvals_by_session`` maps a
+    session name to a list of that session's neurons' r values."""
+    rows = []
+    for sess, rs in rvals_by_session.items():
+        for i, r in enumerate(rs):
+            rows.append({"long_trace_id": f"{sess}_{i}", "ShortName": sess,
+                         "BrainRegion": region, rcol: r})
+    return pd.DataFrame(rows)
+
+
+def test_paired_perm_fastslow_equal_vs_strong():
+    rng = np.random.default_rng(0)
+    # Equal per-session fast/slow % -> zero paired difference -> p == 1.
+    same = {f"S{i}": [0.9] for i in range(6)}
+    obs, p = nc._paired_perm_fastslow(_corr_frame(same), _corr_frame(same),
+                                      "DV_r", 0.5, 2000, rng)
+    assert obs == 0.0 and p == 1.0
+    # Fast fully tuned, slow untuned in every session -> large diff, small p.
+    fast = {f"S{i}": [0.9] for i in range(6)}
+    slow = {f"S{i}": [0.0] for i in range(6)}
+    obs2, p2 = nc._paired_perm_fastslow(_corr_frame(fast), _corr_frame(slow),
+                                        "DV_r", 0.5, 2000, rng)
+    assert obs2 == 100.0 and p2 < 0.05
+
+
+def test_paired_perm_fastslow_needs_two_sessions():
+    one = {"S1": [0.9]}
+    obs, p = nc._paired_perm_fastslow(_corr_frame(one), _corr_frame(one),
+                                      "DV_r", 0.5, 100, np.random.default_rng(0))
+    assert np.isnan(obs) and np.isnan(p)
+
+
+def test_hier_bootstrap_region_diff_gap_vs_identical():
+    rng = np.random.default_rng(0)
+    tuned = [np.array([[0.9], [0.8]]) for _ in range(5)]   # 100% each session
+    untuned = [np.array([[0.0], [0.1]]) for _ in range(5)]  # 0% each session
+    res = nc._hier_bootstrap_region_diff(tuned, untuned, 0.5, 500, rng)
+    assert res["diff"] > 0 and res["p"] < 0.05
+    assert np.isclose(res["stat_a"], 100.0) and np.isclose(res["stat_b"], 0.0)
+    # Identical regions -> zero observed difference -> p == 1.
+    same = nc._hier_bootstrap_region_diff(tuned, [m.copy() for m in tuned],
+                                          0.5, 500, rng)
+    assert same["diff"] == 0.0 and same["p"] == 1.0
+
+
+def test_sigstar_thresholds():
+    assert nc._sigstar(0.0005) == "***"
+    assert nc._sigstar(0.005) == "**"
+    assert nc._sigstar(0.03) == "*"
+    assert nc._sigstar(0.2) == "n.s."
+    assert nc._sigstar(np.nan) == ""
+
+
+# --------------------------------------------------------------------------
+# Fast/slow bars: per-bar vs-chance test + run_stats gating
+# --------------------------------------------------------------------------
+def _make_fastslow_two_sessions():
+    """Two MFC sessions (S1, S2), 8 trials each, fast (q=1) / slow (q=3)."""
+    df_2p = pd.concat([
+        _make_2p(short="S1", sess=1, n_trials=8, activities=_FS_ACT,
+                 dvs=_FS_DVS, quantiles=_FS_Q),
+        _make_2p(short="S2", sess=2, n_trials=8,
+                 activities={"n3": _FS_ACT["n1"], "n4": _FS_ACT["n2"]},
+                 dvs=_FS_DVS, quantiles=_FS_Q),
+    ], ignore_index=True)
+    mle_pt = pd.concat([
+        _make_mle_pt(sess=1, n_trials=8, q_val=list(range(8)),
+                     loglik=[-1.0] * 8, valid=[True] * 8),
+        _make_mle_pt(sess=2, n_trials=8, q_val=list(range(8)),
+                     loglik=[-1.0] * 8, valid=[True] * 8),
+    ], ignore_index=True)
+    return nc.build_neuron_trial_table(df_2p, mle_pt, PARAM_KEYS)
+
+
+def test_plot_fast_slow_bars_stats_columns():
+    table = _make_fastslow_two_sessions()
+    corr_fast, corr_slow = nc.drift_correlations(table)
+    summary = nc.plot_fast_slow_bars(
+        corr_fast, corr_slow, "DV", table=table, min_abs_corr=0.5,
+        n_perm=200, n_boot=200, by_region=True, run_stats=True)
+    # New significance columns present, and every finite p is a probability.
+    for col in ("p_vs_chance", "p_fast_vs_slow"):
+        assert col in summary.columns
+        finite = summary[col].dropna()
+        assert ((finite >= 0.0) & (finite <= 1.0)).all()

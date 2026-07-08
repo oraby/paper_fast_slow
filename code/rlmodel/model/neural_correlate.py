@@ -27,10 +27,11 @@ Confirmed conventions (see the notebook / plan):
 from __future__ import annotations
 
 import colorsys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import pathlib
 import pickle
 import re
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -39,6 +40,7 @@ from matplotlib.patches import Patch
 from matplotlib.lines import Line2D
 from matplotlib.colors import to_rgb
 from scipy.stats import linregress, spearmanr
+from statsmodels.stats.multitest import multipletests
 
 from .mle_reeval import (parse_fit_filename, fitted_params_from_result,
                          build_mle_config, evaluate_params_under_mle,
@@ -868,19 +870,196 @@ def _null_region_distribution(meta_df, null_p, assess_p, region_mask):
     return np.vstack(sess_pcts).mean(axis=0)
 
 
+# --------------------------------------------------------------------------
+# Significance annotation + permutation / bootstrap tests
+#
+# The paper reports significance as permutation / hierarchical-bootstrap
+# p-values with ``*/**/***`` stars and Holm correction (see the ``opto`` package,
+# e.g. ``opto/bootstrap2regions.py`` and ``opto/optofeedback.py``). These helpers
+# bring the neural-correlate bar charts in line with that convention:
+#   - per-bar "vs chance" uses the per-neuron activity-shuffle null already built
+#     by :func:`_shuffle_null_tuned` (``+1/(n+1)`` permutation p-value);
+#   - fast-vs-slow uses a session-paired sign-flip permutation;
+#   - MFC-vs-LFC (cross-region) uses a region→session→neuron hierarchical
+#     bootstrap with a two-sided sign-change p-value.
+# All of this is skipped when ``run_stats=False`` for fast plot-only runs.
+# --------------------------------------------------------------------------
+def _sigstar(p):
+    """``*/**/***`` for p < 0.05 / 0.01 / 0.001, ``"n.s."`` above 0.05, ``""``
+    when undefined — the mapping used across the paper's figures."""
+    if p is None or not np.isfinite(p):
+        return ""
+    if p < 0.001:
+        return "***"
+    if p < 0.01:
+        return "**"
+    if p < 0.05:
+        return "*"
+    return "n.s."
+
+
+def _holm_adjust(pvals):
+    """Holm–Bonferroni step-down over a family of p-values (NaN-safe: NaNs are
+    passed through and excluded from the correction). Mirrors the
+    ``multipletests(method="holm")`` calls used in ``opto``."""
+    p = np.asarray(pvals, dtype=float)
+    out = np.full(p.shape, np.nan)
+    finite = np.isfinite(p)
+    if finite.any():
+        out[finite] = multipletests(p[finite], method="holm")[1]
+    return out
+
+
+def _sign_change_p(observed, draws):
+    """Two-sided sign-change p-value (Svoboda/Brody convention, as in
+    ``opto/bootstrap2regions.py::_sign_change_p_two_sided``): the fraction of
+    bootstrap ``draws`` whose sign is opposite the ``observed`` effect, doubled
+    and capped at 1."""
+    if observed is None or not np.isfinite(observed):
+        return np.nan
+    valid = np.asarray(draws, dtype=float)
+    valid = valid[np.isfinite(valid)]
+    if valid.size == 0:
+        return np.nan
+    if observed == 0:
+        return 1.0
+    opposite = -1.0 if observed > 0 else 1.0
+    p_one = float(np.mean(np.sign(valid) == opposite))
+    return float(min(1.0, 2.0 * p_one))
+
+
+def _add_sig_bracket(ax, x1, x2, y, text, *, tick=None, lw=1.0, fontsize=13):
+    """Draw a ``[x1, x2]`` significance bracket at height ``y`` with ``text``
+    (a star string) centred above it. Adapted from
+    ``opto/optofeedback.py::_add_sig_bracket``. ``tick`` is the drop-down length
+    of the bracket ends; returns the top y so callers can stack brackets."""
+    if not text:
+        return y
+    if tick is None:
+        span = ax.get_ylim()
+        tick = 0.02 * (span[1] - span[0])
+    ax.plot([x1, x1, x2, x2], [y, y + tick, y + tick, y],
+            color="k", lw=lw, zorder=6, clip_on=False)
+    ax.text((x1 + x2) / 2.0, y + tick, text, ha="center", va="bottom",
+            fontsize=fontsize, color="k", zorder=6)
+    return y + tick
+
+
+def _paired_perm_fastslow(corr_fast, corr_slow, rcol, min_abs_corr, n_perm, rng,
+                          *, region_values=None):
+    """Session-paired sign-flip permutation of the fast−slow drift-tuning %.
+
+    Pairs the per-session % of drift-tuned neurons in the fast and slow subsets
+    (:func:`_session_tuned_percent`) on ``ShortName``; the observed statistic is
+    the mean paired difference (fast − slow). The null flips the sign of each
+    session's paired difference independently. Returns ``(obs_diff, p)`` with the
+    ``+1/(n+1)`` correction; both NaN when fewer than two paired sessions.
+    """
+    cf = (corr_fast if region_values is None
+          else corr_fast[corr_fast.BrainRegion.isin(region_values)])
+    cs = (corr_slow if region_values is None
+          else corr_slow[corr_slow.BrainRegion.isin(region_values)])
+    fast_pct = _session_tuned_percent(cf, rcol, min_abs_corr)
+    slow_pct = _session_tuned_percent(cs, rcol, min_abs_corr)
+    common = fast_pct.index.intersection(slow_pct.index)
+    if len(common) < 2:
+        return np.nan, np.nan
+    d = (fast_pct.loc[common] - slow_pct.loc[common]).to_numpy(dtype=float)
+    obs = float(d.mean())
+    signs = rng.choice((-1.0, 1.0), size=(n_perm, d.size))
+    null = (signs * d).mean(axis=1)
+    p = float((np.sum(np.abs(null) >= abs(obs)) + 1) / (n_perm + 1))
+    return obs, p
+
+
+def _pct_from_absr(abs_r, min_abs_corr):
+    """% of assessable neurons tuned, from an ``(n_neurons, n_params)`` matrix of
+    ``|r|`` (NaN where undefined). Assessable = any param defined; tuned = any
+    defined ``|r| >= min_abs_corr`` — the factor OR, matching
+    :func:`_session_factor_percent`. NaN when no assessable neuron."""
+    if abs_r.size == 0:
+        return np.nan
+    assessable = np.isfinite(abs_r).any(axis=1)
+    if not assessable.any():
+        return np.nan
+    tuned = (abs_r >= min_abs_corr).any(axis=1)  # NaN >= x is False
+    return 100.0 * float(tuned[assessable].mean())
+
+
+def _session_absr_mats(corr_df, param_keys):
+    """List (one per session) of ``(n_neurons, n_params)`` ``|r|`` matrices for a
+    per-neuron correlation frame — the fast unit for the region bootstrap."""
+    cols = [f"{k}_r" for k in param_keys]
+    return [np.abs(g[cols].to_numpy(dtype=float))
+            for _, g in corr_df.groupby("ShortName")]
+
+
+def _region_stat_from_mats(mats, min_abs_corr):
+    """Session-mean % tuned (across-session mean of per-session %) for a region."""
+    vals = [v for v in (_pct_from_absr(m, min_abs_corr) for m in mats)
+            if np.isfinite(v)]
+    return float(np.mean(vals)) if vals else np.nan
+
+
+def _boot_region_stat(mats, min_abs_corr, rng):
+    """One hierarchical-bootstrap replicate of a region's session-mean %:
+    resample sessions with replacement, then neurons within each drawn session
+    with replacement."""
+    n = len(mats)
+    if n == 0:
+        return np.nan
+    vals = []
+    for j in rng.integers(0, n, size=n):
+        m = mats[j]
+        if m.shape[0] == 0:
+            continue
+        v = _pct_from_absr(m[rng.integers(0, m.shape[0], size=m.shape[0])],
+                           min_abs_corr)
+        if np.isfinite(v):
+            vals.append(v)
+    return float(np.mean(vals)) if vals else np.nan
+
+
+def _hier_bootstrap_region_diff(mats_a, mats_b, min_abs_corr, n_boot, rng):
+    """MFC-vs-LFC (region A vs B) hierarchical bootstrap on the "% tuned" stat.
+
+    ``mats_a`` / ``mats_b`` are per-session ``|r|`` matrices (see
+    :func:`_session_absr_mats`) for the two regions. Both regions are resampled
+    independently at the session then neuron level (:func:`_boot_region_stat`);
+    the statistic is ``stat_a - stat_b``. Returns a dict with the observed diff,
+    each region's observed stat, and the two-sided sign-change p over ``n_boot``.
+    """
+    a_obs = _region_stat_from_mats(mats_a, min_abs_corr)
+    b_obs = _region_stat_from_mats(mats_b, min_abs_corr)
+    if not (np.isfinite(a_obs) and np.isfinite(b_obs)):
+        return dict(diff=np.nan, p=np.nan, stat_a=a_obs, stat_b=b_obs)
+    obs = float(a_obs - b_obs)
+    draws = np.array([_boot_region_stat(mats_a, min_abs_corr, rng)
+                      - _boot_region_stat(mats_b, min_abs_corr, rng)
+                      for _ in range(n_boot)], dtype=float)
+    return dict(diff=obs, p=_sign_change_p(obs, draws),
+                stat_a=float(a_obs), stat_b=float(b_obs))
+
+
 def plot_region_bars(corr_df, table, param_keys=None, *, min_abs_corr=0.3,
                      n_shuffles=1000, by_region=True, seed=0, ci=(2.5, 97.5),
-                     save=False, save_root=None, model_name=None, ext="svg"):
-    """Grouped "fraction tuned" bars per brain region, with a shuffle baseline.
+                     run_stats=True, save=False, save_root=None,
+                     model_name=None, ext="svg"):
+    """Grouped "fraction tuned" bars per brain region.
 
     For each brain region (``by_region=True`` → one panel per MFC/LFC;
     ``by_region=False`` → a single pooled panel) the x-axis is the model
     parameters. Each **coloured bar** is the observed % of tuned neurons
     (``|r| >= min_abs_corr``), computed per session then averaged across
-    sessions (± SEM). Drawn inside it, a narrower **grey sub-bar** is the
-    shuffle chance level with its confidence interval (``ci`` percentiles over
-    ``n_shuffles`` neuron-level permutations). The text above each bar is the
-    permutation p-value (fraction of shuffles whose chance % ≥ the observed %).
+    sessions; the error bar is the **SEM across sessions** (the distribution of
+    per-session percentages within the region).
+
+    When ``run_stats`` (default), each bar is tested against a per-neuron
+    activity-shuffle chance level (``n_shuffles`` permutations, ``+1/(n+1)``
+    p-value; see :func:`_shuffle_null_tuned`), the p-values are Holm-corrected
+    across the bars of a panel, and significance is annotated as ``*/**/***``
+    stars (``n.s.`` otherwise). Set ``run_stats=False`` to skip the permutation
+    entirely for a fast plot-only run.
 
     Returns a tidy summary dataframe (one row per region × parameter). Always
     shown; ``save`` also writes the figure + summary under
@@ -898,88 +1077,72 @@ def plot_region_bars(corr_df, table, param_keys=None, *, min_abs_corr=0.3,
     lo, hi = ci
 
     rng = np.random.default_rng(seed)
-    meta_df, null, assess = _shuffle_null_tuned(
-        table, param_cols, min_abs_corr, n_shuffles, rng)
-    region_of = meta_df["BrainRegion"].to_numpy()
+    if run_stats:
+        meta_df, null, assess = _shuffle_null_tuned(
+            table, param_cols, min_abs_corr, n_shuffles, rng)
+    else:
+        meta_df = null = assess = None
 
     if by_region:
-        regions = [(r, region_of == r)
-                   for r in sorted(pd.unique(region_of))]
+        regions = [(r, [r]) for r in sorted(pd.unique(corr_df.BrainRegion))]
     else:
-        regions = [("MFC & LFC", np.ones(len(meta_df), dtype=bool))]
+        regions = [("MFC & LFC", None)]
 
     x = np.arange(len(param_cols))
     fig, axs = plt.subplots(1, len(regions), figsize=(4.2 * len(regions), 4.4),
                             squeeze=False, sharey=True)
     rows = []
-    for ax, (region, mask) in zip(axs[0], regions):
-        obs_means, obs_sems, null_means, null_los, null_his = ([] for _ in range(5))
-        pvals = []
+    for ax, (region, rvals) in zip(axs[0], regions):
+        obs_means, obs_sems, pvals = [], [], []
+        panel_rows = []
         for col in param_cols:
             rcol = f"{col}_r"
-            grp = corr_df[corr_df.BrainRegion.isin(
-                pd.unique(region_of[mask]))] if by_region else corr_df
+            grp = (corr_df if rvals is None
+                   else corr_df[corr_df.BrainRegion.isin(rvals)])
             pcts = _session_tuned_percent(grp, rcol, min_abs_corr)
             obs_mean = float(pcts.mean()) if len(pcts) else np.nan
             obs_sem = float(pcts.sem()) if len(pcts) > 1 else 0.0
-            null_dist = _null_region_distribution(meta_df, null[col],
-                                                  assess[col], mask)
-            if null_dist is None or not np.isfinite(obs_mean):
-                null_mean = null_lo = null_hi = np.nan
-                pval = np.nan
-            else:
-                null_mean = float(null_dist.mean())
-                null_lo, null_hi = np.percentile(null_dist, [lo, hi])
-                # Permutation p-value with the +1/+1 correction so it is never
-                # exactly 0 (>= 1/(n_shuffles+1)).
-                pval = float((np.sum(null_dist >= obs_mean) + 1)
-                             / (n_shuffles + 1))
-            obs_means.append(obs_mean); obs_sems.append(obs_sem)
-            null_means.append(null_mean); null_los.append(null_lo)
-            null_his.append(null_hi); pvals.append(pval)
-            rows.append({"BrainRegion": region, "param": col,
-                         "observed_pct": obs_mean, "observed_sem": obs_sem,
-                         "shuffle_pct": null_mean, f"ci{lo:g}": null_lo,
-                         f"ci{hi:g}": null_hi, "n_sessions": len(pcts),
-                         "p_vs_shuffle": pval})
+            null_mean = null_lo = null_hi = pval = np.nan
+            if run_stats:
+                mask = (np.ones(len(meta_df), dtype=bool) if rvals is None
+                        else np.isin(meta_df["BrainRegion"].to_numpy(), rvals))
+                null_dist = _null_region_distribution(meta_df, null[col],
+                                                      assess[col], mask)
+                if null_dist is not None and np.isfinite(obs_mean):
+                    null_mean = float(null_dist.mean())
+                    null_lo, null_hi = np.percentile(null_dist, [lo, hi])
+                    # +1/+1 correction so p is never exactly 0.
+                    pval = float((np.sum(null_dist >= obs_mean) + 1)
+                                 / (n_shuffles + 1))
+            obs_means.append(obs_mean); obs_sems.append(obs_sem); pvals.append(pval)
+            panel_rows.append({"BrainRegion": region, "param": col,
+                               "observed_pct": obs_mean, "observed_sem": obs_sem,
+                               "shuffle_pct": null_mean, f"ci{lo:g}": null_lo,
+                               f"ci{hi:g}": null_hi, "n_sessions": len(pcts),
+                               "p_vs_shuffle": pval})
+
+        # Holm across the bars of this panel, then annotate stars.
+        p_holm = _holm_adjust(pvals) if run_stats else np.full(len(pvals), np.nan)
+        for r, ph in zip(panel_rows, p_holm):
+            r["p_vs_shuffle_holm"] = float(ph) if np.isfinite(ph) else np.nan
+        rows.extend(panel_rows)
 
         colors = [PARAM_BY_KEY[k].color for k in param_keys]
         obs_means = np.array(obs_means, dtype=float)
         obs_sems = np.array(obs_sems, dtype=float)
-        null_means = np.array(null_means, dtype=float)
         ax.bar(x, obs_means, width=0.62, color=colors, alpha=0.85,
                edgecolor="k", linewidth=0.5, yerr=obs_sems, capsize=3, zorder=2)
-        # Shuffle chance level: a black tick across each bar at the chance %,
-        # plus a vertical CI whisker. At a strict |r| threshold chance is ~0%,
-        # so this usually sits on the baseline — an explicit "≈0% by chance"
-        # (drawn as a line rather than a bar, which would be invisible at 0).
-        null_los = np.array(null_los, dtype=float)
-        null_his = np.array(null_his, dtype=float)
-        fin = np.isfinite(null_means)
-        ax.hlines(null_means[fin], x[fin] - 0.31, x[fin] + 0.31,
-                  color="k", lw=2.0, zorder=5)
-        ax.vlines(x[fin], null_los[fin], null_his[fin], color="k", lw=1.2,
-                  zorder=5)
-        # p-value above each observed bar.
-        for xi, om, os_, pv in zip(x, obs_means, obs_sems, pvals):
-            if np.isfinite(om):
-                _pf = _fmt_p(pv)
-                lbl = f"p {_pf}" if _pf.startswith("<") else f"p = {_pf}"
-                ax.text(xi, om + os_ + 0.6, lbl, ha="center", va="bottom",
-                        fontsize="x-small", rotation=90)
+        if run_stats:
+            for xi, om, os_, ph in zip(x, obs_means, obs_sems, p_holm):
+                if np.isfinite(om):
+                    ax.text(xi, om + os_ + 0.6, _sigstar(ph), ha="center",
+                            va="bottom", fontsize=12)
         ax.set_xticks(x)
         ax.set_xticklabels([PARAM_BY_KEY[k].label for k in param_keys],
                            rotation=20, ha="right", fontsize="small")
         ax.set_title(f"{region}  (|r| ≥ {min_abs_corr:g})")
         ax.spines[["top", "right"]].set_visible(False)
     axs[0][0].set_ylabel("Tuned neurons (%)")
-
-    legend_handles = [
-        Patch(facecolor="0.7", edgecolor="k", label="observed"),
-        Line2D([0], [0], color="k", lw=2,
-               label=f"shuffle chance ({int(hi - lo)}% CI, n={n_shuffles})")]
-    axs[0][0].legend(handles=legend_handles, fontsize="x-small",
-                     frameon=False, loc="upper left")
     fig.suptitle(f"Parameter tuning — {model_name or ''}", y=1.02)
     fig.tight_layout()
 
@@ -1017,17 +1180,42 @@ def _pct_stats(corr, rcol, min_abs_corr):
     return mean, sem, len(pcts)
 
 
-def plot_fast_slow_bars(corr_fast, corr_slow, param, *, min_abs_corr=0.3,
-                        by_region=True, save=False, save_root=None,
-                        model_name=None, ext="svg"):
-    """Fast-vs-slow % of drift-correlated neurons (no shuffle).
+def _bar_vs_chance(bundle, key, region_values, obs_mean, n_perm):
+    """``+1/(n+1)`` permutation p of one bar vs its per-neuron activity-shuffle
+    chance level, off a precomputed :func:`_shuffle_null_tuned` bundle."""
+    meta_df, null, assess = bundle
+    mask = (np.ones(len(meta_df), dtype=bool) if region_values is None
+            else np.isin(meta_df["BrainRegion"].to_numpy(), region_values))
+    null_dist = _null_region_distribution(meta_df, null[key], assess[key], mask)
+    if null_dist is None or not np.isfinite(obs_mean):
+        return np.nan
+    return float((np.sum(null_dist >= obs_mean) + 1) / (n_perm + 1))
+
+
+def plot_fast_slow_bars(corr_fast, corr_slow, param, *, table=None,
+                        min_abs_corr=0.3, n_perm=1000, n_boot=10000,
+                        by_region=True, seed=0, run_stats=True, save=False,
+                        save_root=None, model_name=None, ext="svg"):
+    """Fast-vs-slow % of drift-correlated neurons, with permutation significance.
 
     For ``param`` (``"DV"`` / ``"DVabs"``), a neuron is drift-correlated when
     ``|r| >= min_abs_corr`` (Pearson, within its fast/slow subset). Each bar is
     the session-mean ± SEM of that %; fast = tomato, slow = goldenrod.
     ``by_region=True`` → a fast|slow pair per MFC/LFC (**4 bars**);
-    ``by_region=False`` → all regions pooled (**2 bars**). Returns a tidy summary
-    (region × speed). Always shown; ``save`` also writes the figure + summary.
+    ``by_region=False`` → all regions pooled (**2 bars**).
+
+    When ``run_stats`` three permutation/bootstrap layers are annotated:
+      1. **vs chance** — a ``*/**/***`` star above each bar (per-neuron activity
+         shuffle, ``n_perm`` permutations; needs the trial-level ``table`` so the
+         fast/slow subsets can be shuffled — skipped with a warning if omitted);
+      2. **fast vs slow** — a session-paired sign-flip permutation
+         (:func:`_paired_perm_fastslow`) drawn as a bracket over each region's
+         pair;
+      3. **MFC vs LFC** within each speed — a region→session→neuron hierarchical
+         bootstrap (:func:`_hier_bootstrap_region_diff`) drawn as spanning
+         brackets (only when ``by_region`` with two regions).
+    Each family is Holm-corrected across its comparisons. Returns a tidy summary
+    (region × speed rows, plus cross-region rows); ``save`` also writes it.
     """
     spec = PARAM_BY_KEY[param]
     rcol = f"{spec.key}_r"
@@ -1040,25 +1228,104 @@ def plot_fast_slow_bars(corr_fast, corr_slow, param, *, min_abs_corr=0.3,
     else:
         regions = ["MFC & LFC"]
 
+    rng = np.random.default_rng(seed)
+    fast_bundle = slow_bundle = None
+    if run_stats:
+        if table is not None:
+            fast_table, slow_table = split_fast_slow(table)
+            fast_bundle = _shuffle_null_tuned(fast_table, [spec.key],
+                                              min_abs_corr, n_perm, rng)
+            slow_bundle = _shuffle_null_tuned(slow_table, [spec.key],
+                                              min_abs_corr, n_perm, rng)
+        else:
+            warnings.warn("plot_fast_slow_bars: `table` not supplied — skipping "
+                          "the per-bar vs-chance test (paired + cross-region "
+                          "tests still run).")
+
     x = np.arange(len(regions))
     w = 0.36
     fig, ax = plt.subplots(figsize=(1.9 * len(regions) + 2.5, 4.4))
-    rows = []
+    rows, per_region, bar_tops = [], [], []
     for i, region in enumerate(regions):
-        cf = corr_fast if not by_region else corr_fast[corr_fast.BrainRegion == region]
-        cs = corr_slow if not by_region else corr_slow[corr_slow.BrainRegion == region]
+        rvals = None if not by_region else [region]
+        cf = corr_fast if rvals is None else corr_fast[corr_fast.BrainRegion == region]
+        cs = corr_slow if rvals is None else corr_slow[corr_slow.BrainRegion == region]
         fmean, fsem, fn = _pct_stats(cf, rcol, min_abs_corr)
         smean, ssem, sn = _pct_stats(cs, rcol, min_abs_corr)
         ax.bar(x[i] - w / 2, fmean, width=w, yerr=fsem, capsize=3,
                color=_FAST_COLOR, edgecolor="k", linewidth=0.5)
         ax.bar(x[i] + w / 2, smean, width=w, yerr=ssem, capsize=3,
                color=_SLOW_COLOR, edgecolor="k", linewidth=0.5)
+
+        fp = sp = pair_diff = pair_p = np.nan
+        if run_stats:
+            if fast_bundle is not None:
+                fp = _bar_vs_chance(fast_bundle, spec.key, rvals, fmean, n_perm)
+                sp = _bar_vs_chance(slow_bundle, spec.key, rvals, smean, n_perm)
+            pair_diff, pair_p = _paired_perm_fastslow(
+                corr_fast, corr_slow, rcol, min_abs_corr, n_perm, rng,
+                region_values=rvals)
+        per_region.append(dict(region=region, i=i, fmean=fmean, fsem=fsem,
+                               smean=smean, ssem=ssem, fp=fp, sp=sp,
+                               pair_p=pair_p))
         rows += [{"BrainRegion": region, "speed": "fast", "pct": fmean,
-                  "sem": fsem, "n_sessions": fn},
+                  "sem": fsem, "n_sessions": fn, "p_vs_chance": fp,
+                  "fast_minus_slow": pair_diff, "p_fast_vs_slow": pair_p},
                  {"BrainRegion": region, "speed": "slow", "pct": smean,
-                  "sem": ssem, "n_sessions": sn}]
+                  "sem": ssem, "n_sessions": sn, "p_vs_chance": sp,
+                  "fast_minus_slow": pair_diff, "p_fast_vs_slow": pair_p}]
+        bar_tops += [fmean + fsem, smean + ssem]
         print(f"\t{region}: fast {fmean:.2f}±{fsem:.2f}% ({fn} sess) | "
               f"slow {smean:.2f}±{ssem:.2f}% ({sn} sess)")
+
+    ymax = max([t for t in bar_tops if np.isfinite(t)] + [1.0])
+    step = 0.10 * ymax + 1.0
+
+    if run_stats:
+        n = len(per_region)
+        # 1. vs-chance stars above each bar (Holm across all bars).
+        vc_holm = _holm_adjust([pr["fp"] for pr in per_region]
+                               + [pr["sp"] for pr in per_region])
+        for k, pr in enumerate(per_region):
+            if np.isfinite(pr["fmean"]):
+                ax.text(pr["i"] - w / 2, pr["fmean"] + pr["fsem"] + 0.2 * step,
+                        _sigstar(vc_holm[k]), ha="center", va="bottom",
+                        fontsize=11)
+            if np.isfinite(pr["smean"]):
+                ax.text(pr["i"] + w / 2, pr["smean"] + pr["ssem"] + 0.2 * step,
+                        _sigstar(vc_holm[n + k]), ha="center", va="bottom",
+                        fontsize=11)
+        # 2. fast-vs-slow paired bracket per region (Holm across regions). Drawn
+        # even when n.s. so the comparison is always visible.
+        for pr, ph in zip(per_region,
+                          _holm_adjust([pr["pair_p"] for pr in per_region])):
+            s = _sigstar(ph)
+            if s:
+                y = max(pr["fmean"] + pr["fsem"], pr["smean"] + pr["ssem"]) \
+                    + 0.5 * step
+                _add_sig_bracket(ax, pr["i"] - w / 2, pr["i"] + w / 2, y, s)
+        # 3. MFC-vs-LFC per speed (hierarchical bootstrap, Holm across speeds).
+        if by_region and len(regions) == 2:
+            ra, rb = regions[0], regions[1]
+            speeds = [("fast", corr_fast, -w / 2), ("slow", corr_slow, w / 2)]
+            res_list = []
+            for _, cc, _off in speeds:
+                ma = _session_absr_mats(cc[cc.BrainRegion == ra], [spec.key])
+                mb = _session_absr_mats(cc[cc.BrainRegion == rb], [spec.key])
+                res_list.append(_hier_bootstrap_region_diff(
+                    ma, mb, min_abs_corr, n_boot, rng))
+            cross_holm = _holm_adjust([r["p"] for r in res_list])
+            for (speed, _cc, off), res, ph in zip(speeds, res_list, cross_holm):
+                rows.append({"BrainRegion": f"{ra} vs {rb}", "speed": speed,
+                             "diff_region": res["diff"], "p_cross_region": res["p"],
+                             "p_cross_region_holm": (float(ph)
+                                                     if np.isfinite(ph) else np.nan)})
+                s = _sigstar(ph)
+                if s:
+                    y = ymax + (1.4 if speed == "fast" else 2.6) * step
+                    _add_sig_bracket(ax, 0 + off, 1 + off, y, s)
+        ax.set_ylim(top=ymax + 4.0 * step)
+
     ax.set_xticks(x)
     ax.set_xticklabels(regions)
     ax.set_ylabel(f"{spec.label}-correlated neurons (%)")
