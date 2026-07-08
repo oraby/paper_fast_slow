@@ -75,7 +75,7 @@ class InitVals:
     # so DE isn't dominated by a handful of anticipations / fast guesses.
     # Disable for an experiment via `--init-val LAPSE_RATE=0,0,0`. Only used
     # by the MLE path — the chisq fit silently ignores it.
-    LAPSE_RATE : InitVal        = InitVal(0.0, 1, 0.02)
+    LAPSE_RATE : InitVal        = InitVal(0.0, 0.1, 0.02)
 
     def __init__(self):
         self._extras = {}
