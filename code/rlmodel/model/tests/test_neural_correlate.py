@@ -326,6 +326,103 @@ def test_shuffle_null_tuned_shapes_and_assessable():
 
 
 # --------------------------------------------------------------------------
+# Factor bars: group params into one "modulation" axis (OR, dedup by neuron)
+# --------------------------------------------------------------------------
+def test_default_factors_trims_and_drops_absent():
+    # Full corr (Q + RR + DV) -> all three factors.
+    df_2p = _make_2p(dvs=[-1.0, -0.3, 0.3, 1.0])
+    table = nc.build_neuron_trial_table(df_2p, _make_mle_pt(), PARAM_KEYS)
+    corr_full = nc.compute_neuron_correlations(table, PARAM_KEYS + ["DV"])
+    assert [f.name for f in nc.default_factors(corr_full)] == \
+        ["Q", "RewardRate", "DV"]
+    # No DV column -> DV factor dropped; Q keeps only present params.
+    corr_noDV = nc.compute_neuron_correlations(table, PARAM_KEYS)
+    facs = nc.default_factors(corr_noDV)
+    assert [f.name for f in facs] == ["Q", "RewardRate"]
+    assert nc.PARAM_BY_KEY  # sanity
+    q = next(f for f in facs if f.name == "Q")
+    assert q.param_keys == ("Q_L", "Q_R", "Q_val")
+
+
+def test_factor_masks_or_counts_each_neuron_once():
+    # n1 is perfectly linear with q_val (== Q_L == Q_val in the fixture), so it
+    # is tuned to BOTH Q_L and Q_val; the Q factor must still count it ONCE.
+    # n2 (alternating) has |r| ~ 0.45 < 0.5 -> not tuned.
+    df_2p = _make_2p(activities={"n1": [1.0, 2.0, 3.0, 4.0],
+                                 "n2": [2.0, 1.0, 2.0, 1.0]})
+    table = nc.build_neuron_trial_table(df_2p, _make_mle_pt(q_val=[1, 2, 3, 4]),
+                                        PARAM_KEYS)
+    corr = nc.compute_neuron_correlations(table, PARAM_KEYS)
+    assessable, tuned = nc._factor_masks(corr, ("Q_L", "Q_R", "Q_val"), 0.5)
+    assert int(tuned.sum()) == 1                     # n1 once, not twice
+    # 2 neurons, 1 modulated -> 50% for the single session
+    pct = nc._session_factor_percent(corr, ("Q_L", "Q_R", "Q_val"), 0.5)
+    assert pct.iloc[0] == 50.0
+
+
+def test_plot_factor_bars_runs_headless(tmp_path):
+    df_2p = pd.concat([
+        _make_2p(short="S1", sess=1, dvs=[-1.0, -0.3, 0.3, 1.0],
+                 activities={"n1": [1.0, 2.0, 3.0, 4.0],
+                             "n2": [2.0, 1.0, 2.0, 1.0]}),
+        _make_2p(short="S2", sess=2, dvs=[-1.0, -0.3, 0.3, 1.0],
+                 activities={"n3": [1.0, 2.0, 3.0, 4.0],
+                             "n4": [2.0, 1.0, 2.0, 1.0]}),
+    ], ignore_index=True)
+    mle_pt = pd.concat([_make_mle_pt(sess=1, q_val=[1, 2, 3, 4]),
+                        _make_mle_pt(sess=2, q_val=[1, 2, 3, 4])],
+                       ignore_index=True)
+    table = nc.build_neuron_trial_table(df_2p, mle_pt, PARAM_KEYS)
+    corr = nc.compute_neuron_correlations(table, PARAM_KEYS + ["DV"])
+
+    summary = nc.plot_factor_bars(
+        corr, table, min_abs_corr=0.5, n_shuffles=30, by_region=False,
+        seed=0, save=True, save_root=str(tmp_path), model_name="MyModel")
+
+    assert set(summary.factor) == {"Q", "RewardRate", "DV"}
+    assert (summary.BrainRegion == "MFC & LFC").all()
+    q = summary[summary.factor == "Q"].iloc[0]
+    assert q.observed_pct > 0 and 0.0 <= q.p_vs_shuffle <= 1.0
+    assert q.params == "Q_L+Q_R+Q_val"
+    saved = tmp_path / "MyModel" / "factor_bars"
+    assert (saved / "bars_Q_RewardRate_DV_combined.svg").exists()
+    assert (saved / "summary_Q_RewardRate_DV_combined.csv").exists()
+
+
+def test_plot_factor_bars_fastslow_dv(tmp_path):
+    # 6 trials, fast=first tercile (q=1), slow=last (q=3), >=3 trials each so the
+    # within-subset DV correlation is defined.
+    q = [1, 1, 1, 3, 3, 3]
+    dvs = [-1.0, -0.3, 0.6, -0.8, 0.2, 1.0]
+    df_2p = pd.concat([
+        _make_2p(short="S1", sess=1, n_trials=6, quantiles=q, dvs=dvs,
+                 activities={"n1": [1., 2., 3., 4., 5., 6.],
+                             "n2": [2., 1., 2., 1., 2., 1.]}),
+        _make_2p(short="S2", sess=2, n_trials=6, quantiles=q, dvs=dvs,
+                 activities={"n3": [6., 5., 4., 3., 2., 1.],
+                             "n4": [1., 2., 1., 2., 1., 2.]}),
+    ], ignore_index=True)
+    mle_pt = pd.concat([
+        _make_mle_pt(sess=1, n_trials=6, q_val=[1, 2, 3, 4, 5, 6],
+                     loglik=[-1.] * 6, valid=[True] * 6),
+        _make_mle_pt(sess=2, n_trials=6, q_val=[1, 2, 3, 4, 5, 6],
+                     loglik=[-1.] * 6, valid=[True] * 6),
+    ], ignore_index=True)
+    table = nc.build_neuron_trial_table(df_2p, mle_pt, PARAM_KEYS)
+    corr_all = nc.compute_neuron_correlations(table, PARAM_KEYS + ["DV"])
+
+    summary = nc.plot_factor_bars_fastslow_dv(
+        corr_all, table, min_abs_corr=0.5, n_shuffles=30, by_region=False,
+        seed=0, save=True, save_root=str(tmp_path), model_name="MyModel")
+
+    # Q + Reward-Rate + DV split into fast / slow = four bars.
+    assert list(summary.factor) == ["Q", "RewardRate", "DV_fast", "DV_slow"]
+    saved = tmp_path / "MyModel" / "factor_bars"
+    assert (saved / "bars_fastslowDV_combined.svg").exists()
+    assert (saved / "summary_fastslowDV_combined.csv").exists()
+
+
+# --------------------------------------------------------------------------
 # load_mle_per_trial: subject filter + reuse-stored-df (no recompute)
 # --------------------------------------------------------------------------
 def test_load_mle_reuse_and_subject_filter(tmp_path):
@@ -623,3 +720,76 @@ def test_plot_fast_slow_bars_stats_columns():
         assert col in summary.columns
         finite = summary[col].dropna()
         assert ((finite >= 0.0) & (finite <= 1.0)).all()
+
+
+def _make_two_region_fastslow():
+    """Two sessions in MFC (M2_Bi) + two in LFC (ALM_Bi), fast/slow trials, so the
+    MFC-vs-LFC hierarchical bootstrap + cross-region brackets are exercised."""
+    frames, mles = [], []
+    for ri, region in enumerate((nc.BrainRegion.M2_Bi, nc.BrainRegion.ALM_Bi)):
+        for si in range(2):
+            sess = ri * 2 + si + 1
+            frames.append(_make_2p(
+                region=region, short=f"R{ri}S{si}", sess=sess, n_trials=8,
+                activities={f"n{sess}a": _FS_ACT["n1"], f"n{sess}b": _FS_ACT["n2"]},
+                dvs=_FS_DVS, quantiles=_FS_Q))
+            mles.append(_make_mle_pt(sess=sess, n_trials=8, q_val=list(range(8)),
+                                     loglik=[-1.0] * 8, valid=[True] * 8))
+    table = nc.build_neuron_trial_table(pd.concat(frames, ignore_index=True),
+                                        pd.concat(mles, ignore_index=True),
+                                        PARAM_KEYS)
+    return table
+
+
+def test_two_region_cross_bootstrap_runs():
+    table = _make_two_region_fastslow()
+    corr_all = nc.compute_neuron_correlations(table, PARAM_KEYS + ["DV"])
+    corr_fast, corr_slow = nc.drift_correlations(table)
+
+    # Summary figure: one figure per region, per-bar vs-chance stars + DV
+    # fast-vs-slow bracket (no cross-region comparison anymore).
+    fsdv = nc.plot_factor_bars_fastslow_dv(
+        corr_all, table, min_abs_corr=0.5, n_shuffles=30,
+        by_region=True, run_stats=True)
+    assert {"p_vs_shuffle", "p_vs_shuffle_holm",
+            "p_dv_fast_vs_slow"} <= set(fsdv.columns)
+    # Cross-region columns are gone now that MFC/LFC live in separate figures.
+    assert "p_mfc_vs_lfc" not in fsdv.columns
+    finite = fsdv["p_vs_shuffle_holm"].dropna()
+    assert len(finite) and ((finite >= 0.0) & (finite <= 1.0)).all()
+    # Both regions present as separate row groups.
+    assert set(fsdv.BrainRegion) == {"MFC", "LFC"}
+    # DV fast-vs-slow paired p present on the DV bars.
+    dv_fs = fsdv.loc[fsdv.factor == "DV_slow", "p_dv_fast_vs_slow"].dropna()
+    assert len(dv_fs) and ((dv_fs >= 0.0) & (dv_fs <= 1.0)).all()
+
+    # Fast/slow bars: cross-region rows appended (spanning MFC vs LFC per speed).
+    fs = nc.plot_fast_slow_bars(
+        corr_fast, corr_slow, "DV", table=table, min_abs_corr=0.5,
+        n_perm=200, n_boot=200, by_region=True, run_stats=True)
+    cross = fs[fs.BrainRegion.astype(str).str.contains("vs")]
+    assert set(cross.speed) == {"fast", "slow"}
+    assert cross["p_cross_region"].notna().all()
+
+
+def test_run_stats_false_skips_tests(tmp_path):
+    """run_stats=False returns the same-shaped summaries with no stars/shuffle."""
+    table = _make_fastslow_two_sessions()
+    corr = nc.compute_neuron_correlations(table, PARAM_KEYS + ["DV"])
+    corr_fast, corr_slow = nc.drift_correlations(table)
+
+    reg = nc.plot_region_bars(corr, table, min_abs_corr=0.5, by_region=False,
+                              run_stats=False)
+    assert len(reg) and reg["p_vs_shuffle"].isna().all()
+
+    fac = nc.plot_factor_bars(corr, table, min_abs_corr=0.5, by_region=False,
+                              run_stats=False)
+    assert len(fac) and fac["p_vs_shuffle"].isna().all()
+
+    fsdv = nc.plot_factor_bars_fastslow_dv(corr, table, min_abs_corr=0.5,
+                                           by_region=True, run_stats=False)
+    assert list(fsdv.factor.unique()) == ["Q", "RewardRate", "DV_fast", "DV_slow"]
+
+    fs = nc.plot_fast_slow_bars(corr_fast, corr_slow, "DV", table=table,
+                                min_abs_corr=0.5, by_region=True, run_stats=False)
+    assert len(fs) and fs["p_vs_chance"].isna().all()

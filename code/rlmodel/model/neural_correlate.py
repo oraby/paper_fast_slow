@@ -1162,6 +1162,443 @@ def plot_region_bars(corr_df, table, param_keys=None, *, min_abs_corr=0.3,
 
 
 # --------------------------------------------------------------------------
+# 6b. Factor bars — group several parameters into one "modulation" axis
+# --------------------------------------------------------------------------
+@dataclass(frozen=True)
+class Factor:
+    """A named group of parameters treated as **one** modulation axis.
+
+    A neuron is "modulated" by the factor when ``|r| >= min_abs_corr`` for **any**
+    of the factor's ``param_keys``. Because the correlation dataframe is one row
+    per neuron (unique ``long_trace_id``), the "any" is an OR across that
+    neuron's columns — so a neuron tuned to more than one of the grouped params
+    is still counted **once** (no double-counting).
+
+    ``name``  — short key / save-folder tag.
+    ``label`` — x-axis label (e.g. "Q-modulated").
+    ``color`` — bar colour.
+    """
+    name: str
+    param_keys: tuple
+    label: str
+    color: str
+
+
+def default_factors(corr_df=None):
+    """The paper's three decision "factors": **Q** (Q-left/right/val OR'd into one
+    Q-modulated axis), **Reward-Rate**, and **DV**. When ``corr_df`` is given,
+    each factor is trimmed to the params actually present (a factor with none is
+    dropped) so a Q-only or RR-only fit still works."""
+    facs = (
+        Factor("Q", ("Q_L", "Q_R", "Q_val"), "Q-modulated", "purple"),
+        Factor("RewardRate", ("RewardRate",), "Reward-Rate modulated", "teal"),
+        Factor("DV", ("DV",), "DV-modulated", "steelblue"),
+    )
+    if corr_df is None:
+        return list(facs)
+    trimmed = []
+    for f in facs:
+        present = tuple(k for k in f.param_keys if f"{k}_r" in corr_df.columns)
+        if present:
+            trimmed.append(replace(f, param_keys=present))
+    return trimmed
+
+
+def _factor_masks(corr_df, param_keys, min_abs_corr):
+    """Per-neuron ``(assessable, tuned)`` boolean Series for a factor: assessable
+    if **any** grouped ``|r|`` is defined; tuned if **any** defined ``|r|`` meets
+    the threshold (``NaN >= x`` is False, so undefined params never tune)."""
+    R = corr_df[[f"{k}_r" for k in param_keys]].abs()
+    return R.notna().any(axis=1), (R >= min_abs_corr).any(axis=1)
+
+
+def _session_factor_percent(corr_df, param_keys, min_abs_corr):
+    """Series: per session, % of assessable neurons modulated by the factor
+    (OR over the grouped params). Mirrors ``_session_tuned_percent`` but across a
+    group; unassessable neurons drop from numerator and denominator."""
+    assessable, tuned = _factor_masks(corr_df, param_keys, min_abs_corr)
+    sub = corr_df.loc[assessable, ["ShortName"]].copy()
+    sub["_tuned"] = tuned[assessable]
+    return (100.0 * sub.groupby("ShortName")["_tuned"].mean()).dropna()
+
+
+def _factor_null(null, assess, param_keys):
+    """OR a factor's per-param shuffle arrays into one ``(null_factor, assess_factor)``.
+    ``_shuffle_null_tuned`` already zeroes ``null`` where a param is unassessable,
+    so a plain OR gives "tuned to any grouped param under the shuffle"."""
+    nfac = np.zeros_like(null[param_keys[0]], dtype=bool)
+    afac = np.zeros_like(assess[param_keys[0]], dtype=bool)
+    for k in param_keys:
+        nfac = nfac | null[k]
+        afac = afac | assess[k]
+    return nfac, afac
+
+
+def plot_factor_bars(corr_df, table, factors=None, *, min_abs_corr=0.3,
+                     n_shuffles=1000, by_region=True, seed=0, ci=(2.5, 97.5),
+                     run_stats=True, title=None, save=False, save_root=None,
+                     model_name=None, ext="svg"):
+    """Grouped "% modulated neurons" bars, one bar per **factor** (a group of
+    parameters OR'd together — see :class:`Factor`), with the same per-neuron
+    activity-shuffle permutation test + ``*/**/***`` stars as
+    :func:`plot_region_bars`.
+
+    Use it for the three cross-factor views the notebook asks for:
+      - a single **DV** factor (DV over *all* trials, not split fast/slow);
+      - a single **Q** factor (Q-left/right/val collapsed into one
+        "Q-modulated" bar, each neuron counted once);
+      - **Q vs Reward-Rate vs DV** side by side (:func:`default_factors`), so the
+        reader can compare the main drivers of the decision.
+
+    ``by_region=True`` gives one panel per MFC/LFC; ``by_region=False`` pools all
+    regions. Bars are session mean ± SEM (across sessions); p-values (vs the
+    shuffle chance level) are Holm-corrected across the factors of a panel and
+    annotated as stars when ``run_stats``. The grouped params must all have
+    ``_r`` columns in ``corr_df`` (correlate against ``PARAM_KEYS + ["DV"]``).
+    Returns a tidy summary (row per region × factor). ``save`` also writes the
+    figure + summary under ``{save_root}/{model_name}/factor_bars/``.
+    """
+    if factors is None:
+        factors = default_factors(corr_df)
+    if not factors:
+        raise ValueError("No factors to plot (no matching params in corr_df).")
+    for f in factors:
+        missing = [k for k in f.param_keys if f"{k}_r" not in corr_df.columns]
+        if missing:
+            raise KeyError(f"factor {f.name!r} needs {missing} in corr_df "
+                           f"(columns: {list(corr_df.columns)})")
+    lo, hi = ci
+    all_cols = sorted({k for f in factors for k in f.param_keys})
+
+    rng = np.random.default_rng(seed)
+    if run_stats:
+        meta_df, null, assess = _shuffle_null_tuned(
+            table, all_cols, min_abs_corr, n_shuffles, rng)
+    else:
+        meta_df = null = assess = None
+
+    if by_region:
+        regions = [(r, [r]) for r in sorted(pd.unique(corr_df.BrainRegion))]
+    else:
+        regions = [("MFC & LFC", None)]
+
+    x = np.arange(len(factors))
+    fig, axs = plt.subplots(1, len(regions), figsize=(4.2 * len(regions), 4.4),
+                            squeeze=False, sharey=True)
+    rows = []
+    for ax, (region, rvals) in zip(axs[0], regions):
+        obs_means, obs_sems, pvals = [], [], []
+        panel_rows = []
+        for f in factors:
+            grp = (corr_df if rvals is None
+                   else corr_df[corr_df.BrainRegion.isin(rvals)])
+            pcts = _session_factor_percent(grp, f.param_keys, min_abs_corr)
+            obs_mean = float(pcts.mean()) if len(pcts) else np.nan
+            obs_sem = float(pcts.sem()) if len(pcts) > 1 else 0.0
+            null_mean = null_lo = null_hi = pval = np.nan
+            if run_stats:
+                nfac, afac = _factor_null(null, assess, f.param_keys)
+                mask = (np.ones(len(meta_df), dtype=bool) if rvals is None
+                        else np.isin(meta_df["BrainRegion"].to_numpy(), rvals))
+                null_dist = _null_region_distribution(meta_df, nfac, afac, mask)
+                if null_dist is not None and np.isfinite(obs_mean):
+                    null_mean = float(null_dist.mean())
+                    null_lo, null_hi = np.percentile(null_dist, [lo, hi])
+                    pval = float((np.sum(null_dist >= obs_mean) + 1)
+                                 / (n_shuffles + 1))
+            obs_means.append(obs_mean); obs_sems.append(obs_sem); pvals.append(pval)
+            panel_rows.append({"BrainRegion": region, "factor": f.name,
+                               "params": "+".join(f.param_keys),
+                               "observed_pct": obs_mean, "observed_sem": obs_sem,
+                               "shuffle_pct": null_mean, f"ci{lo:g}": null_lo,
+                               f"ci{hi:g}": null_hi, "n_sessions": len(pcts),
+                               "p_vs_shuffle": pval})
+
+        p_holm = _holm_adjust(pvals) if run_stats else np.full(len(pvals), np.nan)
+        for r, ph in zip(panel_rows, p_holm):
+            r["p_vs_shuffle_holm"] = float(ph) if np.isfinite(ph) else np.nan
+        rows.extend(panel_rows)
+
+        obs_means = np.array(obs_means, dtype=float)
+        obs_sems = np.array(obs_sems, dtype=float)
+        ax.bar(x, obs_means, width=0.62, color=[f.color for f in factors],
+               alpha=0.85, edgecolor="k", linewidth=0.5, yerr=obs_sems,
+               capsize=3, zorder=2)
+        if run_stats:
+            for xi, om, os_, ph in zip(x, obs_means, obs_sems, p_holm):
+                if np.isfinite(om):
+                    ax.text(xi, om + os_ + 0.6, _sigstar(ph), ha="center",
+                            va="bottom", fontsize=12)
+        ax.set_xticks(x)
+        ax.set_xticklabels([f.label for f in factors], rotation=20, ha="right",
+                           fontsize="small")
+        ax.set_title(f"{region}  (|r| ≥ {min_abs_corr:g})")
+        ax.spines[["top", "right"]].set_visible(False)
+    axs[0][0].set_ylabel("Modulated neurons (%)")
+    fig.suptitle(title or f"Factor modulation — {model_name or ''}", y=1.02)
+    fig.tight_layout()
+
+    summary = pd.DataFrame(rows)
+    if save:
+        if save_root is None or model_name is None:
+            raise ValueError("save needs save_root and model_name")
+        out_dir = (pathlib.Path(save_root) / _safe_filename(model_name)
+                   / "factor_bars")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        tag = ("_".join(f.name for f in factors)
+               + ("_by_region" if by_region else "_combined"))
+        fig.savefig(out_dir / f"bars_{tag}.{ext}", bbox_inches="tight")
+        summary.to_csv(out_dir / f"summary_{tag}.csv", index=False)
+        print(f"Saved factor bars -> {out_dir}")
+    plt.show()
+    return summary
+
+
+def _factor_region_stat(corr_df, meta_df, null, assess, param_keys,
+                        region_values, *, min_abs_corr, n_shuffles, ci):
+    """Observed + shuffle stats for one factor in one region, off a
+    **precomputed** shuffle bundle (``meta_df``/``null``/``assess`` from
+    :func:`_shuffle_null_tuned`). ``region_values`` is ``None`` (pool all) or a
+    list of ``BrainRegion`` labels. Returns a stats dict."""
+    lo, hi = ci
+    grp = (corr_df if region_values is None
+           else corr_df[corr_df.BrainRegion.isin(region_values)])
+    pcts = _session_factor_percent(grp, param_keys, min_abs_corr)
+    obs_mean = float(pcts.mean()) if len(pcts) else np.nan
+    obs_sem = float(pcts.sem()) if len(pcts) > 1 else 0.0
+    nfac, afac = _factor_null(null, assess, param_keys)
+    mask = (np.ones(len(meta_df), dtype=bool) if region_values is None
+            else np.isin(meta_df["BrainRegion"].to_numpy(), list(region_values)))
+    null_dist = _null_region_distribution(meta_df, nfac, afac, mask)
+    if null_dist is None or not np.isfinite(obs_mean):
+        return dict(obs_mean=obs_mean, obs_sem=obs_sem, null_mean=np.nan,
+                    null_lo=np.nan, null_hi=np.nan, pval=np.nan,
+                    n_sessions=len(pcts))
+    return dict(obs_mean=obs_mean, obs_sem=obs_sem,
+                null_mean=float(null_dist.mean()),
+                null_lo=float(np.percentile(null_dist, lo)),
+                null_hi=float(np.percentile(null_dist, hi)),
+                pval=float((np.sum(null_dist >= obs_mean) + 1) / (n_shuffles + 1)),
+                n_sessions=len(pcts))
+
+
+def plot_factor_bars_fastslow_dv(corr_all, table, *, factors=None, dv_key="DV",
+                                 min_abs_corr=0.3, n_shuffles=1000, n_perm=1000,
+                                 n_boot=10000, by_region=True, seed=0,
+                                 ci=(2.5, 97.5), run_stats=True, bar_width=0.62,
+                                 slot=1.0, title=None, save=False, save_root=None,
+                                 model_name=None, ext="svg"):
+    """Like :func:`plot_factor_bars`, but the **DV** factor is split into two
+    touching sub-bars — DV within **fast** (tomato) and **slow** (goldenrod)
+    trials — instead of one all-trials DV bar. This is the paper's factor-
+    modulation summary (Q · Reward-Rate · DV-fast · DV-slow).
+
+    Layout: the non-DV factors (default Q + Reward-Rate) occupy one slot each;
+    the DV pair is the next slot, with its **fast** bar at that slot centre so the
+    Reward-Rate → fast-DV gap equals the Q → Reward-Rate gap, and the **slow** bar
+    butted against it (no gap). DV fast/slow percentages are the % DV-correlated
+    neurons computed **within** each RT-tercile subset (``quantile_idx`` 1 / 3).
+
+    Bars are session mean ± SEM (across sessions). With ``by_region`` each region
+    (MFC, LFC) is drawn as its **own figure**, the two sharing a common y-range so
+    bar heights are directly comparable across figures. When ``run_stats`` every
+    bar carries a ``*/**/***`` star for that bar **vs its per-neuron activity-
+    shuffle chance level** (``+1/(N+1)`` permutation p), Holm-corrected across the
+    four bars *within that region* — there is no cross-region (MFC-vs-LFC)
+    comparison here. A bracket over the DV fast|slow pair reports the session-
+    paired fast-vs-slow permutation (:func:`_paired_perm_fastslow`), Holm-corrected
+    across regions. Set ``run_stats=False`` to skip all permutations. ``n_boot`` is
+    retained for interface compatibility and is unused here.
+
+    ``corr_all`` supplies the non-DV factors (correlate against
+    ``PARAM_KEYS + ["DV"]``); the fast/slow DV correlations are derived from
+    ``table`` here. Returns a tidy summary (row per region × bar); ``save`` writes
+    one figure per region (``bars_fastslowDV_{MFC,LFC}.{ext}`` or
+    ``…_combined`` when ``by_region=False``) under
+    ``{save_root}/{model_name}/factor_bars/``.
+    """
+    lo, hi = ci
+    non_dv = [f for f in (factors or default_factors(corr_all))
+              if dv_key not in f.param_keys]
+    if not non_dv:
+        raise ValueError("no non-DV factors to plot")
+    if f"{dv_key}_r" not in corr_all.columns:
+        raise KeyError(f"{dv_key!r} correlations missing from corr_all "
+                       f"(correlate against PARAM_KEYS + ['{dv_key}'])")
+
+    # DV split into fast / slow, correlated WITHIN each RT-tercile subset.
+    fast_table, slow_table = split_fast_slow(table)
+    corr_fast = compute_neuron_correlations(fast_table, [dv_key])
+    corr_slow = compute_neuron_correlations(slow_table, [dv_key])
+
+    rng = np.random.default_rng(seed)
+    nd_cols = sorted({k for f in non_dv for k in f.param_keys})
+    if run_stats:
+        bundle_all = _shuffle_null_tuned(table, nd_cols, min_abs_corr,
+                                         n_shuffles, rng)
+        bundle_fast = _shuffle_null_tuned(fast_table, [dv_key], min_abs_corr,
+                                          n_shuffles, rng)
+        bundle_slow = _shuffle_null_tuned(slow_table, [dv_key], min_abs_corr,
+                                          n_shuffles, rng)
+    else:
+        bundle_all = bundle_fast = bundle_slow = None
+
+    # Ordered bars, each tagged with its layout slot + within-slot offset.
+    bars = []
+    for gi, f in enumerate(non_dv):
+        bars.append(dict(name=f.name, label=f.label, color=f.color,
+                         corr=corr_all, bundle=bundle_all, keys=f.param_keys,
+                         group=gi, within=0))
+    g = len(non_dv)
+    bars.append(dict(name=f"{dv_key}_fast", label=f"{dv_key} (fast)",
+                     color=_FAST_COLOR, corr=corr_fast, bundle=bundle_fast,
+                     keys=(dv_key,), group=g, within=0))
+    bars.append(dict(name=f"{dv_key}_slow", label=f"{dv_key} (slow)",
+                     color=_SLOW_COLOR, corr=corr_slow, bundle=bundle_slow,
+                     keys=(dv_key,), group=g, within=1))
+    xs = np.array([b["group"] * slot + b["within"] * bar_width for b in bars])
+
+    if by_region:
+        regions = [(r, [r]) for r in sorted(pd.unique(corr_all.BrainRegion))]
+    else:
+        regions = [("MFC & LFC", None)]
+
+    # DV fast vs slow, session-paired within each region (Holm across regions).
+    dv_fs = {}
+    if run_stats:
+        for region, rvals in regions:
+            diff, p = _paired_perm_fastslow(corr_fast, corr_slow, f"{dv_key}_r",
+                                            min_abs_corr, n_perm, rng,
+                                            region_values=rvals)
+            dv_fs[region] = dict(diff=diff, p=p)
+        for (region, _), ph in zip(regions,
+                                   _holm_adjust([dv_fs[r]["p"]
+                                                 for r, _ in regions])):
+            dv_fs[region]["p_holm"] = float(ph) if np.isfinite(ph) else np.nan
+
+    # ---- pass 1: per-region bar stats + vs-chance stars (Holm within region) --
+    # Each region is drawn in its own figure now, so significance stars report
+    # each bar vs its per-neuron activity-shuffle chance level, Holm-corrected
+    # across the four bars *within that region* (no cross-region comparison).
+    region_data = {}
+    rows = []
+    for region, rvals in regions:
+        bstats = []
+        for b in bars:
+            bar_corr = (b["corr"] if rvals is None
+                        else b["corr"][b["corr"].BrainRegion.isin(rvals)])
+            pcts = _session_factor_percent(bar_corr, list(b["keys"]), min_abs_corr)
+            obs_mean = float(pcts.mean()) if len(pcts) else np.nan
+            obs_sem = float(pcts.sem()) if len(pcts) > 1 else 0.0
+            null_mean = null_lo = null_hi = pval = np.nan
+            if run_stats:
+                b_meta, b_null, b_assess = b["bundle"]
+                st = _factor_region_stat(b["corr"], b_meta, b_null, b_assess,
+                                         b["keys"], rvals, min_abs_corr=min_abs_corr,
+                                         n_shuffles=n_shuffles, ci=ci)
+                null_mean, null_lo = st["null_mean"], st["null_lo"]
+                null_hi, pval = st["null_hi"], st["pval"]
+            bstats.append(dict(name=b["name"], keys=b["keys"], obs_mean=obs_mean,
+                               obs_sem=obs_sem, null_mean=null_mean,
+                               null_lo=null_lo, null_hi=null_hi, pval=pval,
+                               n=len(pcts)))
+        vs_chance_p = [s["pval"] for s in bstats]
+        holm_p = (_holm_adjust(vs_chance_p) if run_stats
+                  else np.full(len(bstats), np.nan))
+        oms = np.array([s["obs_mean"] for s in bstats], float)
+        osm = np.array([s["obs_sem"] for s in bstats], float)
+        for s, hp in zip(bstats, holm_p):
+            fs = dv_fs.get(region, {}) if s["name"].startswith(f"{dv_key}_") else {}
+            rows.append({"BrainRegion": region, "factor": s["name"],
+                         "params": "+".join(s["keys"]),
+                         "observed_pct": s["obs_mean"], "observed_sem": s["obs_sem"],
+                         "shuffle_pct": s["null_mean"], f"ci{lo:g}": s["null_lo"],
+                         f"ci{hi:g}": s["null_hi"], "n_sessions": s["n"],
+                         "p_vs_shuffle": s["pval"],
+                         "p_vs_shuffle_holm": (float(hp) if np.isfinite(hp)
+                                               else np.nan),
+                         "dv_fast_minus_slow": fs.get("diff", np.nan),
+                         "p_dv_fast_vs_slow": fs.get("p", np.nan),
+                         "p_dv_fast_vs_slow_holm": fs.get("p_holm", np.nan)})
+        # Base height of the DV fast-vs-slow bracket (drawn whenever the paired
+        # test returned a value — n.s. included).
+        dv_base = np.nan
+        fs_star = _sigstar(dv_fs.get(region, {}).get("p_holm", np.nan))
+        if (run_stats and fs_star and np.isfinite(oms[-2])
+                and np.isfinite(oms[-1])):
+            span = float(np.nanmax(oms + osm)) if np.isfinite(oms).any() else 0.0
+            dv_base = max(oms[-2] + osm[-2], oms[-1] + osm[-1]) + 0.10 * span + 0.8
+        region_data[region] = dict(oms=oms, osm=osm, holm_p=holm_p, rvals=rvals,
+                                   dv_base=dv_base, fs_star=fs_star)
+
+    # ---- shared y-range across the (separate) region figures ------------------
+    _STAR_PAD, _BRK_TICK, _TXT_PAD = 0.6, 0.6, 1.2
+    y_top = 0.0
+    for region, d in region_data.items():
+        tops = [om + os_ + _STAR_PAD + _TXT_PAD
+                for om, os_ in zip(d["oms"], d["osm"]) if np.isfinite(om)]
+        if np.isfinite(d["dv_base"]):
+            tops.append(d["dv_base"] + _BRK_TICK + _TXT_PAD)
+        if tops:
+            y_top = max(y_top, max(tops))
+    if y_top <= 0:
+        y_top = 1.0
+
+    # ---- pass 2: one figure per region, shared y-range ------------------------
+    figs = []
+    for region, rvals in regions:
+        d = region_data[region]
+        oms, osm = d["oms"], d["osm"]
+        fig, ax = plt.subplots(figsize=(4.6, 4.4))
+        ax.bar(xs, oms, width=bar_width, color=[b["color"] for b in bars],
+               alpha=0.85, edgecolor="k", linewidth=0.5, yerr=osm, capsize=3,
+               zorder=2)
+        if run_stats:
+            for xi, om, os_, hp in zip(xs, oms, osm, d["holm_p"]):
+                if np.isfinite(om):
+                    ax.text(xi, om + os_ + _STAR_PAD, _sigstar(hp), ha="center",
+                            va="bottom", fontsize=12)
+            # DV fast-vs-slow paired bracket over the DV pair (always shown).
+            if d["fs_star"] and np.isfinite(d["dv_base"]):
+                _add_sig_bracket(ax, xs[-2], xs[-1], d["dv_base"], d["fs_star"],
+                                 tick=_BRK_TICK, fontsize=11)
+            handles = [Line2D([0], [0], marker="*", color="k", linestyle="None",
+                              label="★ above bar: vs shuffle chance"),
+                       Line2D([0], [0], color="k", lw=1,
+                              label="⊓ bracket: DV fast vs slow")]
+            ax.legend(handles=handles, fontsize="x-small", frameon=False,
+                      loc="upper left", title="Holm-corrected")
+        ax.set_xticks(xs)
+        ax.set_xticklabels([b["label"] for b in bars], rotation=20, ha="right",
+                           fontsize="small")
+        ax.set_title(f"{region}  (|r| ≥ {min_abs_corr:g})")
+        ax.set_ylabel("Modulated neurons (%)")
+        ax.set_ylim(0, y_top)
+        ax.spines[["top", "right"]].set_visible(False)
+        fig.suptitle(title or f"Factor modulation (DV fast/slow) — "
+                     f"{model_name or ''}", y=1.02)
+        fig.tight_layout()
+        figs.append((region, fig))
+
+    summary = pd.DataFrame(rows)
+    if save:
+        if save_root is None or model_name is None:
+            raise ValueError("save needs save_root and model_name")
+        out_dir = (pathlib.Path(save_root) / _safe_filename(model_name)
+                   / "factor_bars")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        for region, fig in figs:
+            rtag = "combined" if not by_region else _safe_filename(region)
+            fig.savefig(out_dir / f"bars_fastslowDV_{rtag}.{ext}",
+                        bbox_inches="tight")
+        stag = "by_region" if by_region else "combined"
+        summary.to_csv(out_dir / f"summary_fastslowDV_{stag}.csv", index=False)
+        print(f"Saved factor bars (DV fast/slow) -> {out_dir}")
+    plt.show()
+    return summary
+
+
+# --------------------------------------------------------------------------
 # 7. Fast vs slow: drift-correlated neurons (DV / DVabs)
 # --------------------------------------------------------------------------
 _FAST_COLOR = "tomato"     # lab convention (behavior.ipynb): fast = red-ish,
