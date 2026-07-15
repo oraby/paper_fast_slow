@@ -18,12 +18,14 @@ import itertools
 class RTPlots(IntFlag):
     AFTER_OPTO_END_DECISION_PERF = auto()
     AFTER_OPTO_END_RT_BARS = auto()
+    AFTER_OPTO_END_MT_BARS = auto()
     AFTER_OPTO_END_RT_KDE = auto()
     AFTER_OPTO_DECISION_PROB_CDF = auto()
     BEFORE_OPTO_END_DECISION_PERF = auto()
     BEFORE_OPTO_END_DECISION_PROB = auto()
     BEFORE_OPTO_END_RT_KDE = auto()
     WHOLE_SAMPLING_RT_BARS = auto()
+    WHOLE_SAMPLING_MT_BARS = auto()
     WHOLE_SAMPLING_RT_KDE = auto()
     WHOLE_SAMPLING_RT_PERF_CORR = auto()
     AFTER_OPTO_GROUPED_DECISION_PERF = auto()
@@ -59,23 +61,43 @@ def optoReactionTime(start_state, start_delay, max_dur, stimulus_time,
     if rt_plots & RTPlots.AFTER_OPTO_END_DECISION_PERF:
         _plotReactionBars(df_cntrl, df_opto, df_col="ChoiceCorrect",
                           start_delay=start_delay, max_dur=max_dur, name=name,
-                          only_after_opto=True,
+                          only_after_opto=True, bars_z_score=False,
                           save_fp=f"{save_prefix}_perf_bars.svg",
                           save_figs=save_figs)
 
     if rt_plots & RTPlots.AFTER_OPTO_END_RT_BARS:
         _plotReactionBars(df_cntrl, df_opto, df_col="calcStimulusTime",
                           start_delay=start_delay, max_dur=max_dur, name=name,
-                          only_after_opto=True,
+                          only_after_opto=True, bars_z_score=True,
                           save_fp=f"{save_prefix}_rt_bars.svg",
                           save_figs=save_figs)
 
     if rt_plots & RTPlots.WHOLE_SAMPLING_RT_BARS:
         _plotReactionBars(df_cntrl, df_opto, df_col="calcStimulusTime",
                           start_delay=start_delay, max_dur=max_dur, name=name,
-                          only_after_opto=False,
+                          only_after_opto=False, bars_z_score=True,
                           save_fp=f"{save_prefix}_rt_bars_whole_sampling.svg",
                           save_figs=save_figs)
+
+    # Movement time: same subject-paired bars as the RT ones, plotted both
+    # z-scored (against each subject's own control MT) and in raw seconds.
+    if rt_plots & RTPlots.AFTER_OPTO_END_MT_BARS:
+        for bars_z_score in (True, False):
+            _plotReactionBars(df_cntrl, df_opto, df_col="MT",
+                              start_delay=start_delay, max_dur=max_dur,
+                              name=name, only_after_opto=True,
+                              bars_z_score=bars_z_score,
+                              save_fp=f"{save_prefix}_mt_bars.svg",
+                              save_figs=save_figs)
+
+    if rt_plots & RTPlots.WHOLE_SAMPLING_MT_BARS:
+        for bars_z_score in (True, False):
+            _plotReactionBars(df_cntrl, df_opto, df_col="MT",
+                              start_delay=start_delay, max_dur=max_dur,
+                              name=name, only_after_opto=False,
+                              bars_z_score=bars_z_score,
+                              save_fp=f"{save_prefix}_mt_bars_whole_sampling.svg",
+                              save_figs=save_figs)
 
     MAX_TIME = 3
     # Reaction-Time KDE: Total, only early, only late
@@ -157,15 +179,21 @@ def optoReactionTime(start_state, start_delay, max_dur, stimulus_time,
     return df
 
 def _plotReactionBars(df_cntrl, df_opto,
-                      df_col : Literal["calcStimulusTime", "ChoiceCorrect"],
-                      only_after_opto : bool,
+                      df_col : Literal["calcStimulusTime", "ChoiceCorrect",
+                                       "MT"],
+                      only_after_opto : bool, bars_z_score : bool,
                       start_delay, max_dur, name, save_fp, save_figs):
     #
-    Z_SCORE = True and not df_col == "ChoiceCorrect"
+    Z_SCORE = bars_z_score and not df_col == "ChoiceCorrect"
+    METRIC_STR = {"calcStimulusTime": "Sampling Time",
+                  "MT": "Movement Time",
+                  "ChoiceCorrect": "Performance"}[df_col]
+    # Z-score stats come from each subject's control trials over the whole
+    # sampling window, i.e. before the only_after_opto filter below.
     subj_rt_mean_std = {}
     for subj, subj_df in df_cntrl.groupby("Name"):
-        rt_mean = subj_df.calcStimulusTime.mean()
-        rt_std = subj_df.calcStimulusTime.std()
+        rt_mean = subj_df[df_col].mean()
+        rt_std = subj_df[df_col].std()
         subj_rt_mean_std[subj] = (rt_mean, rt_std)
     if only_after_opto:
         df_cntrl = df_cntrl[df_cntrl.calcStimulusTime >= start_delay + max_dur]
@@ -182,8 +210,7 @@ def _plotReactionBars(df_cntrl, df_opto,
         vals = df[df_col]
         if Z_SCORE:
             vals = (vals - subj_rt_mean_std[subject][0]) / subj_rt_mean_std[subject][1]
-        val = vals.median() if df_col == "calcStimulusTime" else \
-              vals.mean() * 100
+        val = vals.mean() * 100 if df_col == "ChoiceCorrect" else vals.median()
         res_dict[f"{brain_region}_RT"].append(val)
 
     fig, ax = plt.subplots(1, 1, figsize=(6, 6))
@@ -234,7 +261,9 @@ def _plotReactionBars(df_cntrl, df_opto,
         within=["Condition"],
     )
     anova_res = aovrm.fit()
-    print("Repeated Measures ANOVA Reaction-Time Results:")
+    print(f"Repeated Measures ANOVA {METRIC_STR} Results "
+          f"({'Z-Scored' if Z_SCORE else 'Raw'}, "
+          f"{'After Opto' if only_after_opto else 'Whole Sampling'}):")
     print(anova_res)
 
     # -------- Post-hoc tests (paired t-tests + Holm correction) --------
@@ -312,10 +341,10 @@ def _plotReactionBars(df_cntrl, df_opto,
         ax.axhline(0, color="black", linestyle="--", linewidth=1)
     ax.set_xticks(xs)
     ax.set_xticklabels(labels)
-    when_str = (" After Opto" if only_after_opto else "Whole Sampling Time")
-    if df_col == "calcStimulusTime":
-        ax.set_ylabel("Sampling Time " + ("(Z-Scored)" if Z_SCORE else "(s)"))
-        ax.set_title(f"{name} - Sampling Time" + (" (Z-Scored)" if Z_SCORE else "")
+    when_str = (" After Opto" if only_after_opto else " Whole Sampling Time")
+    if df_col != "ChoiceCorrect":
+        ax.set_ylabel(f"{METRIC_STR} " + ("(Z-Scored)" if Z_SCORE else "(s)"))
+        ax.set_title(f"{name} - {METRIC_STR}" + (" (Z-Scored)" if Z_SCORE else "")
                     + when_str)
     else:
         ax.set_ylabel("Performance %")
@@ -326,10 +355,10 @@ def _plotReactionBars(df_cntrl, df_opto,
     if save_figs:
         save_fp = Path(save_fp)
         # Add z_scored/raw and only_after_opto/whole_sampling as a suffix
-        if df_col == "calcStimulusTime":
-            suffix = "_z_scored" if Z_SCORE else "_raw"
-        else:
+        if df_col == "ChoiceCorrect":
             suffix = "_perf"
+        else:
+            suffix = "_z_scored" if Z_SCORE else "_raw"
         suffix += "_only_after_opto" if only_after_opto else "_whole_sampling"
         save_fp = save_fp.with_name(save_fp.stem + suffix + save_fp.suffix)
         plt.savefig(save_fp, bbox_inches="tight", dpi=300)
