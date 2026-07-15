@@ -19,9 +19,13 @@ def optoFeedback(start_state, start_delay, max_dur, stimulus_time,
                  only_brain_regions: List[BrainRegion] = [],
                  combine_control: bool = False,
                  z_score_how: Literal["Subject", "Session"] = "Session",
-                 plot_as_difference: bool = False):
+                 plot_as_difference: bool = False,
+                 metrics: List[Literal["calcStimulusTime",
+                                       "ChoiceCorrect"]] = ["calcStimulusTime"],
+                 split_by_prev_outcome: bool = True):
     """
-    Top-level entry: prepares df, splits control / opto, and calls _plotReactionBars.
+    Top-level entry: prepares df, splits control / opto, and calls
+    _plotReactionBars once per requested next-trial metric.
     """
     print("Df len:", len(df))
     if len(only_brain_regions):
@@ -39,20 +43,26 @@ def optoFeedback(start_state, start_delay, max_dur, stimulus_time,
     df_cntrl = df[df[f"{col_prefix}OptoEnabled"] == 0]
     df_opto = df[df[f"{col_prefix}OptoEnabled"] == 1]
 
-    _plotReactionBars(
-        df_cntrl, df_opto,
-        df_col="calcStimulusTime",
-        start_delay=start_delay,
-        max_dur=max_dur,
-        name=name,
-        save_fp=f"{save_prefix}_rt_bars.svg",
-        save_figs=save_figs,
-        num_iterations=num_iterations,    # kept for API compatibility, not used
-        z_score_time=z_score,
-        combine_control=combine_control,
-        z_score_how=z_score_how,
-        plot_as_difference=plot_as_difference,
-    )
+    save_fp_per_metric = {"calcStimulusTime": f"{save_prefix}_rt_bars.svg",
+                          "ChoiceCorrect": f"{save_prefix}_perf_bars.svg"}
+    for df_col in metrics:
+        _plotReactionBars(
+            df_cntrl, df_opto,
+            df_col=df_col,
+            start_delay=start_delay,
+            max_dur=max_dur,
+            name=name,
+            save_fp=save_fp_per_metric[df_col],
+            save_figs=save_figs,
+            num_iterations=num_iterations,  # kept for API compatibility, not used
+            # ChoiceCorrect is a 0/1 flag, so it is always reported as a raw
+            # percentage rather than z-scored.
+            z_score_time=z_score and df_col != "ChoiceCorrect",
+            combine_control=combine_control,
+            z_score_how=z_score_how,
+            plot_as_difference=plot_as_difference,
+            split_by_prev_outcome=split_by_prev_outcome,
+        )
 
     return df
 
@@ -133,18 +143,37 @@ def _plotReactionBars(df_cntrl, df_opto,
                       z_score_time: bool = True,
                       combine_control: bool = False,
                       z_score_how: Literal["Subject", "Session"] = "Session",
-                      plot_as_difference: bool = False):
+                      plot_as_difference: bool = False,
+                      split_by_prev_outcome: bool = True):
 
     assert df_col in ["calcStimulusTime", "ChoiceCorrect"]
     if z_score_time:
         assert df_col != "ChoiceCorrect"
         assert z_score_how in ["Subject", "Session"]
+    # "Difference" means Prev-Incorrect minus Prev-Correct, so it needs the split.
+    assert not (plot_as_difference and not split_by_prev_outcome), \
+        "plot_as_difference requires split_by_prev_outcome=True"
+
+    metric_str = ("Sampling Time" if df_col == "calcStimulusTime"
+                  else "Performance")
+
+    # Either one group per previous outcome, or a single group pooling both.
+    outcome_specs = ([(1, "Correct"), (0, "Incorrect")] if split_by_prev_outcome
+                     else [(None, "All")])
+    # One bar per region (rather than a Correct/Incorrect pair) in both the
+    # difference and the pooled modes.
+    single_bar = plot_as_difference or not split_by_prev_outcome
 
     # Recombine both dfs so z-scoring & grouping is easier
     df_all = pd.concat([df_cntrl, df_opto], ignore_index=True).reset_index(drop=True)
     df_all = df_all[["Name", "Date", "SessionNum",
                      "GUI_OptoBrainRegion", "PrevOptoEnabled",
                      "PrevChoiceCorrect", df_col]]
+
+    # ChoiceCorrect is a 0/1 flag; scale once here so every downstream mean,
+    # SEM and axis limit is already in percent.
+    if df_col == "ChoiceCorrect":
+        df_all[df_col] = df_all[df_col] * 100
 
     # z-score if requested
     df_all = _apply_zscore(df_all, df_col=df_col,
@@ -183,8 +212,13 @@ def _plotReactionBars(df_cntrl, df_opto,
             r_df = subj_df[mask_fn(subj_df)]
             if r_df.empty:
                 continue
-            for prev_flag, prev_label in [(1, "Correct"), (0, "Incorrect")]:
-                tmp = r_df[r_df.PrevChoiceCorrect == prev_flag]
+            for prev_flag, prev_label in outcome_specs:
+                if prev_flag is None:
+                    # Pool both outcomes, but keep the same trial set as the
+                    # split mode: the previous trial must have had a choice.
+                    tmp = r_df[r_df.PrevChoiceCorrect.isin([0, 1])]
+                else:
+                    tmp = r_df[r_df.PrevChoiceCorrect == prev_flag]
                 if tmp.empty:
                     continue
                 # Average per session, then average over sessions for this subject/region/outcome
@@ -207,8 +241,8 @@ def _plotReactionBars(df_cntrl, df_opto,
     subjects = sorted(subj_region_df["Subject"].unique())
     res_dict = {"Subject": subjects}
     for region in region_names:
-        res_dict[f"{region}_prev_correct"] = [np.nan] * len(subjects)
-        res_dict[f"{region}_prev_incorrect"] = [np.nan] * len(subjects)
+        for _, prev_label in outcome_specs:
+            res_dict[f"{region}_prev_{prev_label.lower()}"] = [np.nan] * len(subjects)
 
     subj_index = {s: i for i, s in enumerate(subjects)}
     for _, row in subj_region_df.iterrows():
@@ -251,9 +285,12 @@ def _plotReactionBars(df_cntrl, df_opto,
         _, pvals_corr, _, _ = multipletests(pvals, method="holm")
         within_p_corr = {k: p for k, p in zip(keys_within, pvals_corr)}
 
-    print("\n--- Within-Condition (Correct vs Incorrect) ---")
-    for region in keys_within:
-        print(f"{region}: t={within_t[region]:.2f}, p_raw={p_raw_within[region]:.4f}, p_holm={within_p_corr[region]:.4f}")
+    print(f"\n=== Next-Trial {metric_str}"
+          f"{'' if split_by_prev_outcome else ' (Prev Outcomes Pooled)'} ===")
+    if split_by_prev_outcome:
+        print("\n--- Within-Condition (Correct vs Incorrect) ---")
+        for region in keys_within:
+            print(f"{region}: t={within_t[region]:.2f}, p_raw={p_raw_within[region]:.4f}, p_holm={within_p_corr[region]:.4f}")
 
     # -------------------- STATS: Across-Region (RM ANOVA + Pairwise) -------------------- #
 
@@ -271,7 +308,7 @@ def _plotReactionBars(df_cntrl, df_opto,
             return {}
 
         # RM ANOVA
-        print(f"\n--- Cross-Region {outcome_label} (RM ANOVA) ---")
+        print(f"\n--- Cross-Region {outcome_label} {metric_str} (RM ANOVA) ---")
         try:
             aov = AnovaRM(subset_df, depvar="RT", subject="Subject", within=["Region"])
             res = aov.fit()
@@ -316,16 +353,16 @@ def _plotReactionBars(df_cntrl, df_opto,
 
         return sig_pairs_map
 
-    # Run Cross-Region Stats
-    cross_sig_correct = _analyze_cross_region("Correct")
-    cross_sig_incorrect = _analyze_cross_region("Incorrect")
+    # Run Cross-Region Stats (one pass per outcome group)
+    cross_sig = {prev_label: _analyze_cross_region(prev_label)
+                 for _, prev_label in outcome_specs}
 
     # -------------------- PLOTTING (HORIZONTAL BARH) -------------------- #
     fig, ax = plt.subplots(1, 1, figsize=(8, 8))
 
     # Define Y positions (formerly X positions)
     if combine_control:
-        if plot_as_difference:
+        if single_bar:
             ys = [1, 2, 3]
             labels_yt = ["Control", "Opto MFC", "Opto LFC"]
         else:
@@ -341,7 +378,7 @@ def _plotReactionBars(df_cntrl, df_opto,
             BrainRegionClr[BrainRegion.ALM_Bi],
         ]
     else:
-        if plot_as_difference:
+        if single_bar:
             ys = [1, 2, 3, 4]
             labels_yt = ["Cntrl MFC", "Opto MFC", "Cntrl LFC", "Opto LFC"]
         else:
@@ -358,38 +395,39 @@ def _plotReactionBars(df_cntrl, df_opto,
         ]
 
     # Map regions to y-coordinates
-    ys_loop = ys[::2] if not plot_as_difference else ys
+    ys_loop = ys if single_bar else ys[::2]
     region_y_map = {}  # Store y coords for brackets later
 
     x_stack_tracker = 0.0  # To track rightward clearance for brackets (x direction)
 
     # Draw Bars and Within-Region Stars
     for y0, region, clr in zip(ys_loop, region_names, clrs):
-        col_corr = f"{region}_prev_correct"
-        col_incorr = f"{region}_prev_incorrect"
-
-        vals_corr = res_df[col_corr].values
-        vals_incorr = res_df[col_incorr].values
-
-        if plot_as_difference:
-            # Mode: Plot difference (Inc - Corr)
-            mask = ~np.isnan(vals_corr) & ~np.isnan(vals_incorr)
-            if mask.sum() == 0:
+        if single_bar:
+            # One bar per region: either the Incorrect-minus-Correct difference,
+            # or the pooled value when the outcomes are not split.
+            if plot_as_difference:
+                vals_corr = res_df[f"{region}_prev_correct"].values
+                vals_incorr = res_df[f"{region}_prev_incorrect"].values
+                mask = ~np.isnan(vals_corr) & ~np.isnan(vals_incorr)
+                bar_vals = vals_incorr[mask] - vals_corr[mask]
+                bar_key = "diff"
+            else:
+                vals_all = res_df[f"{region}_prev_all"].values
+                bar_vals = vals_all[~np.isnan(vals_all)]
+                bar_key = "all"
+            if len(bar_vals) == 0:
                 continue
-            diffs = vals_incorr[mask] - vals_corr[mask]
-            mean_diff = diffs.mean()
-            err_diff = stats.sem(diffs) if mask.sum() > 1 else 0.0
 
-            ax.barh(y0, mean_diff, xerr=err_diff,
+            mean_val = bar_vals.mean()
+            err_val = stats.sem(bar_vals) if len(bar_vals) > 1 else 0.0
+
+            ax.barh(y0, mean_val, xerr=err_val,
                     height=0.4, color=clr, edgecolor="black")
 
-            region_y_map[region] = {"diff": y0}
+            region_y_map[region] = {bar_key: y0}
 
             # Update max rightward extent tracker (accounting for negative bars)
-            if mean_diff >= 0:
-                current_right = mean_diff + err_diff
-            else:
-                current_right = 0.0
+            current_right = mean_val + err_val if mean_val >= 0 else 0.0
             if current_right > x_stack_tracker:
                 x_stack_tracker = current_right
 
@@ -399,6 +437,12 @@ def _plotReactionBars(df_cntrl, df_opto,
                 if star:
                     x_stack_tracker = _add_sig_bracket(ax, y0, y0, x_stack_tracker, star)
         else:
+            col_corr = f"{region}_prev_correct"
+            col_incorr = f"{region}_prev_incorrect"
+
+            vals_corr = res_df[col_corr].values
+            vals_incorr = res_df[col_incorr].values
+
             # Mode: Plot raw Correct and Incorrect bars
             mask_corr = ~np.isnan(vals_corr)
             mask_incorr = ~np.isnan(vals_incorr)
@@ -450,12 +494,10 @@ def _plotReactionBars(df_cntrl, df_opto,
                 continue
 
             # Determine y coordinates
-            if plot_as_difference:
-                y_a = region_y_map[r1]["diff"]
-                y_b = region_y_map[r2]["diff"]
-            else:
-                y_a = region_y_map[r1][key_suffix]
-                y_b = region_y_map[r2][key_suffix]
+            if r1 not in region_y_map or r2 not in region_y_map:
+                continue
+            y_a = region_y_map[r1][key_suffix]
+            y_b = region_y_map[r2][key_suffix]
 
             x_stack_tracker = _add_sig_bracket(ax, y_a, y_b, x_stack_tracker, star)
     if plot_as_difference:
@@ -463,16 +505,20 @@ def _plotReactionBars(df_cntrl, df_opto,
         # given cross-region stats are computed separately for Correct/Incorrect.
         pass
     else:
-        _draw_cross_brackets(cross_sig_correct, "correct")
-        _draw_cross_brackets(cross_sig_incorrect, "incorrect")
+        for _, prev_label in outcome_specs:
+            _draw_cross_brackets(cross_sig[prev_label], prev_label.lower())
 
     # -------------------- Connect subject lines -------------------- #
     for _, row in res_df.iterrows():
-        if plot_as_difference:
+        if single_bar:
+            # One point per region, so connect each subject across regions.
             x_vals = []
             y_pos = []
             for y0, region in zip(ys_loop, region_names):
-                val = row[f"{region}_prev_incorrect"] - row[f"{region}_prev_correct"]
+                if plot_as_difference:
+                    val = row[f"{region}_prev_incorrect"] - row[f"{region}_prev_correct"]
+                else:
+                    val = row[f"{region}_prev_all"]
                 if np.isnan(val):
                     continue
                 x_vals.append(val)
@@ -506,16 +552,20 @@ def _plotReactionBars(df_cntrl, df_opto,
     ax.set_yticks(ys)
     ax.set_yticklabels(labels_yt)
 
+    diff_str = (" (Prev Incorrect - Prev Correct)" if plot_as_difference else
+                "" if split_by_prev_outcome else " (Prev Outcomes Pooled)")
     if df_col == "calcStimulusTime":
-        ax.set_xlabel("Sampling Time " + ("(Z-Scored)" if z_score_time else "(s)"))
+        ax.set_xlabel("Sampling Time " + ("(Z-Scored)" if z_score_time else "(s)")
+                      + diff_str)
         ax.set_title(f"{name} - Sampling Time" +
                      (" (Z-Scored)" if z_score_time else ""))
     else:
-        ax.set_xlabel("Performance %")
+        ax.set_xlabel("Performance %" + diff_str)
         ax.set_title(f"{name} - Performance ")
-        ax.set_xlim(left=45)
+        if not plot_as_difference:
+            ax.set_xlim(left=45)
 
-    if z_score_time:
+    if z_score_time or plot_as_difference:
         ax.axvline(0, color="black", linestyle="--", linewidth=1)
 
     # Adjust X lim for brackets (right side)
@@ -523,7 +573,7 @@ def _plotReactionBars(df_cntrl, df_opto,
     if x_stack_tracker > xmax:
         ax.set_xlim(right=x_stack_tracker + (xmax - xmin) * 0.05)
 
-    if not z_score_time and df_col == "calcStimulusTime":
+    if not z_score_time and df_col == "calcStimulusTime" and not plot_as_difference:
         left, right = ax.get_xlim()
         if left < 0.8:
             ax.set_xlim(left=0.8, right=right)
