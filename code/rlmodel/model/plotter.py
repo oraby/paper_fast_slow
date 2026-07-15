@@ -53,6 +53,11 @@ def runAndPlot(df, fig, axs, include_Q, include_RewardRate, biasFn, driftFn,
                noiseFn_df_cols=[], noiseFn_kwargs={},
                is_loss_no_dir=False, cached_subject_df=None,
                mle_loss=None, mle_loss_source=None, joint_info=None,
+               # Forwarded to ``makeOneRun``, which seeds the bias/drift/noise
+               # RNGs from it. Default 0 == makeOneRun's own default, so a
+               # caller that doesn't pass it keeps the historical single
+               # trajectory; repeat-evaluation callers vary it per iteration.
+               seed=0,
                verbose=True):
     # print("Updating plots")
 
@@ -93,6 +98,7 @@ def runAndPlot(df, fig, axs, include_Q, include_RewardRate, biasFn, driftFn,
                         BETA_UNREWARDED=BETA_UNREWARDED,
                         DRIFT_COEF=DRIFT_COEF, NOISE_SIGMA=NOISE_SIGMA,
                         BOUND=BOUND, dt=dt, t_dur=t_dur, is_loss_no_dir=is_loss_no_dir,
+                        seed=seed,
                         return_df=True)
         # p.print_stats()
         p.dump_stats("/home/main/OnedriveFloatingPersonal/caiman/TwoP/again/profile.prof")
@@ -105,7 +111,8 @@ def runAndPlot(df, fig, axs, include_Q, include_RewardRate, biasFn, driftFn,
                         ALPHA_UNREWARDED=ALPHA_UNREWARDED,
                         BETA_UNREWARDED=BETA_UNREWARDED,
                         DRIFT_COEF=DRIFT_COEF, NOISE_SIGMA=NOISE_SIGMA,
-                        BOUND=BOUND, dt=dt, t_dur=t_dur, is_loss_no_dir=is_loss_no_dir, return_df=True)
+                        BOUND=BOUND, dt=dt, t_dur=t_dur, is_loss_no_dir=is_loss_no_dir,
+                        seed=seed, return_df=True)
     loss, df = ret
     df = df[keep_cols].copy()
     if verbose:

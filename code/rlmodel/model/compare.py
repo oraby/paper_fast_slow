@@ -262,9 +262,15 @@ def _compute_mle(subject, fid, payload, df_behavior, include_Q,
 
 
 def _compute_sim(subject, fid, payload, df_behavior, include_Q,
-                 include_RewardRate):
+                 include_RewardRate, seed=0):
     """Run the Chi²-style forward simulation for the column's params (no
-    plotting). Returns ``(sim_df|None, bound, biasFn_kwargs, error|None)``."""
+    plotting). Returns ``(sim_df|None, bound, biasFn_kwargs, error|None)``.
+
+    ``seed`` selects the simulation's RNG trajectory (see
+    ``logic.makeOneRun``). It defaults to 0 — the historical single
+    trajectory — and is varied per iteration by ``aggregate.collect_metrics``
+    when repeat-evaluating a subject.
+    """
     try:
         biasFn = BIAS_FN_DICT[fid.bias]
         driftFn = DRIFT_FN_DICT[fid.drift]
@@ -284,6 +290,7 @@ def _compute_sim(subject, fid, payload, df_behavior, include_Q,
             driftFn_df_cols=routed["driftFn_df_cols"],
             noiseFn_kwargs=routed["noiseFn_kwargs"],
             noiseFn_df_cols=routed["noiseFn_df_cols"],
+            seed=seed,
             verbose=False, **routed["top_kwargs"])
         return sim_df, routed["top_kwargs"]["BOUND"], routed["biasFn_kwargs"], None
     except Exception as exc:  # noqa: BLE001 — degrade one column, not the grid
