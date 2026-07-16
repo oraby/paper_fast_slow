@@ -4,3 +4,7 @@ __pycache__/
 # uv-managed virtualenv (recreate with `uv sync`); uv.lock IS committed.
 .venv/
 
+# Derived metrics frames from aggregate.load_or_collect_metrics — a cache of
+# the fits in data/RLModel, regenerable with FORCE_RECOMPUTE.
+data/RLModel/metrics/
+
