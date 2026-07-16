@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 from scipy import stats
 from pathlib import Path
@@ -20,10 +21,28 @@ def calcSubjQuantileBias(subj_df, choice_left_col=_CHOICE_LEFT_COL,
                                                include_groups=False)
 
 def calcBias(df, choice_left_col=_CHOICE_LEFT_COL, groupby_cols=_GROUPBY_COLS):
-    return df.groupby("Name").apply(calcSubjQuantileBias,
-                                    choice_left_col=choice_left_col,
-                                    groupby_cols=groupby_cols,
-                                    include_groups=False)
+    # Build the per-subject level explicitly rather than via
+    # ``groupby("Name").apply(calcSubjQuantileBias, include_groups=False)``:
+    # that drops the "Name" column, but the default/`["Name"]` groupby_cols
+    # start with it, so the inner groupby would fail (KeyError: 'Name').
+    #
+    # We must, however, reproduce ``apply``'s output *shape*, which callers
+    # (``_plotMotorBias``, ``plotBias``, ``subject_metrics``) rely on: when
+    # every subject's inner result shares the same index, ``apply`` collapses
+    # the Series into a DataFrame (rows = subjects, cols = the shared index);
+    # otherwise it returns the concatenated MultiIndex Series. A plain
+    # ``pd.concat`` would always give the Series form and break the single-
+    # subject callers that then ``.unstack()``.
+    per_subject = {name: calcSubjQuantileBias(subj_df,
+                                              choice_left_col=choice_left_col,
+                                              groupby_cols=groupby_cols)
+                   for name, subj_df in df.groupby("Name")}
+    inner = list(per_subject.values())
+    if not inner:
+        return pd.Series(dtype=float)
+    if len({tuple(s.index) for s in inner}) == 1:
+        return pd.DataFrame(per_subject).T
+    return pd.concat(per_subject)
 
 
 def plotBias(df, as_abs, plot_single_subjects, save_figs=False,
