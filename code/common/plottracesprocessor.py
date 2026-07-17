@@ -14,7 +14,7 @@ class PlotTraces(DFProcessor):
                  legendLabelAndLineStyle=None, save_context=None,
                  should_save_overwrite=True, plot_title_postfix="",
                  processPlotIdFn=None, show_plots=None, getAx=None,
-                 set_aspect_ratio=None):
+                 set_aspect_ratio=None, epoch_fraction_vlines=None):
         if isinstance(areas_to_colors, dict):
             self._areas_to_colors = areas_to_colors
             areas_to_colors = self._defaultAreasToColors
@@ -44,6 +44,10 @@ class PlotTraces(DFProcessor):
         self._draw_legend = draw_legend
         self._legendLabelAndLineStyle = legendLabelAndLineStyle
         self._set_aspect_ratio = set_aspect_ratio
+        # Optional extra vertical markers, each drawn at a fraction along a
+        # named epoch's span (e.g. the middle of "Sampling"). List of dicts;
+        # each has "epoch" and "fraction" keys, the rest are axvline kwargs.
+        self._epoch_fraction_vlines = epoch_fraction_vlines or []
         self._save_context = save_context
         self._plot_title_postfix = \
                           f" {plot_title_postfix}" if plot_title_postfix else ""
@@ -103,6 +107,7 @@ class PlotTraces(DFProcessor):
 
         plot_id_to_epochs_names = {}
         plot_id_to_epochs_start_x = {}
+        plot_id_to_epochs_ranges = {}
         if self._is_avg_trc:
             epochs_src = [(row.TrialNumber, row)
                           for _, row in data.iterrows()]
@@ -113,6 +118,7 @@ class PlotTraces(DFProcessor):
             plot_id_to_epochs_names[plt_id] = row.epochs_names
             plot_id_to_epochs_start_x[plt_id] = [
                                             rng[0] for rng in row.epochs_ranges]
+            plot_id_to_epochs_ranges[plt_id] = list(row.epochs_ranges)
 
         count = 0
         for plot_id, rows_to_traces in \
@@ -164,6 +170,9 @@ class PlotTraces(DFProcessor):
             Xs_text = plot_id_to_epochs_names[plot_id]
             [ax.axvline(x, color="k", linestyle="dashed", alpha=0.5)
              for x in Xs_pos[1:]]
+            self._drawEpochFractionVlines(
+                ax, plot_id_to_epochs_names[plot_id],
+                plot_id_to_epochs_ranges[plot_id])
             y_trans = transforms.blended_transform_factory(ax.transData,
                                                            ax.transAxes)
             kargs = {"rotation":35, "size":"x-small",
@@ -224,6 +233,31 @@ class PlotTraces(DFProcessor):
             count += 1
         if count > 0:
             return ax # Else we don't have ax defined
+
+    def _drawEpochFractionVlines(self, ax, epochs_names, epochs_ranges):
+        '''Draw a vertical marker at a fraction along each requested epoch.
+
+        Each spec in ``self._epoch_fraction_vlines`` names an ``epoch`` and a
+        ``fraction`` in [0, 1]; the line is placed at that fraction of the
+        epoch's inclusive span (so ``fraction=0.5`` is its middle). Because
+        epochs here are time-normalized to a common width, that position is the
+        same relative point within the epoch for every averaged trial. Any
+        other keys are forwarded to ``axvline`` as styling. An unmatched epoch
+        name is skipped so multi-epoch/subset plots don't error.
+        '''
+        offset = 1 if self._start_at_one else 0
+        name_to_range = dict(zip(epochs_names, epochs_ranges))
+        for spec in self._epoch_fraction_vlines:
+            spec = dict(spec)
+            epoch_name = spec.pop("epoch")
+            fraction = spec.pop("fraction", 0.5)
+            if epoch_name not in name_to_range:
+                continue
+            start, end = name_to_range[epoch_name]
+            x = start + fraction * (end - start) + offset
+            style = {"color": "0.4", "linestyle": "dashdot", "alpha": 0.9}
+            style.update(spec)
+            ax.axvline(x, **style)
 
     def _defaultAreasToColors(self, trace_id):
         return self._areas_to_colors.get(trace_id)
