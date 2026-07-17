@@ -14,6 +14,11 @@ dependencies = [
     "statsmodels",
     "ipykernel",
     "scikit-posthocs",
+    # pipeline.traceswidth imports skimage.transform at module scope, so
+    # anything importing common.imaging needs it available.
+    "scikit-image",
+    # opto.optoreactiontime imports sklearn.linear_model at module scope.
+    "scikit-learn",
     "ipympl",
     "pytest",
 ]
@@ -31,4 +36,5 @@ package = false
 # to sys.path; pytest instead adds the repo's parent via the package __init__
 # chain, so the local `code/` package never shadows the stdlib `code` module.
 # That is why no parent-directory dance is needed any more.
-testpaths = ["code/rlmodel/model/tests"]
+testpaths = ["code/rlmodel/model/tests", "code/widefield/tests",
+             "code/common/tests"]
