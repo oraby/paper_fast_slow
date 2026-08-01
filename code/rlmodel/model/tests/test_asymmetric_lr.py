@@ -616,20 +616,26 @@ def test_resolve_drift_alias_non_alias_passthrough():
     ``scale_bound``. This is what lets test fixtures and programmatic
     callers keep using the internal names directly."""
     for drift in ("Classic", "Decay Q", "Decay Q (Offset)",
-                  "NoiseGain-RewardRate", "Bound-RewardRate"):
+                  "NoiseGain-RewardRate", "Bound-RewardRate",
+                  "DriftGain-RewardRate", "DriftGain(1+r)-RewardRate"):
         assert resolve_drift_alias(drift, False) == drift
         assert resolve_drift_alias(drift, True) == drift
 
 
 def test_user_facing_drift_keys_hides_internal_rewardrate_names():
     """The user-facing dropdown / argparse choices list must NOT show
-    the NoiseGain-/Bound- implementation names — only the
+    the NoiseGain-/Bound-/DriftGain- implementation names — only the
     ``RewardRate*`` aliases stand in for them."""
     keys = user_facing_drift_keys()
     hidden = {"NoiseGain-RewardRate", "Bound-RewardRate",
               "NoiseGain-RewardRate Decay Q", "Bound-RewardRate Decay Q",
               "NoiseGain-RewardRate Decay Q (Offset)",
-              "Bound-RewardRate Decay Q (Offset)"}
+              "Bound-RewardRate Decay Q (Offset)",
+              "DriftGain-RewardRate", "DriftGain(1+r)-RewardRate",
+              "DriftGain-RewardRate Decay Q",
+              "DriftGain(1+r)-RewardRate Decay Q",
+              "DriftGain-RewardRate Decay Q (Offset)",
+              "DriftGain(1+r)-RewardRate Decay Q (Offset)"}
     assert hidden.isdisjoint(set(keys))
     aliases = {"RewardRate", "RewardRate Decay Q",
                "RewardRate Decay Q (Offset)"}
@@ -664,8 +670,13 @@ def test_resolve_drift_alias_args_passthrough_for_non_alias():
 
 def test_resolved_rewardrate_aliases_match_registry_entries():
     """Sanity: every resolved name from the alias table is a real key
-    in DRIFT_FN_DICT, so dispatch can't silently miss."""
+    in DRIFT_FN_DICT, so dispatch can't silently miss. Covers all four
+    reward-rate channels (noise, bound, drift x 2 mappings)."""
     for alias in ("RewardRate", "RewardRate Decay Q",
                   "RewardRate Decay Q (Offset)"):
-        assert resolve_drift_alias(alias, False) in DRIFT_FN_DICT
-        assert resolve_drift_alias(alias, True) in DRIFT_FN_DICT
+        for scale_bound in (False, True):
+            assert resolve_drift_alias(alias, scale_bound) in DRIFT_FN_DICT
+            for rr_map in ("2-r", "1+r"):
+                assert resolve_drift_alias(
+                    alias, scale_bound, use_drift_rr=True,
+                    drift_rr_map=rr_map) in DRIFT_FN_DICT

@@ -140,6 +140,46 @@ def bound_scale_from_reward_rate(reward_rate):
     return 2.0 - reward_rate
 
 
+RR_DRIFT_MAPS = ("2-r", "1+r")
+DEFAULT_RR_DRIFT_MAP = "2-r"
+
+
+def drift_scale_from_reward_rate(reward_rate, rr_map=DEFAULT_RR_DRIFT_MAP):
+    """Per-trial drift gain for the DriftGain-RewardRate drift.
+
+    Maps the reward rate ``r`` to the factor multiplying the *coherence*
+    drift term::
+
+        mu_t = DRIFT_COEF * DV * drift_scale_from_reward_rate(r)
+
+    Two mappings, both landing in ``[1, 2]`` for ``r`` in ``[0, 1]``:
+
+    - ``"2-r"`` (default) — ``d += DV*(2V - R*V)``. Deliberately the same
+      ``2 - r`` shape as ``bound_scale_from_reward_rate``. High reward rate
+      => WEAKER drift => slower and less accurate. Note this is the
+      opposite *speed* direction from the other two reward-rate channels
+      (NoiseGain's ``sigma *= r`` and Bound's ``b = B*(2-r)`` both make a
+      high reward rate faster).
+    - ``"1+r"`` — ``d += DV*(V + R*V)``. Mirror image: high reward rate =>
+      STRONGER drift => faster and more accurate, i.e. the same speed
+      direction as the noise / bound channels.
+
+    Unlike the bound channel this is NOT a rescaling identity: sigma and
+    the bound both stay flat, so the observable behavior differs from both
+    existing channels rather than being equivalent to one of them.
+
+    Pure arithmetic: backend-agnostic (NumPy or CuPy ``xp`` arrays) and
+    NaN-preserving, so NaN-padded trial slots propagate through unchanged.
+    """
+    if rr_map == "2-r":
+        return 2.0 - reward_rate
+    if rr_map == "1+r":
+        return 1.0 + reward_rate
+    raise ValueError(
+        f"Unknown reward-rate drift map {rr_map!r}; expected one of "
+        f"{list(RR_DRIFT_MAPS)}.")
+
+
 def compute_starting_point_z(q_left, q_right, delta, offset, include_Q,
                               *, xp=np, bound=None):
     """Return normalized starting point z.
@@ -172,8 +212,27 @@ def compute_trial_mu(coherence, drift_coef, time_grid=None, *, xp=np):
     return xp.full_like(time_grid, mu, dtype=float)
 
 
-def compute_trial_sigma(base_sigma, reward_rate, include_RewardRate):
-    """Scalar / array-broadcast safe; no ``xp`` needed (pure arithmetic)."""
-    if include_RewardRate:
+def compute_trial_sigma(base_sigma, reward_rate, include_RewardRate,
+                        rr_channel="noise"):
+    """Scalar / array-broadcast safe; no ``xp`` needed (pure arithmetic).
+
+    ``rr_channel`` names which quantity the learned reward rate modulates,
+    i.e. which reward-rate channel the model uses:
+
+    - ``"noise"`` (default) — the NoiseGain channel: ``sigma *= r``.
+    - ``"drift"`` — the DriftGain channel: sigma is FLAT; the modulation
+      lives in the drift instead (see ``drift_scale_from_reward_rate``).
+
+    Defaulting to ``"noise"`` keeps every pre-existing caller byte-identical.
+
+    KNOWN GAP (pre-existing, deliberately not changed here): the
+    Bound-RewardRate channel also wants a flat sigma plus a per-trial bound
+    ``b_t = BOUND*(2-r)``, but the two callers of this helper
+    (``posterior_simulate``, ``mle_visualize``) have no per-trial-bound
+    plumbing, so they keep passing ``"noise"`` for that family and remain as
+    (in)accurate as before. Only ``mle.py`` handles the bound channel
+    properly, via ``uses_per_trial_bound``.
+    """
+    if include_RewardRate and rr_channel == "noise":
         return reward_rate * base_sigma
     return base_sigma

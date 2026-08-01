@@ -141,6 +141,42 @@ class MLEModelConfig:
         return self.noise_fn_str == "Decaying Q-Val"
 
     @property
+    def uses_per_trial_drift(self):
+        """DriftGain-RewardRate: the reward rate modulates the coherence
+        drift (``mu *= g(r_t)``) with sigma and the bound both flat.
+
+        Derived from ``drift_fn_str`` rather than being an explicit field
+        like ``uses_per_trial_bound``: no pre-existing pickle can carry a
+        ``DriftGain*`` drift string, so the derivation is total — and
+        deriving it means ``mle_reeval.build_mle_config`` and
+        ``visualize._evaluate_mle_loss_for_gui`` (which already thread
+        ``drift_fn_str``) need no changes and cannot forget to set it.
+        """
+        return self.drift_fn_str.startswith("DriftGain")
+
+    @property
+    def rr_drift_map(self):
+        """The ``r -> drift gain`` mapping for ``uses_per_trial_drift``.
+
+        Encoded in the registry key (``DriftGain(1+r)-*`` vs the untagged
+        ``DriftGain-*``) because the mapping is bound into the Chi² drift
+        function by ``partialWithNames``; see ``drift.DRIFT_FN_DICT``.
+        """
+        return ("1+r" if self.drift_fn_str.startswith("DriftGain(1+r)")
+                else state_updates.DEFAULT_RR_DRIFT_MAP)
+
+    @property
+    def sigma_rr_channel(self):
+        """``rr_channel`` to pass to ``state_updates.compute_trial_sigma``.
+
+        ``"drift"`` (flat sigma) only for the DriftGain family. Everything
+        else — including Bound-RewardRate — stays ``"noise"``, which keeps
+        the scalar helper's callers byte-identical to before; see the KNOWN
+        GAP note in ``compute_trial_sigma``.
+        """
+        return "drift" if self.uses_per_trial_drift else "noise"
+
+    @property
     def requires_gpu(self):
         """True iff the user requested GPU and ruled out silent fallback.
 
@@ -222,6 +258,25 @@ def validate_mle_config(model_config):
         raise ValueError(
             "mle_choice_norm must be 'conditional' or 'marginal'; "
             f"got {model_config.mle_choice_norm!r}.")
+    # DriftGain-RewardRate consistency. All three of these are impossible by
+    # construction (the flags derive from one drift_fn_str), so they're really
+    # guards against a hand-built config -- but a silently mis-scaled drift
+    # would be near-impossible to spot in a fitted loss, hence the loud check.
+    if model_config.uses_per_trial_drift:
+        if model_config.rr_drift_map not in state_updates.RR_DRIFT_MAPS:
+            raise ValueError(
+                f"Unknown reward-rate drift map "
+                f"{model_config.rr_drift_map!r}; expected one of "
+                f"{list(state_updates.RR_DRIFT_MAPS)}.")
+        if not model_config.include_RewardRate:
+            raise ValueError(
+                f"drift_fn_str {model_config.drift_fn_str!r} routes the reward "
+                f"rate to the drift but include_RewardRate is False, so no "
+                f"reward rate would ever be learned.")
+        if model_config.uses_per_trial_bound:
+            raise ValueError(
+                "uses_per_trial_drift and uses_per_trial_bound are mutually "
+                "exclusive reward-rate channels; got both.")
 
 
 def params_from_vector(x, params_names):
@@ -888,6 +943,13 @@ def _compute_latent_population_equal_sessions(data, x_matrix, params_names,
     bound_scale_pop = (
         xp.empty((n_candidates, n_sessions, trials_per_session), dtype=float)
         if (model_config.uses_per_trial_bound and time_varying) else None)
+    # DriftGain-RewardRate counterpart: the per-trial drift gain g(r_t),
+    # stashed for the same reason -- the factored-mu (Decay-Q) path rebuilds
+    # base_mu_pop after the loop, so it needs the per-trial gains kept around.
+    # The non-decay path multiplies base_mu inline instead.
+    drift_scale_pop = (
+        xp.empty((n_candidates, n_sessions, trials_per_session), dtype=float)
+        if (model_config.uses_per_trial_drift and time_varying) else None)
 
     for trial_pos in range(trials_per_session):
         # Delegate Q-value normalization + starting-point bias to
@@ -925,11 +987,23 @@ def _compute_latent_population_equal_sessions(data, x_matrix, params_names,
                     include_Q=True, xp=xp)
             else:
                 z_t = xp.zeros_like(q_rel)
-            sigma_t = (
-                reward_rate * noise_sigma[:, None]
-                if model_config.include_RewardRate
-                else xp.broadcast_to(noise_sigma[:, None], q_rel.shape)
-            )
+            if model_config.uses_per_trial_drift:
+                # DriftGain-RewardRate: mu *= g(r_t) with sigma FLAT and the
+                # bound untouched. Not a rescaling identity (unlike the
+                # Bound- branch above), so z keeps the standard
+                # fraction-of-bound semantic and needs no adjustment.
+                drift_scale = state_updates.drift_scale_from_reward_rate(
+                    reward_rate, model_config.rr_drift_map)
+                if drift_scale_pop is not None:
+                    drift_scale_pop[:, :, trial_pos] = drift_scale
+                sigma_t = xp.broadcast_to(noise_sigma[:, None], q_rel.shape)
+                base_mu = base_mu * drift_scale
+            else:
+                sigma_t = (
+                    reward_rate * noise_sigma[:, None]
+                    if model_config.include_RewardRate
+                    else xp.broadcast_to(noise_sigma[:, None], q_rel.shape)
+                )
         z[:, :, trial_pos] = z_t
         sigma[:, :, trial_pos] = sigma_t
 
@@ -1037,6 +1111,12 @@ def _compute_latent_population_equal_sessions(data, x_matrix, params_names,
         base_mu_pop = drift_coef[:, None, None] * dv[None, :, :]
         if bound_scale_pop is not None:
             base_mu_pop = base_mu_pop / bound_scale_pop    # per-trial bound: μ /= s_t
+        if drift_scale_pop is not None:
+            # DriftGain: μ *= g(r_t), COHERENCE term only. q_drift_coef_pop is
+            # deliberately left alone here (contrast the bound_scale_pop block
+            # above, which does divide it) -- the reward rate modulates
+            # evidence gain, not the Q-value drift contribution.
+            base_mu_pop = base_mu_pop * drift_scale_pop
         if inv_b_3d is not None:
             base_mu_pop = base_mu_pop * inv_b_3d
         flat_n = n_candidates * n_trials
@@ -1153,16 +1233,24 @@ def _compute_latent_arrays(data, params, model_config):
     z = _compute_z_array(q_left_before, q_right_before, q_rel_before,
                          params, model_config)
     sigma = _compute_sigma_array(reward_rate_before, params, model_config)
-    if model_config.uses_per_trial_bound:
-        # Bound-RewardRate ground-truth semantic: sigma is CONSTANT per
-        # trial; the per-trial scaling lives in bound_per_trial. Override
-        # _compute_sigma_array's NoiseGain branch (which would scale
-        # sigma by reward_rate) so the rowwise path produces path-A
-        # latents from scale_bound_equivalence.ipynb.
+    if model_config.uses_per_trial_bound or model_config.uses_per_trial_drift:
+        # Non-noise reward-rate channels: sigma is CONSTANT per trial, so
+        # override _compute_sigma_array's NoiseGain branch (which would scale
+        # sigma by reward_rate).
+        #   Bound-RewardRate: the per-trial scaling lives in bound_per_trial
+        #     below, giving the path-A latents from
+        #     scale_bound_equivalence.ipynb.
+        #   DriftGain-RewardRate: it lives in drift_scale (mu) below.
         sigma = np.full_like(
             reward_rate_before, float(_param(params, "NOISE_SIGMA")),
             dtype=float)
-    mu = _compute_mu_array(data.dv, q_rel_before, sigma, params, model_config)
+    # DriftGain-RewardRate: mu = DRIFT_COEF * DV * g(r_t). Applied inside
+    # _compute_mu_array to the COHERENCE term only, before the Decay-Q
+    # additions -- the decaying-Q drift term is deliberately left unscaled
+    # (see drift._driftGainDecayingQ).
+    drift_scale = drift_scale_for_config(reward_rate_before, model_config)
+    mu = _compute_mu_array(data.dv, q_rel_before, sigma, params, model_config,
+                           drift_scale=drift_scale)
     latents = {
         "q_left_before": q_left_before,
         "q_right_before": q_right_before,
@@ -1215,8 +1303,16 @@ def _compute_sigma_array(reward_rate_before, params, model_config):
     return np.full_like(reward_rate_before, base_sigma, dtype=float)
 
 
-def _compute_mu_array(dv, q_rel_before, sigma, params, model_config):
+def _compute_mu_array(dv, q_rel_before, sigma, params, model_config,
+                      drift_scale=None):
+    """Per-trial drift. ``drift_scale`` (DriftGain-RewardRate's per-trial
+    ``g(r_t)``, or None) multiplies the COHERENCE term only — applied here,
+    before the Decay-Q additions, so the decaying-Q drift term stays
+    unscaled and matches ``drift._driftGainDecayingQ``.
+    """
     base_mu = _param(params, "DRIFT_COEF") * np.asarray(dv, dtype=float)
+    if drift_scale is not None:
+        base_mu = base_mu * np.asarray(drift_scale, dtype=float)
     if not model_config.uses_decay_q_drift and not model_config.uses_decay_q_noise:
         return base_mu
 
@@ -1513,6 +1609,20 @@ def _build_mle_df(data, latents, like_result):
 # Not used by the MLE objective itself (the population-shaped versions
 # ``_compute_z_array`` / ``_compute_mu_array`` cover that path).
 
+def drift_scale_for_config(reward_rate, model_config):
+    """Per-trial drift gain ``g(r)`` for ``model_config``, or None.
+
+    None means "the reward rate does not modulate the drift" — the value
+    ``_compute_mu`` / ``_compute_mu_array`` want in order to leave mu
+    alone. Shared by the array path and the three scalar consumers so the
+    DriftGain mapping can't be applied in one and forgotten in another.
+    """
+    if not model_config.uses_per_trial_drift:
+        return None
+    return state_updates.drift_scale_from_reward_rate(
+        reward_rate, model_config.rr_drift_map)
+
+
 def _compute_z(state, params, model_config, q_rel_before):
     if not model_config.uses_q_bias:
         return 0.0
@@ -1525,8 +1635,14 @@ def _compute_z(state, params, model_config, q_rel_before):
     ))
 
 
-def _compute_mu(coherence, params, model_config, q_rel_before, sigma):
+def _compute_mu(coherence, params, model_config, q_rel_before, sigma,
+                drift_scale=None):
+    """Scalar counterpart of ``_compute_mu_array``. ``drift_scale``
+    (from ``drift_scale_for_config``) multiplies the COHERENCE term only.
+    """
     base_mu = _param(params, "DRIFT_COEF") * coherence
+    if drift_scale is not None:
+        base_mu = base_mu * float(drift_scale)
     if not model_config.uses_decay_q_drift and not model_config.uses_decay_q_noise:
         return base_mu
 

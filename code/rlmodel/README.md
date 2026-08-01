@@ -170,8 +170,34 @@ The following table of models were implemented:
 | R-Learning DDM    | `_biasNone()`  | `_noiseGainRewardRate()` | `_noiseNormal()`    |
 | Q+R-Learning DDM  | `_biasQVal()`  | `_noiseGainRewardRate()` | `_noiseNormal()`    |
 
-Note that R-learning (and Q+R-Learning) is implemented as a gain factor inside
-the drift function that scales the noise component of the DDM.
+#### Reward-rate channels
+
+R-learning models differ in *which* quantity the learned reward rate `r`
+modulates. Exactly one channel is active per fit; all three are implemented as
+drift functions (the noise and bound variants use the equivalent rescaling of
+the diffusion, so the solver never needs a per-trial bound):
+
+| Channel | Per-trial effect | Drift function | Selected by |
+|---|---|---|---|
+| Noise (default) | `σ = S·r` | `_noiseGainRewardRate()` | — |
+| Threshold | `b = BOUND·(2 − r)` | `_boundGainRewardRate()` | `--scale-bound` |
+| Drift | `μ = V·DV·g(r)` | `_driftGainRewardRate()` | `--use-drift-rr` |
+
+The drift channel's step is `d += DV·V·g(r)·dt + S·√dt·ε` with `σ` and the
+bound both flat. `g(r)` comes from `--drift-rr-map`: `2-r` (default,
+`d += DV·(2V − r·V)`) or `1+r` (`d += DV·(V + r·V)`). Note the two mappings
+run opposite ways — under `2-r` a *high* reward rate weakens the drift, which
+is the opposite speed direction from the noise and threshold channels.
+
+`--use-drift-rr` overrides the noise/threshold channel and requires an
+R-learning `--drift`; `--scale-bound` then only selects which of
+(`BOUND`, `NOISE_SIGMA`) is the fitted scale axis. In `model_interactive` the
+same choice is the **RR as Drift** checkbox plus the **RR-Drift Map** dropdown.
+
+The user-facing `--drift RewardRate*` name resolves to the matching internal
+`DRIFT_FN_DICT` key (`NoiseGain-` / `Bound-` / `DriftGain-` /
+`DriftGain(1+r)-`) via `drift.resolve_drift_alias`, and that key is part of the
+saved-fit filename, so the channels never overwrite each other.
 
 ## Loss function
 

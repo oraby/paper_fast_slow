@@ -27,6 +27,7 @@ from .mle import (
     _compute_mu,
     _compute_z,
     _param,
+    drift_scale_for_config,
     validate_mle_config,
 )
 from .mle_likelihood import trial_choice_rt_loglik
@@ -288,9 +289,12 @@ def debug_one_trial_mle_flow(
         _param(params, "NOISE_SIGMA"),
         state_before.reward_rate,
         model_config.include_RewardRate,
+        rr_channel=model_config.sigma_rr_channel,
     )
     mu = _compute_mu(
-        float(trial["DV"]), params, model_config, q_rel_before, sigma)
+        float(trial["DV"]), params, model_config, q_rel_before, sigma,
+        drift_scale=drift_scale_for_config(
+            state_before.reward_rate, model_config))
     bound = _param(params, "BOUND", 1.0)
     non_decision_time = _param(params, "NON_DECISION_TIME", 0.0)
 

@@ -10,7 +10,7 @@ import pandas as pd
 
 from ..first_passage import first_passage_density
 from ..array_backend import resolve_array_backend
-from ..mle import _compute_mu, evaluate_neg_loglik
+from ..mle import _compute_mu, drift_scale_for_config, evaluate_neg_loglik
 from .data import MLEModelResult, fitted_params_from_result
 
 
@@ -205,7 +205,14 @@ def build_ddm_trial_buffer(
     non_decision_time = float(params.get("NON_DECISION_TIME", 0.0))
     sigma = float(row["mle_sigma"])
     q_rel = float(row["mle_Q_rel_before"])
-    mu = _compute_mu(float(row["DV"]), params, model_config, q_rel, sigma)
+    # sigma / z come straight off the evaluated latents, so they already
+    # reflect the model's reward-rate channel; mu is recomputed here and
+    # therefore has to re-apply the DriftGain gain (None for every other
+    # model, leaving mu untouched).
+    mu = _compute_mu(
+        float(row["DV"]), params, model_config, q_rel, sigma,
+        drift_scale=drift_scale_for_config(
+            float(row["mle_reward_rate_before"]), model_config))
     z = float(row["mle_z"])
     fpr = first_passage_density(
         z, mu, sigma, bound,

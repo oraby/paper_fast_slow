@@ -29,7 +29,8 @@ from .bias import BIAS_FN_DICT
 from .drift import DRIFT_FN_DICT
 from .first_passage import first_passage_density
 from .logic import makeOneRun
-from .mle import MLEModelConfig, _compute_mu, _compute_z, _param, validate_mle_config
+from .mle import (MLEModelConfig, _compute_mu, _compute_z, _param,
+                  drift_scale_for_config, validate_mle_config)
 from .noise import NOISE_FN_DICT
 from .util import biasFnColsAndKwargs, driftFnColsAndKwargs, noiseFnColsAndKwargs
 
@@ -308,11 +309,14 @@ def _simulate_observed_history(df, fitted_params, model_config, *,
                 _param(fitted_params, "NOISE_SIGMA"),
                 state.reward_rate,
                 model_config.include_RewardRate,
+                rr_channel=model_config.sigma_rr_channel,
             )
             z = _compute_z(state, fitted_params, model_config, q_rel_before)
             mu = _compute_mu(
                 float(trial["DV"]), fitted_params, model_config,
-                q_rel_before, sigma)
+                q_rel_before, sigma,
+                drift_scale=drift_scale_for_config(
+                    state.reward_rate, model_config))
             bound = _param(fitted_params, "BOUND", 1.0)
             non_decision_time = _param(fitted_params, "NON_DECISION_TIME", 0.0)
 

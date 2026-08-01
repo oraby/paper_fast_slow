@@ -30,7 +30,7 @@ import numpy as np
 
 from .mle import MLEModelConfig, evaluate_neg_loglik
 from .initvals import MLE_TERMINAL_C
-from .drift import _REWARDRATE_ALIAS_FOR_INTERNAL
+from .drift import display_alias_for_drift
 
 
 # --------------------------------------------------------------------------
@@ -52,6 +52,10 @@ class FitFileId:
     is its user-facing collapse (``RewardRate``) — the two Bound/Noise
     implementations of one abstract model share an alias, which is what
     makes Chi²-Noise and Chi²-Bound land in the same model_compare figure.
+    The DriftGain- family deliberately does NOT share that alias (it maps to
+    ``RewardRate (Drift)`` / ``RewardRate (Drift 1+r)``): the reward rate
+    acting on the drift is a different model, not a different scale axis, so
+    it gets its own row. See ``drift.display_alias_for_drift``.
     """
     fit_mode: str          # "mle" | "chisq"
     drift: str             # internal DRIFT_FN_DICT key
@@ -79,6 +83,29 @@ class FitFileId:
     def model_label(self) -> str:
         base = f"{self.drift_alias} · {self.bias} · {self.noise} · {self.t_dur:g}s"
         return f"{base} [asym{self.asym_variant}]" if self.asym_variant else base
+
+    @property
+    def variant_suffix(self) -> str:
+        """The filename suffix these orthogonal opt-ins compose to, in
+        ``fit.evolveFP`` order: asym, then scaledB, then joint weights.
+
+        Round-trips what ``parse_fit_filename`` peeled off. Consumers that
+        key saved fits by variant (``model_interactive``'s
+        ``subjects_defaults``, whose entries are looked up as
+        ``f"{fit_mode}{variant_suffix}"``) need the composed string back,
+        and must agree with ``visualize._variant_suffix`` — which builds
+        the same string from GUI widget state — or the GUI silently fails
+        to find a fit that is on disk.
+
+        NOTE the reward-rate CHANNEL is deliberately absent: it lives in
+        the drift name (``NoiseGain-`` / ``Bound-`` / ``DriftGain-``), not
+        in a suffix.
+        """
+        asym = f"_asym{self.asym_variant}" if self.asym_variant else ""
+        scaled = "_scaledB" if self.scaled_bound else ""
+        weights = ("" if self.chi2_weight <= 0.0 else
+                   f"_mleW{self.mle_weight:g}_chi2W{self.chi2_weight:g}")
+        return f"{asym}{scaled}{weights}"
 
 
 def parse_fit_filename(filename: str) -> FitFileId:
@@ -128,7 +155,7 @@ def parse_fit_filename(filename: str) -> FitFileId:
     return FitFileId(
         fit_mode=fit_mode,
         drift=drift_fn,
-        drift_alias=_REWARDRATE_ALIAS_FOR_INTERNAL.get(drift_fn, drift_fn),
+        drift_alias=display_alias_for_drift(drift_fn),
         bias=bias_fn,
         noise=noise_fn,
         t_dur=float(parsed_t_dur),
