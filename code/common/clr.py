@@ -388,7 +388,7 @@ def colorMapParula():
     cmap = mplc.LinearSegmentedColormap.from_list("matlab", arr)
     return cmap
 
-def colorMapFireFiji():
+def colorMapFijiArr():
     arr = [[0, 0, 0],
            [0, 0, 7],
            [0, 0, 15],
@@ -647,6 +647,10 @@ def colorMapFireFiji():
            [255, 255, 255],
     ]
     arr = np.array(arr, dtype=float)/255
+    return arr
+
+def colorMapFireFiji():
+    arr = colorMapFijiArr()
     arr = np.c_[arr, np.ones(len(arr))]
     cmap = mplc.LinearSegmentedColormap.from_list("FireFiji", arr)
     return cmap
