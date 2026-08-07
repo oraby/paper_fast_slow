@@ -31,6 +31,20 @@ combos=(
     # --- Decay-Q ---
     #"Decay Q (Offset)|None_|Normal(0, 1)|"
     #"RewardRate Decay Q (Offset)|None_|Normal(0, 1)|"
+    # --- reward rate on the DRIFT (--use-drift-rr) ---
+    # Overrides the noise / threshold channel: mu *= g(r_t), sigma and bound
+    # flat. Resolves to the DriftGain-* drift, so these land in their own
+    # pickles. --scale-bound is orthogonal here (it only picks the fitted
+    # scale axis), hence the fixed-noise / fixed-threshold pairs below.
+    #"RewardRate|None_|Normal(0, 1)|--use-drift-rr"
+    #"RewardRate|Q-Val (Offset)|Normal(0, 1)|--use-drift-rr"
+    #"RewardRate|None_|Normal(0, 1)|--use-drift-rr --scale-bound"
+    #"RewardRate|Q-Val (Offset)|Normal(0, 1)|--use-drift-rr --scale-bound"
+    # Flipped polarity (high reward rate => faster, like the other channels).
+    # These two back the RR (Drift 1+r) bars of model_analysis' reward-rate
+    # channel figure (aggregate.DRIFT_RR_SPECS).
+    #"RewardRate|None_|Normal(0, 1)|--use-drift-rr --drift-rr-map 1+r"
+    #"RewardRate|Q-Val (Offset)|Normal(0, 1)|--use-drift-rr --drift-rr-map 1+r"
 )
 
 PY=${PYTHON:-python}

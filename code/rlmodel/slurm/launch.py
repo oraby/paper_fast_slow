@@ -43,6 +43,7 @@ import sys
 from ..model import fit
 from ..model.bias import BIAS_FN_DICT
 from ..model.drift import user_facing_drift_keys
+from ..model.state_updates import DEFAULT_RR_DRIFT_MAP, RR_DRIFT_MAPS
 from ..model.initvals import DT, T_dur
 from ..model.noise import NOISE_FN_DICT
 from ..model_runner import _expand_asym_shorthand, _resolve_drift_alias_args
@@ -100,6 +101,13 @@ def _save_name(passthrough, fit_mode):
     p.add_argument("--asym-q", action="store_true", default=False)
     p.add_argument("--asym-rr", action="store_true", default=False)
     p.add_argument("--scale-bound", action="store_true", default=False)
+    # --use-drift-rr / --drift-rr-map don't add a filename SUFFIX, but they do
+    # change which DRIFT_FN_DICT key --drift resolves to (DriftGain-*), and the
+    # drift name IS part of the pickle name — so they must be parsed here or
+    # the logs land in the wrong directory.
+    p.add_argument("--use-drift-rr", action="store_true", default=False)
+    p.add_argument("--drift-rr-map", type=str, default=DEFAULT_RR_DRIFT_MAP,
+                   choices=list(RR_DRIFT_MAPS))
     p.add_argument("--mle-mle-weight", type=float, default=1.0)
     p.add_argument("--mle-chi2-weight", type=float, default=0.0)
     ns, _ = p.parse_known_args(passthrough)

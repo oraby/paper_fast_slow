@@ -2,20 +2,92 @@ from .model.initvals import NUM_CPUS, InitVal, InitVals, MLE_TERMINAL_C, DT, T_d
 from .model import fit
 from .model.mle import MIN_POPULATION_CANDIDATES
 from .model.drift import (
-    DRIFT_FN_DICT, resolve_drift_alias, user_facing_drift_keys)
+    DRIFT_FN_DICT, is_rewardrate_alias, resolve_drift_alias,
+    user_facing_drift_keys)
+from .model.state_updates import DEFAULT_RR_DRIFT_MAP, RR_DRIFT_MAPS
 from .model.bias import BIAS_FN_DICT
 from .model.noise import NOISE_FN_DICT
 import numpy as np
 import pandas as pd
 import argparse
+import pathlib
 import pickle
 
 
 DF_FP = "data/behavior/df_behavior.pkl"
 
 
-def loadDF(min_valid_trials=0, accepts_subjects=[], df_fp=DF_FP):
+def _concatExtraDFs(df, extra_dfs):
+    """Concatenate supplemental behavior dataframe(s) onto ``df``.
+
+    ``extra_dfs`` is a single item or an iterable of items, each either an
+    already-loaded ``pd.DataFrame`` or a path to a pickle that
+    ``pd.read_pickle`` can open (e.g. ``data/behavior/df_human_subjects.pkl``).
+    Falsy (``None`` / ``[]``) is a no-op returning ``df`` unchanged.
+
+    Every extra must carry **at least** every column of ``df``: a missing
+    column would silently concat as all-NaN and only surface hours into a
+    fit (or, for ``valid`` / ``ChoiceLeft``, quietly change what gets
+    fitted), so it raises ``ValueError`` naming the missing columns.
+    Columns the extra has in addition are kept (NaN for the main df's
+    rows) and reported, since ``_reduceDFSize`` may later drop them.
+
+    Called at the TOP of ``loadDF`` so the supplemental trials go through
+    the identical EarlyWithdrawal handling, ``calcStimulusTime > T_dur``
+    nullification, ``min_valid_trials`` subject filtering and
+    Name/Date/SessionNum/TrialNumber sort as the main dataframe.
+    """
+    if extra_dfs is None:
+        return df
+    if isinstance(extra_dfs, (pd.DataFrame, str, pathlib.Path)):
+        extra_dfs = [extra_dfs]
+    extra_dfs = list(extra_dfs)
+    if not extra_dfs:
+        return df
+
+    main_cols = set(df.columns)
+    loaded = []
+    for extra in extra_dfs:
+        if isinstance(extra, pd.DataFrame):
+            label, df_extra = "<DataFrame>", extra
+        else:
+            label = str(extra)
+            if not pathlib.Path(extra).exists():
+                raise ValueError(f"--extra-df file not found: {label}")
+            df_extra = pd.read_pickle(extra)
+            if not isinstance(df_extra, pd.DataFrame):
+                raise ValueError(
+                    f"--extra-df {label}: pickle holds a "
+                    f"{type(df_extra).__name__}, expected a DataFrame")
+        missing = sorted(main_cols - set(df_extra.columns))
+        if missing:
+            raise ValueError(
+                f"--extra-df {label}: missing {len(missing)} column(s) "
+                f"present in {DF_FP}: {missing}")
+        added = sorted(set(df_extra.columns) - main_cols)
+        overlap = sorted(set(df_extra["Name"].unique())
+                         & set(df["Name"].unique()))
+        print(f"Extra df {label}: +{len(df_extra):,} trials, "
+              f"{df_extra['Name'].nunique()} subject(s)"
+              + (f", extra columns (NaN for the main df): {added}"
+                 if added else ""))
+        if overlap:
+            print(f"  WARNING: subject name(s) already in {DF_FP}: {overlap} "
+                  f"— their trials will be merged into one fit per name")
+        loaded.append(df_extra)
+
+    df = pd.concat([df] + loaded, ignore_index=True)
+    print(f"Combined dataframe: {len(df):,} trials, "
+          f"{df['Name'].nunique()} subjects")
+    return df
+
+
+def loadDF(min_valid_trials=0, accepts_subjects=[], df_fp=DF_FP,
+           extra_dfs=None):
     df_behavior = pd.read_pickle(df_fp)
+    # Supplemental dataframe(s) join BEFORE any cleaning so they get the
+    # exact same treatment as the main one (see _concatExtraDFs).
+    df_behavior = _concatExtraDFs(df_behavior, extra_dfs)
     if "EarlyWithdrawal" in df_behavior.columns:
         df_ewd_mask = df_behavior.EarlyWithdrawal == 1
         # df_ewd_index = df_behavior[df_ewd_mask].index
@@ -143,15 +215,23 @@ def _order_by_only_subjects(df, only_subject):
 
 def _resolve_drift_alias_args(args):
     """Resolve ``--drift RewardRate*`` into the canonical
-    ``DRIFT_FN_DICT`` key based on ``--scale-bound``. Mutates
-    ``args.drift`` in place. No-op for non-alias drifts (e.g.
-    ``Classic``, ``Decay Q``).
+    ``DRIFT_FN_DICT`` key based on ``--use-drift-rr`` / ``--drift-rr-map``
+    and ``--scale-bound``. Mutates ``args.drift`` in place. No-op for
+    non-alias drifts (e.g. ``Classic``, ``Decay Q``).
+
+    ``--use-drift-rr`` takes precedence over ``--scale-bound`` when
+    choosing the reward-rate channel; see ``drift.resolve_drift_alias``.
+    Both new attributes are read with ``getattr`` defaults so namespaces
+    built by other callers (and the alias unit tests) stay valid.
 
     Must run before any code that touches ``args.drift`` — in
     particular before ``_expand_asym_shorthand``'s column-based
     detection, so the substring scan sees the canonical name.
     """
-    args.drift = resolve_drift_alias(args.drift, args.scale_bound)
+    args.drift = resolve_drift_alias(
+        args.drift, args.scale_bound,
+        use_drift_rr=getattr(args, "use_drift_rr", False),
+        drift_rr_map=getattr(args, "drift_rr_map", DEFAULT_RR_DRIFT_MAP))
 
 
 def _expand_asym_shorthand(args):
@@ -417,6 +497,45 @@ def main():
             "_scaledB suffix so symmetric and scale-bound fits coexist. "
             "Note: per-candidate BOUND values disable the population-batch "
             "code path, so this is slower than the symmetric default."))
+    parser.add_argument(
+        "--use-drift-rr", action="store_true", default=False,
+        help=(
+            "Route the learned reward rate to the DRIFT instead of the noise "
+            "or the threshold: the per-step update becomes "
+            "d += DV*V*g(r_t)*dt + S*sqrt(dt)*eps, with sigma and the bound "
+            "both left flat. OVERRIDES the default reward-rate behavior "
+            "(NoiseGain's sigma *= r_t without --scale-bound, "
+            "Bound-RewardRate's b_t = BOUND*(2-r_t) with it). Requires an "
+            "R-learning model, i.e. --drift RewardRate[ Decay Q[ (Offset)]]. "
+            "Composes freely with --scale-bound, which then only picks which "
+            "of (BOUND, NOISE_SIGMA) is the fitted scale axis. Saved fits are "
+            "named after the resolved DriftGain-* drift, so they never "
+            "collide with the noise / bound variants."))
+    parser.add_argument(
+        "--drift-rr-map", type=str, default=DEFAULT_RR_DRIFT_MAP,
+        choices=list(RR_DRIFT_MAPS),
+        help=(
+            "The r -> drift-gain mapping g(r) for --use-drift-rr (ignored "
+            "without it). '2-r' (default) gives d += DV*(2V - r*V): a HIGH "
+            "reward rate weakens the drift, so decisions get slower and less "
+            "accurate — note that is the opposite SPEED direction from the "
+            "noise and bound channels, which both speed up at high r. '1+r' "
+            "gives d += DV*(V + r*V), flipping it so a high reward rate is "
+            "faster and more accurate. Both keep g(r) in [1, 2]."))
+    parser.add_argument(
+        "--extra-df", type=str, default=[], action="append", metavar="PATH",
+        help=(
+            f"Path to a supplemental behavior dataframe pickle to concatenate "
+            f"onto {DF_FP} (repeatable: --extra-df A.pkl --extra-df B.pkl). "
+            f"E.g. data/behavior/df_human_subjects.pkl. The extra trials are "
+            f"merged BEFORE any cleaning, so they go through the same "
+            f"EarlyWithdrawal / calcStimulusTime nullification / sorting as "
+            f"the main dataframe, and their subjects are fit like any other. "
+            f"Each extra must carry every column the main dataframe has (the "
+            f"runner fails fast at startup otherwise); columns it has in "
+            f"addition are kept as NaN for the main rows. NOTE: this does NOT "
+            f"affect the saved-fit filename — new subjects land in the same "
+            f"pickle alongside the existing ones."))
     parser.add_argument("--test", action="store_true")
     parser.add_argument("--load-evolve", action="store_true")
     parser.add_argument("--only-subject", type=str, default=None,
@@ -457,10 +576,29 @@ def main():
     if args.mle_chi2_weight > 0.0 and args.fit_mode != "mle":
         parser.error("--mle-chi2-weight > 0 requires --fit-mode mle (the joint "
                      "MLE+Chi² objective runs in the MLE driver).")
+    # Pre-flight on --use-drift-rr / --drift-rr-map. Runs BEFORE the alias
+    # resolution below, while args.drift is still the user-facing name, so
+    # the error message quotes what the user actually typed.
+    if args.use_drift_rr and not is_rewardrate_alias(args.drift):
+        parser.error(
+            f"--use-drift-rr routes the learned reward rate to the drift, so "
+            f"it requires an R-learning model; got --drift {args.drift!r}. "
+            f"Use one of: 'RewardRate', 'RewardRate Decay Q', "
+            f"'RewardRate Decay Q (Offset)'.")
+    if args.drift_rr_map != DEFAULT_RR_DRIFT_MAP and not args.use_drift_rr:
+        parser.error(
+            f"--drift-rr-map {args.drift_rr_map!r} only applies to the drift "
+            f"reward-rate channel; add --use-drift-rr (without it the reward "
+            f"rate modulates the noise or the threshold and the mapping is "
+            f"unused).")
     # Resolve the RewardRate drift alias into the canonical DRIFT_FN_DICT
     # key. Must run before _expand_asym_shorthand so its column-based
     # detection sees the resolved name.
     _resolve_drift_alias_args(args)
+    if args.use_drift_rr:
+        print(f"--use-drift-rr: reward rate modulates the DRIFT "
+              f"(g(r) = {args.drift_rr_map}); noise and threshold stay flat. "
+              f"Resolved drift: {args.drift!r}")
     # Pre-flight on --asym / --asym-q / --asym-rr: --asym is a
     # shorthand that expands to the canonical flags based on what the
     # model actually learns; the explicit flags require the underlying
@@ -524,7 +662,10 @@ def main():
     mle_show_progress = bool((args.mle_progress or args.mle_backend == "GPU")
                              and not args.mle_no_progress)
 
-    df_behavior = loadDF(min_valid_trials=0)
+    try:
+        df_behavior = loadDF(min_valid_trials=0, extra_dfs=args.extra_df)
+    except ValueError as exc:
+        parser.error(str(exc))
     # --only-subject: restrict to the named subjects before the per-subject
     # extend/reduce work. Validation lists available names on a typo.
     try:
