@@ -1,0 +1,3 @@
+BrainRegion,bin,bin_lo,bin_hi,param,pct,sem,n_sessions,n_neurons,n_trials,p_vs_chance_holm,test_across_bins,stat_across_bins,p_across_bins,p_across_bins_holm,df1,df2,n_paired_sessions
+MFC & LFC,"[0, 0.5)",0.0,0.5,DVabs,35.552849096627895,10.795307582420348,7,376,7976,1.0,paired t-test,3.293361381802964,0.016544272112330997,0.016544272112330997,6.0,,7
+MFC & LFC,"[0.5, 1]",0.5,1.0,DVabs,0.0,0.0,7,376,75290,1.0,paired t-test,3.293361381802964,0.016544272112330997,0.016544272112330997,6.0,,7

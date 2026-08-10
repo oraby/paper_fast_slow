@@ -39,7 +39,8 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
 from matplotlib.lines import Line2D
 from matplotlib.colors import to_rgb
-from scipy.stats import linregress, spearmanr
+from scipy.stats import linregress, spearmanr, ttest_rel
+from statsmodels.stats.anova import AnovaRM
 from statsmodels.stats.multitest import multipletests
 
 from .mle_reeval import (parse_fit_filename, fitted_params_from_result,
@@ -96,6 +97,15 @@ _FAST_Q, _SLOW_Q = 1, 3  # quantile_idx: fastest / slowest RT tercile
 
 # The trial-identity key shared by the behavior/MLE and the 2-photon dataframes.
 IDENTITY_COLS = ["Name", "Date", "SessionNum", "TrialNumber"]
+
+# The y-axis label of every per-neuron activity plot. The activity source is
+# already z-scored per neuron over its session's concatenated trials (see
+# ``pipeline/tracesnormalize.py::NormalizeZScore``, applied when the sampling
+# df was built), so the unit is SDs of that neuron's own session fluorescence —
+# not ΔF/F. ``_ZSCORED_AGAIN_LABEL`` is for the opt-in ``zscore=True`` scatter,
+# which re-standardizes over only the plotted trials on top of that.
+_ACTIVITY_LABEL = "Neuron activity (z-score)"
+_ZSCORED_AGAIN_LABEL = "Neuron activity (z-score, re-standardized)"
 
 # The two 2-photon brain regions carried in the traces df (M2_Bi -> MFC,
 # ALM_Bi -> LFC); everything else is filtered out, matching twop/fastslowstats.
@@ -333,9 +343,45 @@ def _max_loss_excluded_keys(mle_pt, *, tol=1e-9):
     return excluded
 
 
+def _report_join_coverage(df_2p, kept_keys):
+    """Print what the 2-photon → MLE join kept, and name any session lost whole.
+
+    The join is an inner one, so unmatched 2-photon trials just disappear. That
+    is intended for MLE padding trials, but a session can also vanish *entirely*
+    (no fit for that recording, an identity-key mismatch, every trial invalid) —
+    and a silently shorter session list is exactly the kind of thing that is
+    noticed far too late. Trial-level attrition is summarised; session-level loss
+    is named and warned about.
+    """
+    keys = _identity_key_frame(df_2p).reset_index(drop=True)
+    matched = np.array([(k["Name"], k["Date"], k["SessionNum"], k["TrialNumber"])
+                        in kept_keys for _, k in keys.iterrows()], dtype=bool)
+    sessions = df_2p["ShortName"].to_numpy()
+    all_sessions = pd.unique(sessions)
+    kept_sessions = pd.unique(sessions[matched])
+    lost = [s for s in all_sessions if s not in set(kept_sessions)]
+    print(f"  join: {int(matched.sum())}/{len(matched)} 2-photon trials matched "
+          f"a model trial · {len(kept_sessions)}/{len(all_sessions)} sessions "
+          "survive")
+    if lost:
+        print(f"  {len(lost)} session(s) LOST ENTIRELY in the join: "
+              f"{', '.join(map(str, lost))}")
+        warnings.warn(
+            f"build_neuron_trial_table: {len(lost)} session(s) matched no model "
+            f"trial and are absent from the table ({', '.join(map(str, lost))}). "
+            "Check the subject has a fit and that Date/SessionNum/TrialNumber "
+            "agree between the 2-photon and MLE frames.")
+    # A session kept but heavily truncated is worth a look too.
+    for s in kept_sessions:
+        m = sessions == s
+        if matched[m].sum() < 0.5 * m.sum():
+            print(f"  note: {s} kept only {int(matched[m].sum())}/{int(m.sum())} "
+                  "of its trials")
+
+
 def build_neuron_trial_table(df_2p, mle_pt, param_keys, *,
                              exclude_max_loss=False, tol=1e-9,
-                             require_valid=True):
+                             require_valid=True, verbose=True):
     """Build the intermediate per-(neuron, trial) dataframe (principle 7).
 
     One row per (neuron, matched trial) with: ``trace_id`` (neuron name),
@@ -349,6 +395,10 @@ def build_neuron_trial_table(df_2p, mle_pt, param_keys, *,
     match naturally drops MLE padding trials (their trial numbers never occur in
     2-photon data). ``require_valid`` also drops MLE-invalid (no-choice) trials.
     ``exclude_max_loss`` additionally drops the worst-loss trials per subject.
+
+    ``verbose`` (default True) reports what the join kept and **names any session
+    that was lost whole**, with a warning — an inner join makes a missing
+    recording look identical to a dataset that never had it.
     """
     param_cols = [PARAM_BY_KEY[k].key for k in param_keys]
 
@@ -419,6 +469,8 @@ def build_neuron_trial_table(df_2p, mle_pt, param_keys, *,
             }
             row.update(params)
             rows.append(row)
+    if verbose:
+        _report_join_coverage(df_2p, lookup.keys())
     cols = (["trace_id", "long_trace_id", "BrainRegion", "ShortName",
              "TrialNumber", "max_activity", "trace", "epochs_ranges",
              "epochs_names", "DV", "DVabs", "quantile_idx"] + param_cols)
@@ -428,14 +480,22 @@ def build_neuron_trial_table(df_2p, mle_pt, param_keys, *,
 # --------------------------------------------------------------------------
 # 4. Per-neuron correlations
 # --------------------------------------------------------------------------
+# Fewest paired points a correlation is computed from. Below this the r is not
+# just noisy but undefined, so the neuron drops out of its bin/subset entirely —
+# which is why a sparse value bin loses whole sessions (see
+# :func:`session_bin_coverage`).
+_MIN_CORR_POINTS = 3
+
+
 def _clean_xy(x, y):
-    """Finite, paired ``(x, y)``; ``None`` when degenerate (constant / <3 pts)
-    so the caller can emit NaNs instead of a spurious fit."""
+    """Finite, paired ``(x, y)``; ``None`` when degenerate (constant, or fewer
+    than ``_MIN_CORR_POINTS``) so the caller can emit NaNs instead of a spurious
+    fit."""
     x = np.asarray(x, dtype=float)
     y = np.asarray(y, dtype=float)
     ok = np.isfinite(x) & np.isfinite(y)
     x, y = x[ok], y[ok]
-    if x.size < 3 or np.ptp(x) == 0 or np.ptp(y) == 0:
+    if x.size < _MIN_CORR_POINTS or np.ptp(x) == 0 or np.ptp(y) == 0:
         return None
     return x, y
 
@@ -495,6 +555,11 @@ def compute_neuron_correlations(table, param_keys, *, method="pearson"):
             rec[f"{col}_r"] = r
             rec[f"{col}_p"] = p
         out.append(rec)
+    if not out:   # keep the schema when a subset has no trials (empty value bin)
+        cols = (["trace_id", "long_trace_id", "BrainRegion", "ShortName",
+                 "n_trials"]
+                + [f"{c}_{s}" for c in param_cols for s in ("r", "p")])
+        return pd.DataFrame({c: pd.Series(dtype=float) for c in cols})
     return pd.DataFrame(out)
 
 
@@ -535,6 +600,13 @@ def _fmt_p(p, *, decimals=3):
     return f"{p:.{decimals}f}"
 
 
+def _p_phrase(p, *, decimals=3):
+    """``"p = 0.032"`` / ``"p < 0.001"`` — :func:`_fmt_p` with the right relation
+    (the ``<`` form already carries its own operator)."""
+    s = _fmt_p(p, decimals=decimals)
+    return f"p {s}" if s.startswith("<") else f"p = {s}"
+
+
 def _plot_one_neuron(ax, neuron_df, spec, *, zscore):
     x = neuron_df[spec.key].to_numpy(dtype=float)
     y = neuron_df["max_activity"].to_numpy(dtype=float)
@@ -545,8 +617,7 @@ def _plot_one_neuron(ax, neuron_df, spec, *, zscore):
 
     # Least-squares fit line; r / p from the same fit go in the legend.
     slope, intercept, r, p = _linfit(x, y)
-    _pf = _fmt_p(p)
-    p_str = f"p {_pf}" if _pf.startswith("<") else f"p = {_pf}"
+    p_str = _p_phrase(p)
     if np.isfinite(slope):
         xs = np.array([np.nanmin(x), np.nanmax(x)])
         ax.plot(xs, slope * xs + intercept, color="k", lw=1.5,
@@ -554,7 +625,7 @@ def _plot_one_neuron(ax, neuron_df, spec, *, zscore):
         ax.legend(loc="best", fontsize="small", frameon=False, handlelength=1.0)
 
     ax.set_xlabel(spec.label)
-    ax.set_ylabel("Neuron Activity")
+    ax.set_ylabel(_ZSCORED_AGAIN_LABEL if zscore else _ACTIVITY_LABEL)
     ax.spines[["top", "right"]].set_visible(False)
     ax.set_title(f"{neuron_df.iloc[0].long_trace_id}\n"
                  f"{neuron_df.iloc[0].BrainRegion} · {p_str}", fontsize="small")
@@ -562,8 +633,8 @@ def _plot_one_neuron(ax, neuron_df, spec, *, zscore):
 
 def plot_neuron_results(table, corr_df, param, *, mode="display", top_x=20,
                         zscore=False, min_abs_corr=None, save_root=None,
-                        model_name=None, ext="svg"):
-    """Scatter neuron max-activity (y, "Neuron Activity") vs a latent (x).
+                        model_name=None, ext="pdf"):
+    """Scatter neuron max-activity (y, in z-score units) vs a latent (x).
 
     Neurons are sorted by ``|r|`` for ``param`` (descending).
     ``mode="display"`` shows the top-``top_x`` neurons inline. ``mode="save"``
@@ -685,8 +756,8 @@ def _plot_one_neuron_traces(ax, neuron_df, spec, value_ranges, r, *,
     colors, styles = _range_colors_styles(spec, value_ranges)
     for i, (lo, hi) in enumerate(value_ranges):
         # Last range is closed on the right so the max value is included.
-        in_range = (vals >= lo) & (vals <= hi if i == len(value_ranges) - 1
-                                   else vals < hi)
+        in_range = _range_mask(vals, lo, hi,
+                               closed_right=(i == len(value_ranges) - 1))
         m = int(in_range.sum())
         if m == 0:
             continue
@@ -703,10 +774,10 @@ def _plot_one_neuron_traces(ax, neuron_df, spec, value_ranges, r, *,
     _draw_epoch_lines(ax, neuron_df.iloc[0].get("epochs_ranges"),
                       neuron_df.iloc[0].get("epochs_names"))
     ax.set_xlabel("Normalized time")
-    ax.set_ylabel("Neuron Activity")
+    ax.set_ylabel(_ACTIVITY_LABEL)
     # Remove the left axis (spine + ticks), matching the other 2p trace plots.
     ax.spines[["top", "right", "left"]].set_visible(False)
-    ax.tick_params(left=False, labelleft=False)
+    # ax.tick_params(left=False, labelleft=False)
     r_str = "n/a" if r is None or not np.isfinite(r) else f"{r:+.3f}"
     if panel_label is not None:
         ax.set_title(f"{panel_label} · r={r_str}", fontsize="small")
@@ -725,11 +796,20 @@ def _edges_to_ranges(bin_edges):
     return list(zip(edges[:-1], edges[1:]))
 
 
+def _range_mask(values, lo, hi, closed_right):
+    """Boolean membership of ``values`` in ``[lo, hi)`` — or ``[lo, hi]`` when
+    ``closed_right`` (used for the last bin of a set, so the maximum observed
+    value is not dropped). The single place the binning convention lives; shared
+    by the trace overlays and the value-binned tuning bars (section 8)."""
+    v = np.asarray(values, dtype=float)
+    return (v >= lo) & ((v <= hi) if closed_right else (v < hi))
+
+
 def plot_neuron_param_traces(table, corr_df, param, bin_edges, *,
                              mode="display", top_x=20, min_abs_corr=None,
                              display_figsize=(6, 4), display_dpi=110,
                              save_figsize=(10, 7), save_dpi=300,
-                             save_root=None, model_name=None, ext="svg"):
+                             save_root=None, model_name=None, ext="pdf"):
     """Per-neuron mean ± SEM time-normalized traces, grouped by value range.
 
     For each neuron, the trials are split by the value of ``param`` into the
@@ -851,8 +931,10 @@ def _shuffle_null_tuned(table, param_cols, min_abs_corr, n_shuffles, rng):
             null[col].append(np.abs(r) >= min_abs_corr)
     meta_df = pd.DataFrame(metas,
                            columns=["long_trace_id", "ShortName", "BrainRegion"])
-    null = {p: np.asarray(v) for p, v in null.items()}
-    assess = {p: np.asarray(v) for p, v in assess.items()}
+    # dtype=bool keeps the masks combinable with `&` even when the subset held no
+    # neurons at all (an empty value bin -> zero-length arrays).
+    null = {p: np.asarray(v, dtype=bool) for p, v in null.items()}
+    assess = {p: np.asarray(v, dtype=bool) for p, v in assess.items()}
     return meta_df, null, assess
 
 
@@ -1044,7 +1126,7 @@ def _hier_bootstrap_region_diff(mats_a, mats_b, min_abs_corr, n_boot, rng):
 def plot_region_bars(corr_df, table, param_keys=None, *, min_abs_corr=0.3,
                      n_shuffles=1000, by_region=True, seed=0, ci=(2.5, 97.5),
                      run_stats=True, save=False, save_root=None,
-                     model_name=None, ext="svg"):
+                     model_name=None, ext="pdf"):
     """Grouped "fraction tuned" bars per brain region.
 
     For each brain region (``by_region=True`` → one panel per MFC/LFC;
@@ -1237,7 +1319,7 @@ def _factor_null(null, assess, param_keys):
 def plot_factor_bars(corr_df, table, factors=None, *, min_abs_corr=0.3,
                      n_shuffles=1000, by_region=True, seed=0, ci=(2.5, 97.5),
                      run_stats=True, title=None, save=False, save_root=None,
-                     model_name=None, ext="svg"):
+                     model_name=None, ext="pdf"):
     """Grouped "% modulated neurons" bars, one bar per **factor** (a group of
     parameters OR'd together — see :class:`Factor`), with the same per-neuron
     activity-shuffle permutation test + ``*/**/***`` stars as
@@ -1387,7 +1469,7 @@ def plot_factor_bars_fastslow_dv(corr_all, table, *, factors=None, dv_key="DV",
                                  n_boot=10000, by_region=True, seed=0,
                                  ci=(2.5, 97.5), run_stats=True, bar_width=0.62,
                                  slot=1.0, title=None, save=False, save_root=None,
-                                 model_name=None, ext="svg"):
+                                 model_name=None, ext="pdf"):
     """Like :func:`plot_factor_bars`, but the **DV** factor is split into two
     touching sub-bars — DV within **fast** (tomato) and **slow** (goldenrod)
     trials — instead of one all-trials DV bar. This is the paper's factor-
@@ -1632,7 +1714,7 @@ def _bar_vs_chance(bundle, key, region_values, obs_mean, n_perm):
 def plot_fast_slow_bars(corr_fast, corr_slow, param, *, table=None,
                         min_abs_corr=0.3, n_perm=1000, n_boot=10000,
                         by_region=True, seed=0, run_stats=True, save=False,
-                        save_root=None, model_name=None, ext="svg"):
+                        save_root=None, model_name=None, ext="pdf"):
     """Fast-vs-slow % of drift-correlated neurons, with permutation significance.
 
     For ``param`` (``"DV"`` / ``"DVabs"``), a neuron is drift-correlated when
@@ -1815,14 +1897,12 @@ def _plot_one_neuron_overlay(ax, neuron_fast, neuron_slow, spec):
         slope, intercept, r, p = _linfit(x, y)
         if np.isfinite(slope):
             xs = np.array([np.nanmin(x), np.nanmax(x)])
-            _pf = _fmt_p(p)
-            ptxt = f"p {_pf}" if _pf.startswith("<") else f"p = {_pf}"
             ax.plot(xs, slope * xs + intercept, color=color, lw=2,
-                    label=f"{name}: r={r:+.3f}, {ptxt}")
+                    label=f"{name}: r={r:+.3f}, {_p_phrase(p)}")
         else:
             ax.plot([], [], color=color, label=f"{name}: r=n/a")
     ax.set_xlabel(spec.label)
-    ax.set_ylabel("Neuron Activity")
+    ax.set_ylabel(_ACTIVITY_LABEL)
     ax.spines[["top", "right"]].set_visible(False)
     ax.legend(fontsize="small", frameon=False)
 
@@ -1831,7 +1911,7 @@ def plot_neuron_fastslow_scatter(table, corr_fast, corr_slow, param, *,
                                  mode="display", top_x=20, min_abs_corr=None,
                                  display_figsize=(6, 5), display_dpi=110,
                                  save_figsize=(9, 7), save_dpi=300,
-                                 save_root=None, model_name=None, ext="svg"):
+                                 save_root=None, model_name=None, ext="pdf"):
     """Per-neuron activity-vs-drift scatter, fast & slow overlaid.
 
     Neurons ranked by ``max(|r_fast|, |r_slow|)``. ``mode="display"`` shows the
@@ -1883,7 +1963,7 @@ def plot_neuron_fastslow_traces(table, corr_fast, corr_slow, param, bin_edges, *
                                 mode="display", top_x=20, min_abs_corr=None,
                                 display_figsize=(11, 4), display_dpi=110,
                                 save_figsize=(16, 6), save_dpi=300,
-                                save_root=None, model_name=None, ext="svg"):
+                                save_root=None, model_name=None, ext="pdf"):
     """Per-neuron normalized trace averages by value range, in two panels
     (Fast | Slow). Each panel is the gradient-by-range mean ± SEM style with
     sampling/movement epoch lines. Ranking / display / save behave like
@@ -1939,3 +2019,1492 @@ def plot_neuron_fastslow_traces(table, corr_fast, corr_slow, param, bin_edges, *
         _draw(fig, axs, long_id, row)
         plt.show()
     return rank.head(top_x)
+
+
+# --------------------------------------------------------------------------
+# 8. Reward-rate levels: correlated neurons across binned reward rate
+#
+# A variation of the fast-vs-slow section above. There the trials are split by
+# RT tercile (fast / slow strategy); here they are split by the **model's
+# reward-rate latent** into value bins, and we ask the same question — what % of
+# neurons are correlated with the drift (DV / |DV|), or with any other latent —
+# at each reward-rate level.
+#
+# The bins are caller-defined (``np.arange`` edges or explicit ``(lo, hi)``
+# tuples) precisely because reward rates are not uniformly common: the notebook
+# can try a coarse binary low/high split, equal-width terciles, or two extreme
+# bands with the crowded middle dropped, without touching this code.
+#
+# The across-bin test is a **session-paired** one, matching how the bars are
+# built (per-session %, then the mean across sessions): a paired t-test for two
+# bins, a repeated-measures ANOVA (+ Holm-corrected paired post-hocs) for more.
+# --------------------------------------------------------------------------
+@dataclass(frozen=True)
+class ValueBin:
+    """One interval of a trial-level value (e.g. the reward-rate latent).
+
+    Membership is ``[lo, hi)``, except the **last** bin of a set which is
+    ``[lo, hi]`` so the maximum observed value is included — the same convention
+    as the per-neuron trace overlays (:func:`_range_mask`).
+    """
+    lo: float
+    hi: float
+    closed_right: bool = False
+
+    @property
+    def label(self):
+        return f"[{self.lo:g}, {self.hi:g}{']' if self.closed_right else ')'}"
+
+
+def make_value_bins(bin_spec):
+    """Normalize a bin specification into a list of :class:`ValueBin`.
+
+    Two accepted forms — pick whichever reads better for the split at hand:
+
+    - **edges** (a flat, increasing sequence; e.g. ``np.arange(0, 1.01, 0.25)``
+      or ``[0, 0.5, 1.0]``): ``N`` edges → ``N-1`` *contiguous* bins;
+    - **explicit ``(lo, hi)`` tuples** (e.g. ``[(0, 0.3), (0.7, 1.0)]``): the
+      bins are taken as given, so a crowded middle band can be left out entirely
+      — the reward-rate analogue of dropping the middle RT tercile in the
+      fast/slow split.
+
+    Only the final bin is closed on the right; values outside every bin (and
+    NaNs) simply take part in no bin.
+    """
+    items = list(bin_spec)
+    if not items:
+        raise ValueError("bin_spec is empty; give bin edges or (lo, hi) tuples.")
+    if np.ndim(items[0]) == 1:                       # explicit (lo, hi) tuples
+        ranges = []
+        for item in items:
+            pair = list(item)
+            if len(pair) != 2:
+                raise ValueError(f"bin {item!r} is not a (lo, hi) pair.")
+            ranges.append((float(pair[0]), float(pair[1])))
+    else:                                            # flat edge sequence
+        edges = [float(v) for v in items]
+        if any(b <= a for a, b in zip(edges[:-1], edges[1:])):
+            raise ValueError(f"bin edges must strictly increase, got {edges}.")
+        ranges = _edges_to_ranges(edges)
+    for lo, hi in ranges:
+        if not (hi > lo):
+            raise ValueError(f"bin ({lo}, {hi}) is empty; needs hi > lo.")
+    ordered = sorted(ranges)
+    for (_, hi_a), (lo_b, _) in zip(ordered, ordered[1:]):
+        if lo_b < hi_a:
+            raise ValueError(f"bins overlap ({ordered}); a trial would be "
+                             "counted twice.")
+    return [ValueBin(lo, hi, closed_right=(i == len(ranges) - 1))
+            for i, (lo, hi) in enumerate(ranges)]
+
+
+@dataclass(frozen=True)
+class QuantileBin:
+    """One **within-session** quantile level of a trial value.
+
+    Unlike :class:`ValueBin` this has no fixed cut point: every session is split
+    at its *own* quantiles, so each session contributes the same number of trials
+    to every level. ``lo``/``hi`` are the pooled min/max of the values that
+    landed here across sessions, for reporting only — they overlap between
+    neighbouring levels and must not be used to re-derive membership.
+    """
+    index: int          # 1-based, matching the lab's ``quantile_idx``
+    n_bins: int
+    lo: float
+    hi: float
+
+    @property
+    def label(self):
+        tag = ""
+        if self.index == 1:
+            tag = " (low)"
+        elif self.index == self.n_bins:
+            tag = " (high)"
+        return f"Q{self.index}/{self.n_bins}{tag}"
+
+
+def _session_quantile_index(table, column, n_quantiles, group_col):
+    """Per-row 1-based within-session quantile index (0 = unassigned).
+
+    Mirrors ``behavior/util/splitdata.py::_processDf``, the split already used
+    for the RT terciles: unique trials are **sorted** and cut into equal-count
+    parts rather than binned by value, because value bins on a tied or skewed
+    distribution do not produce equal parts. The remainder is handed out
+    round-robin, and the starting offset carries across sessions so the leftovers
+    do not always land in the same level.
+    """
+    if n_quantiles < 2:
+        raise ValueError("n_quantiles must be at least 2.")
+    if column not in table.columns:
+        raise KeyError(f"{column!r} is not a column of the neuron-trial table.")
+    per_trial = table.drop_duplicates(subset=[group_col, "TrialNumber"])
+    q_of = {}
+    skipped, rem_idx = [], 0
+    for sess in sorted(per_trial[group_col].astype(str).unique()):
+        g = per_trial[per_trial[group_col].astype(str) == sess]
+        vals = g[column].to_numpy(dtype=float)
+        trials = g["TrialNumber"].to_numpy()
+        ok = np.isfinite(vals)
+        vals, trials = vals[ok], trials[ok]
+        if vals.size < n_quantiles:
+            skipped.append(f"{sess} ({vals.size} trials)")
+            continue
+        order = np.argsort(vals, kind="stable")
+        sizes = [vals.size // n_quantiles] * n_quantiles
+        for _ in range(vals.size % n_quantiles):
+            sizes[rem_idx] += 1
+            rem_idx = (rem_idx + 1) % n_quantiles
+        start = 0
+        for q, size in enumerate(sizes, start=1):
+            for pos in order[start:start + size]:
+                q_of[(sess, trials[pos])] = q
+            start += size
+    if skipped:
+        warnings.warn(
+            f"session quantile split: {len(skipped)} session(s) have fewer than "
+            f"{n_quantiles} usable trials and are unassigned ({', '.join(skipped)}).")
+
+    key = list(zip(table[group_col].astype(str).to_numpy(),
+                   table["TrialNumber"].to_numpy()))
+    idx = np.fromiter((q_of.get(k, 0) for k in key), dtype=int, count=len(key))
+
+    vals = table[column].to_numpy(dtype=float)
+    bins = []
+    for q in range(1, n_quantiles + 1):
+        sel = vals[idx == q]
+        sel = sel[np.isfinite(sel)]
+        bins.append(QuantileBin(index=q, n_bins=n_quantiles,
+                                lo=float(sel.min()) if sel.size else np.nan,
+                                hi=float(sel.max()) if sel.size else np.nan))
+    return bins, idx
+
+
+@dataclass(frozen=True)
+class QuantileRangeBin:
+    """One **within-session** band of a trial value, delimited by *quantiles*.
+
+    The quantile-space extremes split: ``(0, 0.25)`` means "this session's
+    lowest quarter of trials", so the band tracks each session's own
+    distribution instead of a shared cut point that can drift into the crowded
+    part of one session and off the end of another. ``lo``/``hi`` are the pooled
+    observed min/max of the values that landed here, for reporting only — they
+    differ per session and must not be used to re-derive membership.
+    """
+    index: int          # 1-based, ordered by q_lo
+    n_bins: int
+    q_lo: float
+    q_hi: float
+    lo: float
+    hi: float
+
+    @property
+    def label(self):
+        tag = ""
+        if self.n_bins > 1 and self.index == 1:
+            tag = " (low)"
+        elif self.n_bins > 1 and self.index == self.n_bins:
+            tag = " (high)"
+        return f"{self.q_lo * 100:g}-{self.q_hi * 100:g}%{tag}"
+
+
+def make_quantile_ranges(bin_spec):
+    """Normalize ``(q_lo, q_hi)`` quantile bands, sorted and validated.
+
+    Bands are **fractions** in ``[0, 1]`` (``0.25``, not ``25``) and must leave a
+    gap between them — see :func:`_session_quantile_range_index` for why touching
+    bands are refused rather than silently splitting a tied value.
+    """
+    items = list(bin_spec)
+    if not items:
+        raise ValueError("bin_spec is empty; give (q_lo, q_hi) quantile bands.")
+    ranges = []
+    for item in items:
+        pair = list(item) if np.ndim(item) == 1 else [item]
+        if len(pair) != 2:
+            raise ValueError(f"quantile band {item!r} is not a (q_lo, q_hi) "
+                             "pair.")
+        q_lo, q_hi = float(pair[0]), float(pair[1])
+        if not (0.0 <= q_lo < q_hi <= 1.0):
+            raise ValueError(f"quantile band ({q_lo}, {q_hi}) must satisfy "
+                             "0 <= q_lo < q_hi <= 1 — these are FRACTIONS, so "
+                             "the top quarter is (0.75, 1.0), not (75, 100).")
+        ranges.append((q_lo, q_hi))
+    ranges.sort()
+    for (_, hi_a), (lo_b, _) in zip(ranges, ranges[1:]):
+        if lo_b <= hi_a:
+            raise ValueError(
+                f"quantile bands {ranges} touch or overlap. This split closes "
+                "both ends so a tied value is never cut in half, so touching "
+                "bands would put the shared value in both. Leave a gap between "
+                "them (the point of an extremes split), or use "
+                "by='session_quantile' for contiguous equal-count levels.")
+    return ranges
+
+
+def _session_quantile_range_index(table, column, bin_spec, group_col):
+    """Per-row 1-based band index (0 = unassigned) for per-session quantile bands.
+
+    Each session's own quantiles set that band's value thresholds, and membership
+    is **closed at both ends**: every trial tied with a threshold joins the band.
+    That is the deliberate difference from :func:`_session_quantile_index`, which
+    cuts the sorted trials into exactly equal parts and therefore has to send
+    some of a run of tied values one way and the rest the other. Here a tie is
+    kept whole and the bands come out unequal in size instead — the right trade
+    when the value is a fitted latent that plateaus (a reward rate sitting at the
+    same level for long stretches), because splitting a plateau by rank puts
+    trials with *identical* reward rates in "low" and "high".
+
+    Ties can make two bands claim the same trial — a session whose values barely
+    move has its bottom and top band land on one value. Such trials are left
+    unassigned (with a warning naming the sessions) rather than double-counted;
+    those sessions then drop out of the paired test through the usual coverage
+    reporting.
+    """
+    ranges = make_quantile_ranges(bin_spec)
+    per_trial = table.drop_duplicates(subset=[group_col, "TrialNumber"])
+    band_of, ambiguous, skipped = {}, {}, []
+    for sess in sorted(per_trial[group_col].astype(str).unique()):
+        g = per_trial[per_trial[group_col].astype(str) == sess]
+        vals = g[column].to_numpy(dtype=float)
+        trials = g["TrialNumber"].to_numpy()
+        ok = np.isfinite(vals)
+        vals, trials = vals[ok], trials[ok]
+        if vals.size < 2:
+            skipped.append(f"{sess} ({vals.size} trials)")
+            continue
+        masks = np.vstack([
+            # Closed on BOTH ends, so a value tied with the threshold is never
+            # split across the band boundary.
+            (vals >= v_lo) & (vals <= v_hi)
+            for v_lo, v_hi in (np.quantile(vals, [q_lo, q_hi])
+                               for q_lo, q_hi in ranges)])
+        clash = masks.sum(axis=0) > 1
+        if clash.any():
+            ambiguous[sess] = int(clash.sum())
+            masks[:, clash] = False
+        for i, m in enumerate(masks, start=1):
+            for t in trials[m]:
+                band_of[(sess, t)] = i
+    if skipped:
+        warnings.warn(
+            f"session quantile-range split: {len(skipped)} session(s) have too "
+            f"few usable trials and are unassigned ({', '.join(skipped)}).")
+    if ambiguous:
+        warnings.warn(
+            f"session quantile-range split: {len(ambiguous)} session(s) have "
+            "values so tied that a trial fell in more than one band; those "
+            "trials are unassigned ("
+            + ", ".join(f"{s} ({n} trials)" for s, n in ambiguous.items())
+            + "). Those sessions have too little spread in "
+            f"{column!r} to contribute to this comparison.")
+
+    key = list(zip(table[group_col].astype(str).to_numpy(),
+                   table["TrialNumber"].to_numpy()))
+    idx = np.fromiter((band_of.get(k, 0) for k in key), dtype=int, count=len(key))
+
+    vals = table[column].to_numpy(dtype=float)
+    bins = []
+    for i, (q_lo, q_hi) in enumerate(ranges, start=1):
+        sel = vals[idx == i]
+        sel = sel[np.isfinite(sel)]
+        bins.append(QuantileRangeBin(
+            index=i, n_bins=len(ranges), q_lo=q_lo, q_hi=q_hi,
+            lo=float(sel.min()) if sel.size else np.nan,
+            hi=float(sel.max()) if sel.size else np.nan))
+    return bins, idx
+
+
+def _trial_bin_index(table, column, bin_spec, *, by="value",
+                     group_col="ShortName"):
+    """``(bins, per-row 1-based bin index)`` for any splitting criterion.
+    Index 0 means the row belongs to no bin. The single place the criteria are
+    dispatched, so every downstream report handles all of them."""
+    if by == "session_quantile":
+        return _session_quantile_index(table, column, int(bin_spec), group_col)
+    if by == "session_quantile_range":
+        return _session_quantile_range_index(table, column, bin_spec, group_col)
+    if by != "value":
+        raise ValueError(f"unknown split criterion {by!r}; use 'value', "
+                         "'session_quantile' or 'session_quantile_range'.")
+    bins = make_value_bins(bin_spec)
+    vals = table[column].to_numpy(dtype=float)
+    idx = np.zeros(len(table), dtype=int)
+    for i, b in enumerate(bins, start=1):
+        idx[_range_mask(vals, b.lo, b.hi, b.closed_right)] = i
+    return bins, idx
+
+
+def split_trials(table, column, bin_spec, *, by="value", group_col="ShortName"):
+    """``(bins, bin_tables)`` under either splitting criterion.
+
+    ``by="value"`` — ``bin_spec`` is edges or ``(lo, hi)`` tuples; the cut points
+    are the same for every session (see :func:`make_value_bins`).
+
+    ``by="session_quantile"`` — ``bin_spec`` is an **integer** number of
+    quantiles, and each session is split at its own quantiles into equal-count
+    levels (see :func:`_session_quantile_index`). Use this when the value's
+    distribution differs between sessions — as a fitted latent's does — because
+    it is the only split that guarantees every session contributes a comparable
+    number of trials to every level.
+
+    ``by="session_quantile_range"`` — ``bin_spec`` is a list of ``(q_lo, q_hi)``
+    quantile bands with gaps between them, e.g. ``[(0, 0.25), (0.75, 1)]`` for
+    the extremes with the crowded middle dropped (see
+    :func:`_session_quantile_range_index`). Like ``session_quantile`` the cut
+    points are per session, but a run of tied values is kept whole rather than
+    cut to make the levels exactly equal — so the levels end up unequal in size.
+    """
+    bins, idx = _trial_bin_index(table, column, bin_spec, by=by,
+                                 group_col=group_col)
+    return bins, [table[idx == i] for i in range(1, len(bins) + 1)]
+
+
+def split_by_value_bins(table, column, bins):
+    """Split the neuron-trial ``table`` into one sub-table per :class:`ValueBin`
+    of ``table[column]`` (e.g. ``"RewardRate"``). Trials outside every bin are
+    dropped — the direct analogue of :func:`split_fast_slow`, which drops the
+    middle RT tercile."""
+    if column not in table.columns:
+        raise KeyError(f"{column!r} is not a column of the neuron-trial table "
+                       f"(has: {list(table.columns)}). A reward-rate split needs "
+                       "a fit that learns RewardRate.")
+    vals = table[column].to_numpy(dtype=float)
+    return [table[_range_mask(vals, b.lo, b.hi, b.closed_right)] for b in bins]
+
+
+def quantile_bin_edges(table, column, n_bins, *, decimals=3):
+    """Bin edges at the empirical quantiles of ``table[column]`` — ``n_bins``
+    bins holding (approximately) the same number of **trials** each.
+
+    The counterpart to hand-picked edges: reward rates are far from uniformly
+    common, so equal-width bins can leave one bin nearly empty. Equal-*occupancy*
+    bins trade the round numbers for balance. Rounded to ``decimals`` so the bin
+    labels stay readable; returns a plain list, ready for
+    :func:`reward_rate_correlations`.
+    """
+    if column not in table.columns:
+        raise KeyError(f"{column!r} is not a column of the neuron-trial table.")
+    if n_bins < 2:
+        raise ValueError("n_bins must be at least 2.")
+    # One value per trial, not per (neuron, trial) row, so a session with many
+    # neurons does not dominate the quantiles.
+    per_trial = table.drop_duplicates(subset=["ShortName", "TrialNumber"])
+    vals = per_trial[column].to_numpy(dtype=float)
+    vals = vals[np.isfinite(vals)]
+    if vals.size == 0:
+        raise ValueError(f"no finite {column!r} values to take quantiles of.")
+    edges = np.round(np.quantile(vals, np.linspace(0.0, 1.0, n_bins + 1)),
+                     decimals)
+    edges[0] = min(edges[0], np.floor(vals.min() * 10 ** decimals)
+                   / 10 ** decimals)
+    edges[-1] = max(edges[-1], vals.max())
+    if len(np.unique(edges)) != len(edges):
+        raise ValueError(
+            f"{column!r} is too concentrated for {n_bins} equal-occupancy bins "
+            f"(duplicate edges in {list(edges)}); use fewer bins or explicit "
+            "edges.")
+    return [float(e) for e in edges]
+
+
+def plot_session_value_hist(table, column="RewardRate", bins=None, *,
+                            n_quantiles=None, value_bins=None,
+                            quantile_ranges=None,
+                            group_col="ShortName", ncols=4,
+                            panel_size=(2.6, 1.9), sharey=False, save=False,
+                            save_root=None, model_name=None, ext="pdf"):
+    """One histogram of ``column`` per session — how differently the sessions are
+    distributed, at a glance.
+
+    This is the picture behind the choice of splitting criterion: if the
+    per-session histograms sit on top of each other, fixed cut points are fine;
+    if they are shifted relative to one another (as fitted latents usually are),
+    a shared cut point gives each session a different number of trials per level
+    and only a per-session quantile split is balanced.
+
+    One trial contributes once (the table is per neuron × trial, so it is
+    de-duplicated first). Panels are coloured by brain region, and either
+    overlay can be drawn on top:
+
+    ``n_quantiles`` — dashed lines at that session's **own** equal-count cut
+    points, i.e. exactly where ``by="session_quantile"`` would split it. They
+    move from panel to panel, which is the point.
+
+    ``value_bins`` — a ``by="value"`` bin spec, drawn as shaded spans that are
+    **identical in every panel**. A session whose mass falls outside a span
+    contributes nothing to that level, so this shows at a glance which sessions
+    a fixed split will lose.
+
+    ``quantile_ranges`` — a ``by="session_quantile_range"`` bin spec, drawn as
+    shaded spans **recomputed per panel** from that session's own quantiles. Put
+    next to the same bands as fixed values, this is the picture of how far a
+    fixed cut point drifts across sessions.
+
+    Returns ``(fig, per_session_df)``.
+    """
+    if column not in table.columns:
+        raise KeyError(f"{column!r} is not a column of the neuron-trial table.")
+    bins = np.arange(0, 1.1, 0.1) if bins is None else np.asarray(bins)
+    per_trial = table.drop_duplicates(subset=[group_col, "TrialNumber"])
+    sessions = sorted(per_trial[group_col].astype(str).unique())
+    if not sessions:
+        raise ValueError("no sessions to plot.")
+
+    region_of = (per_trial.groupby(group_col)["BrainRegion"].first()
+                 if "BrainRegion" in per_trial.columns else {})
+    palette = {"MFC": "purple", "LFC": "teal"}
+    fixed = make_value_bins(value_bins) if value_bins is not None else []
+    span_colors = _param_gradient(PARAM_BY_KEY["RewardRate"].color, len(fixed)) \
+        if fixed else []
+    qranges = (make_quantile_ranges(quantile_ranges)
+               if quantile_ranges is not None else [])
+    qr_colors = _param_gradient(PARAM_BY_KEY["RewardRate"].color, len(qranges)) \
+        if qranges else []
+
+    nrows = int(np.ceil(len(sessions) / ncols))
+    fig, axs = plt.subplots(nrows, ncols, squeeze=False, sharex=True,
+                            sharey=sharey,
+                            figsize=(panel_size[0] * ncols,
+                                     panel_size[1] * nrows))
+    stats_rows = []
+    for ax, sess in zip(axs.ravel(), sessions):
+        vals = per_trial.loc[per_trial[group_col].astype(str) == sess, column]
+        vals = vals.to_numpy(dtype=float)
+        vals = vals[np.isfinite(vals)]
+        region = str(region_of.get(sess, "")) if len(region_of) else ""
+        # Fixed value bins first, so the histogram draws over them.
+        for fb, fc in zip(fixed, span_colors):
+            ax.axvspan(fb.lo, fb.hi, color=fc, alpha=0.22, linewidth=0, zorder=0)
+        # Quantile bands, recomputed from THIS session's values — outlined
+        # rather than filled so they stay legible over a fixed-bin span.
+        qr_edges, n_in_qr = [], []
+        for (q_lo, q_hi), qc in zip(qranges, qr_colors):
+            if vals.size < 2:
+                qr_edges.append((np.nan, np.nan))
+                n_in_qr.append(0)
+                continue
+            v_lo, v_hi = (float(v) for v in np.quantile(vals, [q_lo, q_hi]))
+            qr_edges.append((round(v_lo, 3), round(v_hi, 3)))
+            # Closed both ends, matching _session_quantile_range_index.
+            n_in_qr.append(int(((vals >= v_lo) & (vals <= v_hi)).sum()))
+            ax.axvspan(v_lo, v_hi, facecolor="none", edgecolor=qc, lw=1.2,
+                       ls="--", zorder=3)
+        ax.hist(vals, bins=bins, color=palette.get(region, "0.4"), alpha=0.8,
+                edgecolor="white", linewidth=0.4, zorder=2)
+        n_in_fixed = [int(_range_mask(vals, fb.lo, fb.hi, fb.closed_right).sum())
+                      for fb in fixed]
+        cuts = []
+        if n_quantiles and vals.size >= n_quantiles:
+            # The session's OWN cut points — the same equal-count boundaries the
+            # session-quantile split uses, so this shows where it would cut.
+            order = np.sort(vals)
+            step = vals.size / n_quantiles
+            cuts = [float(order[int(round(k * step)) - 1])
+                    for k in range(1, n_quantiles)]
+            for c in cuts:
+                ax.axvline(c, ls="--", color="k", lw=1.0, alpha=0.8)
+        title = (f"{sess}\n{region} · n={vals.size}"
+                 + (f" · median={np.median(vals):.2f}" if vals.size else ""))
+        if fixed:
+            # Trials this session would give each fixed level; "!" marks a level
+            # it cannot contribute to at all.
+            title += ("\nper level: "
+                      + " / ".join(f"{c}{'!' if c < _MIN_CORR_POINTS else ''}"
+                                   for c in n_in_fixed))
+        if qranges:
+            title += ("\nper band: "
+                      + " / ".join(f"{c}{'!' if c < _MIN_CORR_POINTS else ''}"
+                                   for c in n_in_qr))
+        ax.set_title(title, fontsize="x-small")
+        ax.spines[["top", "right"]].set_visible(False)
+        ax.tick_params(labelsize="x-small")
+        stats_rows.append({
+            group_col: sess, "BrainRegion": region, "n_trials": int(vals.size),
+            # p50, not "median": a column named `median` shadows
+            # DataFrame.median, so `df.median` silently returns the method.
+            "p0": float(vals.min()) if vals.size else np.nan,
+            "p25": float(np.percentile(vals, 25)) if vals.size else np.nan,
+            "p50": float(np.median(vals)) if vals.size else np.nan,
+            "p75": float(np.percentile(vals, 75)) if vals.size else np.nan,
+            "p100": float(vals.max()) if vals.size else np.nan,
+            "quantile_cuts": [round(c, 3) for c in cuts],
+            "n_per_fixed_bin": n_in_fixed,
+            "usable_in_all_fixed": (all(c >= _MIN_CORR_POINTS for c in n_in_fixed)
+                                    if fixed else None),
+            # Where this session's quantile bands actually fall in value space —
+            # the spread of these across sessions is the drift a fixed cut has.
+            "quantile_band_edges": qr_edges,
+            "n_per_quantile_band": n_in_qr,
+            "usable_in_all_bands": (all(c >= _MIN_CORR_POINTS for c in n_in_qr)
+                                    if qranges else None)})
+    for ax in axs.ravel()[len(sessions):]:
+        ax.axis("off")
+    for ax in axs[-1]:
+        ax.set_xlabel(column, fontsize="x-small")
+    for row in axs:
+        row[0].set_ylabel("trials", fontsize="x-small")
+    fig.suptitle(f"{column} distribution per session — {model_name or ''}",
+                 y=1.005)
+    fig.tight_layout()
+
+    per_session = pd.DataFrame(stats_rows)
+    if save:
+        if save_root is None or model_name is None:
+            raise ValueError("save needs save_root and model_name")
+        out_dir = (pathlib.Path(save_root) / _safe_filename(model_name)
+                   / "reward_rate_bars")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        fig.savefig(out_dir / f"session_{_safe_filename(column)}_hist.{ext}",
+                    bbox_inches="tight")
+        per_session.to_csv(
+            out_dir / f"session_{_safe_filename(column)}_stats.csv", index=False)
+        print(f"Saved per-session {column} histograms -> {out_dir}")
+    plt.show()
+    return fig, per_session
+
+
+# --------------------------------------------------------------------------
+# 9. Paired per-neuron r between two conditions
+#
+# The bar charts above ask "what % of neurons clear a threshold" — a count that
+# throws away the size of each correlation. These functions keep the r itself and
+# compare it **within neuron** across two conditions (fast vs slow, or low vs
+# high reward rate), which is the more sensitive question and needs no threshold
+# at test time.
+# --------------------------------------------------------------------------
+def select_tuned_neurons(corr_frames, param, *, min_abs_corr=0.3, how="any"):
+    """Neuron ids reaching ``|r| >= min_abs_corr`` in ``how`` of the frames.
+
+    ``how="any"`` (default) is the union — a neuron counts if it is tuned in at
+    least one condition; ``how="all"`` is the intersection. Returns a sorted list
+    of ``long_trace_id``.
+    """
+    rcol = f"{PARAM_BY_KEY[param].key}_r"
+    sets = []
+    for c in corr_frames:
+        if rcol not in c.columns:
+            raise KeyError(f"{param!r} missing from a correlation frame "
+                           f"(columns: {list(c.columns)}).")
+        r = c[rcol].abs()
+        sets.append(set(c.loc[r >= min_abs_corr, "long_trace_id"]))
+    if not sets:
+        return []
+    picked = set.union(*sets) if how == "any" else set.intersection(*sets)
+    return sorted(picked)
+
+
+def paired_neuron_r(corr_a, corr_b, param, *, neurons=None):
+    """Each neuron's ``r`` in two conditions, aligned on ``long_trace_id``.
+
+    Only neurons whose ``r`` is **defined in both** conditions can be paired, so
+    those are what comes back — with ``ShortName`` / ``BrainRegion`` carried
+    along for the session-level and per-region views. ``neurons`` restricts to a
+    pre-selected set (e.g. from :func:`select_tuned_neurons`); ids in that set
+    that are not pairable are dropped and counted in ``frame.attrs``.
+    """
+    rcol = f"{PARAM_BY_KEY[param].key}_r"
+    meta_cols = ["long_trace_id", "ShortName", "BrainRegion"]
+    a = corr_a[meta_cols + [rcol]].rename(columns={rcol: "r_a"})
+    b = corr_b[["long_trace_id", rcol]].rename(columns={rcol: "r_b"})
+    out = a.merge(b, on="long_trace_id", how="inner")
+    requested = None
+    if neurons is not None:
+        requested = set(neurons)
+        out = out[out.long_trace_id.isin(requested)]
+    n_before = len(out)
+    out = out.dropna(subset=["r_a", "r_b"]).reset_index(drop=True)
+    out.attrs["n_dropped_undefined"] = n_before - len(out)
+    if requested is not None:
+        out.attrs["n_requested"] = len(requested)
+        out.attrs["n_missing"] = len(requested - set(out.long_trace_id))
+    return out
+
+
+#: The fast / slow bar colours used by the fast-vs-slow figures, so a paired
+#: plot of those two conditions matches them. Pass as ``bar_colors``.
+FAST_SLOW_COLORS = (_FAST_COLOR, _SLOW_COLOR)
+
+
+def reward_rate_colors(n=2):
+    """The reward-rate level shades (pale = low, dark = high) that
+    :func:`plot_reward_rate_bars` uses, so a paired plot of two levels matches
+    it. The endpoints are the same for any ``n >= 2``, so the default pair is
+    the lowest and highest level whatever the split's resolution."""
+    return _param_gradient(PARAM_BY_KEY["RewardRate"].color, n)
+
+
+def _paired_neuron_panel(ax, a, b, sessions, labels, *, use_abs=True,
+                         bar_colors=("0.85", "0.6"), line_color="0.6",
+                         show_session_test=True):
+    """One paired-condition panel: bars (mean ± SEM) with the per-neuron lines
+    drawn over them, plus the paired-t bracket. Returns the panel's stats dict.
+
+    Split out of :func:`plot_paired_neuron_r` so the pooled and per-region
+    figures draw and test identically — only the neuron subset differs.
+    """
+    frame = pd.DataFrame({labels[0]: a, labels[1]: b})
+    neuron_test = paired_bins_test(frame)
+    session_test = None
+    if show_session_test and sessions is not None:
+        per_sess = (pd.DataFrame({"ShortName": np.asarray(sessions),
+                                  labels[0]: a, labels[1]: b})
+                    .groupby("ShortName").mean())
+        session_test = paired_bins_test(per_sess)
+
+    x = np.array([0.0, 1.0])
+    means = [float(np.mean(a)), float(np.mean(b))]
+    sems = [float(np.std(a, ddof=1) / np.sqrt(len(a))) if len(a) > 1 else 0.0,
+            float(np.std(b, ddof=1) / np.sqrt(len(b))) if len(b) > 1 else 0.0]
+    # Bars underneath in the condition's own colour, per-neuron lines and points
+    # over them in grey: colour carries the condition, grey the single neurons.
+    ax.bar(x, means, width=0.62, color=list(bar_colors), alpha=0.85,
+           edgecolor="k", lw=1.0, yerr=sems, capsize=5,
+           error_kw={"ecolor": "k", "elinewidth": 1.2, "zorder": 4}, zorder=1)
+    for aa, bb in zip(a, b):
+        # "_neuron": leading underscore keeps it out of legends, and makes the
+        # per-neuron lines separable from the error-bar caps.
+        ax.plot(x, [aa, bb], color=line_color, lw=0.7, alpha=0.55, zorder=2,
+                label="_neuron")
+    ax.scatter(np.zeros_like(a), a, s=16, color="0.25", alpha=0.6,
+               edgecolors="none", zorder=3)
+    ax.scatter(np.ones_like(b), b, s=16, color="0.25", alpha=0.6,
+               edgecolors="none", zorder=3)
+    # The two means joined in black. No error bars on it — the bars carry the
+    # SEM already, and doubling it would just clutter the tops.
+    ax.plot(x, means, color="k", lw=2.0, marker="o", markersize=6, zorder=5,
+            label="_mean")
+
+    both = np.concatenate([a, b])
+    lo = float(np.nanmin(both))
+    # The bracket must clear the taller of the points and the error bars.
+    hi = max(float(np.nanmax(both)), *(m + s for m, s in zip(means, sems)))
+    span = (hi - min(lo, 0.0)) or 1.0
+    y = hi + 0.06 * span
+    top = _add_sig_bracket(ax, 0.0, 1.0, y, _sigstar(neuron_test["p"]),
+                           tick=0.02 * span, fontsize=12)
+    # The p-label goes ABOVE the star. Offsetting in points, not data units,
+    # keeps the gap clear of the 12pt glyph whatever the y-range happens to be.
+    ax.annotate(str(neuron_test["label"]), xy=(0.5, top), xytext=(0, 16),
+                textcoords="offset points", ha="center", va="bottom",
+                fontsize="x-small", color="0.25")
+    ax.set_xticks(x)
+    ax.set_xticklabels(list(labels))
+    ax.set_xlim(-0.6, 1.6)
+    # Bars are drawn from 0, so 0 has to be in view; signed r also needs
+    # headroom under the lowest point.
+    ax.set_ylim(0.0 if use_abs else min(0.0, lo - 0.08 * span),
+                top + 0.20 * span)
+    ax.spines[["top", "right"]].set_visible(False)
+    return {"labels": tuple(labels), "use_abs": use_abs, "n_neurons": len(a),
+            "n_sessions": (int(pd.Series(sessions).nunique())
+                           if sessions is not None else np.nan),
+            "mean_a": means[0], "mean_b": means[1], "sem_a": sems[0],
+            "sem_b": sems[1], "neuron_test": neuron_test,
+            "session_test": session_test}
+
+
+def plot_paired_neuron_r(paired, labels, param, *, use_abs=True, by_region=False,
+                         title=None, bar_colors=("0.85", "0.6"),
+                         line_color="0.6", show_session_test=True,
+                         figsize=(4.4, 4.8), save=False, save_root=None,
+                         model_name=None, tag=None, ext="pdf"):
+    """Per-neuron ``r`` in two conditions: bars ± SEM with paired lines over them.
+
+    Each condition is a bar (mean ± SEM across neurons) and each neuron is a grey
+    line joining its own two values, so the group effect and the pairing behind
+    it are both readable; a black line joins the two means. A **paired t-test**
+    across neurons is annotated.
+
+    ``bar_colors`` should be the condition's own colours so the figure matches
+    the bar charts of the same split — :data:`FAST_SLOW_COLORS` for fast vs slow,
+    :func:`reward_rate_colors` for two reward-rate levels. It defaults to grey,
+    which says nothing about what is being compared.
+
+    ``by_region=True`` draws one panel per brain region instead of pooling them,
+    each with its own neurons and its own tests. Panels are **not** cross-region
+    corrected — they are separate analyses of separate populations, not a family.
+
+    ``use_abs`` (default) plots ``|r|`` — the correlation's **strength**. That is
+    almost always what you want when the neuron set was chosen by ``|r|``: a
+    population containing both positively and negatively tuned neurons averages
+    to ~0 in signed r, so a signed test would compare two nulls. Set it False to
+    keep the sign (meaningful only for a same-signed population).
+
+    Two caveats this function surfaces rather than hides:
+
+    - **Pseudo-replication.** The annotated t-test pairs *neurons*, but neurons
+      within a session are not independent, so its ``p`` is anti-conservative.
+      With ``show_session_test`` a second paired t-test over **session means** —
+      the unit the rest of this module tests on — is computed and reported in the
+      returned stats and printed; prefer it when the two disagree.
+    - **Regression to the mean.** If the neurons were selected for having a large
+      ``|r|`` in one of these very conditions, they are selected partly on noise
+      and will drift toward the mean in the other, which manufactures a
+      difference. Selecting on a *different* split than the one being compared
+      (e.g. picking on fast/slow, then comparing reward-rate levels) avoids this.
+
+    Returns ``(fig, stats)``. ``stats`` is the panel's stats dict (both tests
+    plus the means) when pooling, or ``{region: stats}`` when ``by_region``.
+    """
+    spec = PARAM_BY_KEY[param]
+    if len(paired) == 0:
+        raise ValueError("no pairable neurons — nothing to plot.")
+    r_a = paired["r_a"].to_numpy(dtype=float)
+    r_b = paired["r_b"].to_numpy(dtype=float)
+    if use_abs:
+        r_a, r_b = np.abs(r_a), np.abs(r_b)
+    ylab = f"|r|  ({spec.label})" if use_abs else f"r  ({spec.label})"
+
+    if by_region:
+        panels = [(region, (paired.BrainRegion == region).to_numpy())
+                  for region in sorted(pd.unique(paired.BrainRegion))]
+    else:
+        panels = [(None, np.ones(len(paired), dtype=bool))]
+
+    fig, axs = plt.subplots(1, len(panels),
+                            figsize=(figsize[0] * len(panels), figsize[1]),
+                            squeeze=False)
+    per_panel = {}
+    for ax, (region, mask) in zip(axs[0], panels):
+        st = _paired_neuron_panel(
+            ax, r_a[mask], r_b[mask], paired.ShortName.to_numpy()[mask], labels,
+            use_abs=use_abs, bar_colors=bar_colors, line_color=line_color,
+            show_session_test=show_session_test)
+        st["region"] = region or "MFC & LFC"
+        per_panel[st["region"]] = st
+        ax.set_ylabel(ylab)
+        ax.set_title(f"{st['region']}  (n={st['n_neurons']})"
+                     if by_region else
+                     (title or f"{spec.label} correlation per neuron "
+                               f"(n={st['n_neurons']})"),
+                     fontsize="medium")
+    if by_region and title:
+        fig.suptitle(title, fontsize="medium")
+    fig.tight_layout()
+
+    for st in per_panel.values():
+        head = f"[{st['region']}] " if by_region else "\t"
+        print(f"{head}{labels[0]} {st['mean_a']:.3f}±{st['sem_a']:.3f}  vs  "
+              f"{labels[1]} {st['mean_b']:.3f}±{st['sem_b']:.3f}   "
+              f"(n={st['n_neurons']} neurons)")
+        print(f"\t  across neurons: {st['neuron_test']['label']}")
+        if st["session_test"] is not None:
+            print(f"\t  across sessions (guards against pseudo-replication): "
+                  f"{st['session_test']['label']}")
+
+    if save:
+        if save_root is None or model_name is None:
+            raise ValueError("save needs save_root and model_name")
+        out_dir = (pathlib.Path(save_root) / _safe_filename(model_name)
+                   / "paired_neuron_r")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        stem = _safe_filename(tag or f"{spec.key}_{labels[0]}_vs_{labels[1]}")
+        if by_region:
+            stem = f"{stem}_by_region"
+        fig.savefig(out_dir / f"{stem}.{ext}", bbox_inches="tight")
+        rows = []
+        for st in per_panel.values():
+            row = {"param": spec.key, "BrainRegion": st["region"],
+                   "cond_a": labels[0], "cond_b": labels[1],
+                   "use_abs": use_abs, "n_neurons": st["n_neurons"],
+                   "n_sessions": st["n_sessions"],
+                   "mean_a": st["mean_a"], "mean_b": st["mean_b"],
+                   "sem_a": st["sem_a"], "sem_b": st["sem_b"],
+                   "t_neurons": st["neuron_test"]["stat"],
+                   "p_neurons": st["neuron_test"]["p"],
+                   "df_neurons": st["neuron_test"]["df1"]}
+            if st["session_test"] is not None:
+                row.update(t_sessions=st["session_test"]["stat"],
+                           p_sessions=st["session_test"]["p"],
+                           df_sessions=st["session_test"]["df1"],
+                           # sessions the paired test could USE (complete cases)
+                           n_sessions_tested=st["session_test"]["n_sessions"])
+            rows.append(row)
+        pd.DataFrame(rows).to_csv(out_dir / f"{stem}.csv", index=False)
+        print(f"Saved paired neuron r -> {out_dir}")
+    plt.show()
+    return fig, (per_panel if by_region else next(iter(per_panel.values())))
+
+
+def _session_time_fraction(table, group_col="ShortName"):
+    """Each row's position within its session, 0 (first trial) → 1 (last).
+
+    Rank-based on ``TrialNumber``, so gaps in the trial numbering do not distort
+    it. Returned as a Series aligned to ``table``'s index; a session with a
+    single trial gets 0.5.
+    """
+    tn = table.groupby(group_col)["TrialNumber"]
+    rank = tn.rank(method="dense") - 1.0
+    span = tn.transform(lambda s: s.nunique() - 1)
+    return (rank / span.where(span > 0)).fillna(0.5)
+
+
+def bin_occupancy(table, column, bin_spec, *, by="value", group_col="ShortName"):
+    """How much data each bin would get — run this *before* committing to bins.
+
+    Returns a small dataframe (one row per bin) with the trial / neuron / session
+    counts and the share of trials, so an over-fine split is visible as a
+    near-empty bin instead of showing up later as a blank bar. ``dropped_trials``
+    on the frame's attrs counts trials outside every bin. ``by`` selects the
+    splitting criterion (see :func:`split_trials`).
+    """
+    bins, sub_tables = split_trials(table, column, bin_spec, by=by,
+                                    group_col=group_col)
+    per_trial_total = table.drop_duplicates(
+        subset=["ShortName", "TrialNumber"]).shape[0]
+    # Where each level sits in SESSION TIME (0 = first trial, 1 = last). A
+    # latent that drifts over a session — the reward rate does — makes its low
+    # level mostly early trials and its high level mostly late ones, so the
+    # comparison silently becomes early-vs-late as well. Spread values near 0.5
+    # mean the levels are time-matched; values near 0 / 1 mean they are not.
+    pos = _session_time_fraction(table, group_col)
+    rows, covered = [], 0
+    for b, sub in zip(bins, sub_tables):
+        uniq = sub.drop_duplicates(subset=["ShortName", "TrialNumber"])
+        n_trials = uniq.shape[0]
+        covered += n_trials
+        rows.append({"bin": b.label, "lo": b.lo, "hi": b.hi,
+                     "n_trials": n_trials,
+                     "pct_of_trials": (100.0 * n_trials / per_trial_total
+                                       if per_trial_total else np.nan),
+                     "n_neurons": sub.long_trace_id.nunique(),
+                     "n_sessions": sub.ShortName.nunique(),
+                     "mean_session_time": (float(pos.loc[uniq.index].mean())
+                                           if n_trials else np.nan)})
+    out = pd.DataFrame(rows)
+    out.attrs["dropped_trials"] = per_trial_total - covered
+    return out
+
+
+def session_bin_coverage(table, column, bin_spec, *, min_trials=None,
+                         by="value", group_col="ShortName"):
+    """Per-session view of which bins a session can actually contribute to.
+
+    The across-bin test is **paired on sessions**, so a session only counts when
+    it is usable in *every* bin. Two things cost sessions here, and this is the
+    cell that separates them:
+
+    - the session never **visits** a bin (a slow-drifting latent like the reward
+      rate can sit inside one bin from start to finish); or
+    - it visits but with **too few trials** — under ``min_trials`` (default
+      :data:`_MIN_CORR_POINTS`) no neuron's correlation is even defined there, so
+      the session is just as lost as if it had no trials at all. This is the
+      easy one to miss: a bin holding 1-2 trials looks populated in a histogram.
+
+    Returns one row per session: ``BrainRegion``, the observed ``min``/``max`` of
+    ``column``, the trial count in each bin (``n_{bin label}``), ``bins_covered``
+    (bins with any trial), ``bins_usable`` (bins with ``>= min_trials``), and
+    ``complete`` (usable in every bin). ``frame.attrs["n_complete"]`` counts the
+    complete ones — still an upper bound, since the trials also have to give a
+    non-constant activity/latent pair.
+    """
+    min_trials = _MIN_CORR_POINTS if min_trials is None else int(min_trials)
+    per_trial = (table.drop_duplicates(subset=["ShortName", "TrialNumber"])
+                 .reset_index(drop=True))
+    bins, idx = _trial_bin_index(per_trial, column, bin_spec, by=by,
+                                 group_col=group_col)
+    masks = {b.label: (idx == i) for i, b in enumerate(bins, start=1)}
+    vals = per_trial[column].to_numpy(dtype=float)
+    rows = []
+    for sess, idx in per_trial.groupby("ShortName").indices.items():
+        v = vals[idx]
+        rec = {"ShortName": sess,
+               "BrainRegion": per_trial["BrainRegion"].to_numpy()[idx][0],
+               "n_trials": len(idx),
+               f"min_{column}": float(np.nanmin(v)) if len(v) else np.nan,
+               f"max_{column}": float(np.nanmax(v)) if len(v) else np.nan}
+        counts = [int(masks[b.label][idx].sum()) for b in bins]
+        for b, c in zip(bins, counts):
+            rec[f"n_{b.label}"] = c
+        rec["bins_covered"] = int(sum(c > 0 for c in counts))
+        rec["bins_usable"] = int(sum(c >= min_trials for c in counts))
+        rec["complete"] = all(c >= min_trials for c in counts)
+        rows.append(rec)
+    out = pd.DataFrame(rows).sort_values(["BrainRegion", "ShortName"])
+    out.attrs["n_complete"] = int(out["complete"].sum()) if len(out) else 0
+    out.attrs["min_trials"] = min_trials
+    return out.reset_index(drop=True)
+
+
+def session_attrition(df_2p, table, column, bin_spec, param, *,
+                      corr_by_bin=None, common_neurons=True, min_trials=None,
+                      by="value", group_col="ShortName"):
+    """Full ledger of every recorded session, from the raw 2-photon df to the
+    bars — one row per session, with **where** it was lost.
+
+    Sessions leave at three different places, each reported by a different
+    helper, which is why a count can look unexplained when only one of them is
+    consulted. This puts all three in one table so the arithmetic closes:
+
+    ``no model trials``    — the session matched no MLE trial and is absent from
+                             ``table`` altogether (no fit for that subject, or an
+                             identity-key mismatch). Never visible in
+                             :func:`session_bin_coverage`, because that only sees
+                             ``table``.
+    ``too few trials``     — present, but under ``min_trials`` in some bin, so no
+                             correlation can be computed there.
+    ``no assessable neuron`` — enough trials, but every neuron's ``r`` came out
+                             undefined in some bin (constant activity or latent),
+                             or ``common_neurons`` removed them. Needs
+                             ``corr_by_bin``.
+    ``kept``               — contributes to the paired across-bin test.
+
+    ``param`` names the correlate (e.g. ``"DV"``). Pass ``corr_by_bin`` from
+    :func:`reward_rate_correlations` to resolve the last stage; without it those
+    sessions are reported as ``kept (correlations not checked)``.
+
+    Note there is no ``min_abs_corr`` here on purpose: whether a session appears
+    in a bar depends on its neurons' ``r`` being **defined**, not on it clearing
+    the tuning threshold. A session of entirely untuned neurons still counts —
+    as a 0%.
+    """
+    min_trials = _MIN_CORR_POINTS if min_trials is None else int(min_trials)
+    rcol = f"{PARAM_BY_KEY[param].key}_r"
+
+    raw = df_2p.copy()
+    raw["_region"] = [f"{BrainRegion(int(r))}" for r in raw["BrainRegion"]]
+    raw_counts = raw.groupby("ShortName").agg(
+        BrainRegion=("_region", "first"), n_trials_2p=("TrialNumber", "nunique"))
+
+    in_table = set(table["ShortName"].unique())
+    cov = (session_bin_coverage(table, column, bin_spec, min_trials=min_trials,
+                                by=by, group_col=group_col)
+           if len(table) else pd.DataFrame())
+    bins, _idx = _trial_bin_index(table, column, bin_spec, by=by,
+                                  group_col=group_col)
+    cov_by_sess = ({r.ShortName: r for _, r in cov.iterrows()}
+                   if len(cov) else {})
+
+    # Which sessions still have an assessable neuron in each bin?
+    assessable = None
+    if corr_by_bin is not None:
+        frames = list(corr_by_bin)
+        if common_neurons:
+            keep = _common_assessable(frames, rcol)
+            frames = [c[c.long_trace_id.isin(keep)] for c in frames]
+        assessable = [set(c.loc[c[rcol].notna(), "ShortName"].unique())
+                      for c in frames]
+
+    rows = []
+    for sess, rc in raw_counts.iterrows():
+        rec = {"ShortName": sess, "BrainRegion": rc.BrainRegion,
+               "n_trials_2p": int(rc.n_trials_2p)}
+        if sess not in in_table:
+            rec.update(n_trials_kept=0, outcome="no model trials",
+                       detail="matched no MLE trial (join)")
+            rows.append(rec)
+            continue
+        c = cov_by_sess.get(sess)
+        rec["n_trials_kept"] = int(c["n_trials"]) if c is not None else 0
+        for b in bins:
+            rec[f"n_{b.label}"] = int(c[f"n_{b.label}"]) if c is not None else 0
+        thin = [b.label for b in bins
+                if (c is None or c[f"n_{b.label}"] < min_trials)]
+        if thin:
+            rec.update(outcome="too few trials",
+                       detail=f"< {min_trials} trials in {', '.join(thin)}")
+        elif assessable is not None:
+            blind = [b.label for b, a in zip(bins, assessable) if sess not in a]
+            if blind:
+                rec.update(outcome="no assessable neuron",
+                           detail=f"no neuron with a defined r in "
+                                  f"{', '.join(blind)}")
+            else:
+                rec.update(outcome="kept", detail="")
+        else:
+            rec.update(outcome="kept (correlations not checked)",
+                       detail="pass corr_by_bin to resolve")
+        rows.append(rec)
+
+    out = pd.DataFrame(rows).sort_values(["BrainRegion", "outcome", "ShortName"])
+    out.attrs["counts"] = out.groupby(["BrainRegion", "outcome"]).size()
+    return out.reset_index(drop=True)
+
+
+def binned_correlations(table, column, bin_spec, params=None, *,
+                        method="pearson", by="value", group_col="ShortName"):
+    """Per-neuron correlations computed **within** each value bin of ``column``.
+
+    Returns ``(bins, bin_tables, corr_by_bin)``: the normalized
+    :class:`ValueBin` list, the per-bin trial sub-tables, and the per-bin
+    correlation dataframes (one row per neuron, ``{param}_r`` / ``{param}_p``).
+    ``params`` defaults to the drift columns (``DV``, ``DVabs``) — the same
+    correlates the fast/slow section uses; pass e.g. ``["Q_val"]`` for a latent.
+    A bin with no trials yields an empty (but correctly-columned) frame.
+    """
+    params = list(DRIFT_KEYS) if params is None else list(params)
+    bins, bin_tables = split_trials(table, column, bin_spec, by=by,
+                                    group_col=group_col)
+    corr_by_bin = [compute_neuron_correlations(t, params, method=method)
+                   for t in bin_tables]
+    return bins, bin_tables, corr_by_bin
+
+
+def reward_rate_correlations(table, bin_spec, params=None, *,
+                             column="RewardRate", method="pearson",
+                             by="value", group_col="ShortName"):
+    """:func:`binned_correlations` on the model's reward-rate latent — the entry
+    point the notebook uses.
+
+    ``by="value"`` takes fixed cut points (:func:`make_value_bins`);
+    ``by="session_quantile"`` takes an integer and splits **each session at its
+    own quantiles**. Prefer the latter here: the reward rate is a *fitted*
+    latent, so its distribution differs from session to session, and fixed cut
+    points therefore hand each session a different number of trials per level —
+    which changes both the chance level and which sessions survive at all.
+    """
+    return binned_correlations(table, column, bin_spec, params, method=method,
+                               by=by, group_col=group_col)
+
+
+def _common_assessable(corr_by_bin, rcol):
+    """Neurons whose correlation is **defined in every bin** — the set the paired
+    across-bin comparison is run on.
+
+    Reward-rate bins are deliberately unbalanced, so a rare bin gives some
+    neurons too few trials for a correlation. Dropping those neurons everywhere
+    keeps the bars a comparison of the *same* population across bins instead of a
+    different sub-population per bin.
+    """
+    sets = [set(c.loc[c[rcol].notna(), "long_trace_id"]) for c in corr_by_bin]
+    return set.intersection(*sets) if sets else set()
+
+
+def _region_sessions(corr_by_bin, region_values):
+    """Every session contributing neurons to a region, across all bins — the
+    denominator the session-drop report is measured against."""
+    out = set()
+    for corr in corr_by_bin:
+        grp = (corr if region_values is None
+               else corr[corr.BrainRegion.isin(region_values)])
+        out |= set(grp["ShortName"].dropna().unique())
+    return out
+
+
+def _session_drop_report(pct_frame, region_sessions):
+    """``(kept, dropped)`` sessions for the paired across-bin test, with the
+    reason each dropped one fell out.
+
+    Two ways a session leaves: it has **no assessable neuron** in a bin (too few
+    trials there for a correlation, or a constant activity/latent), or it never
+    visits the bin at all. Both surface here as the bin(s) it is missing, so the
+    paired-``n`` is never just a smaller number with no explanation.
+    """
+    kept = list(pct_frame.dropna(axis=0, how="any").index)
+    dropped = {}
+    for sess in sorted(region_sessions):
+        if sess in kept:
+            continue
+        if sess in pct_frame.index:
+            missing = [c for c in pct_frame.columns
+                       if pd.isna(pct_frame.loc[sess, c])]
+        else:
+            missing = list(pct_frame.columns)   # nothing assessable anywhere
+        dropped[sess] = missing
+    return kept, dropped
+
+
+def _bin_pct_frame(corr_by_bin, bins, rcol, min_abs_corr, *, region_values=None):
+    """Sessions × bins dataframe of the per-session % of tuned neurons — the
+    paired unit of the across-bin test. A session absent from a bin is NaN."""
+    cols = {}
+    for b, corr in zip(bins, corr_by_bin):
+        grp = (corr if region_values is None
+               else corr[corr.BrainRegion.isin(region_values)])
+        cols[b.label] = _session_tuned_percent(grp, rcol, min_abs_corr)
+    return pd.DataFrame(cols, columns=[b.label for b in bins])
+
+
+def paired_bins_test(pct_frame):
+    """Session-paired across-bin test on a sessions × bins % matrix.
+
+    Sessions missing any bin are dropped (complete cases), then:
+
+    - **2 bins** → a paired t-test over sessions (``scipy.stats.ttest_rel``);
+    - **>2 bins** → a one-way repeated-measures ANOVA with session as the
+      subject factor (``statsmodels.stats.anova.AnovaRM``).
+
+    Returns a dict with ``test`` / ``stat`` / ``p`` / ``df1`` / ``df2`` /
+    ``n_sessions`` / ``label`` (a ready-to-plot string). Degenerate inputs — under
+    two complete sessions, or percentages identical across bins in every session
+    — return ``p = 1`` (t/F = 0) rather than a NaN from a 0/0 variance ratio.
+    """
+    frame = pct_frame.dropna(axis=0, how="any")
+    n, k = len(frame), frame.shape[1]
+    none = dict(test="none", stat=np.nan, p=np.nan, df1=np.nan, df2=np.nan,
+                n_sessions=n, label="")
+    if k < 2:
+        return dict(none, label="need >= 2 bins")
+    if n < 2:
+        return dict(none, label=f"only {n} complete session(s)")
+
+    vals = frame.to_numpy(dtype=float)
+    if np.allclose(vals - vals.mean(axis=1, keepdims=True), 0.0):
+        # No between-bin variation at all -> the test statistic is 0/0.
+        name = "paired t-test" if k == 2 else "RM-ANOVA"
+        return dict(test=name, stat=0.0, p=1.0, df1=(n - 1 if k == 2 else 0.0),
+                    df2=np.nan, n_sessions=n,
+                    label=f"{name}: no between-bin difference (p = 1.000)")
+
+    if k == 2:
+        res = ttest_rel(vals[:, 0], vals[:, 1])
+        t, p = float(res.statistic), float(res.pvalue)
+        return dict(test="paired t-test", stat=t, p=p, df1=float(n - 1),
+                    df2=np.nan, n_sessions=n,
+                    label=f"paired t({n - 1}) = {t:+.2f}, {_p_phrase(p)}")
+
+    long = (frame.rename_axis("session").reset_index()
+            .melt(id_vars="session", var_name="bin", value_name="pct"))
+    anova = AnovaRM(long, depvar="pct", subject="session",
+                    within=["bin"]).fit().anova_table
+    F = float(anova["F Value"].iloc[0])
+    p = float(anova["Pr > F"].iloc[0])
+    df1 = float(anova["Num DF"].iloc[0])
+    df2 = float(anova["Den DF"].iloc[0])
+    return dict(test="RM-ANOVA", stat=F, p=p, df1=df1, df2=df2, n_sessions=n,
+                label=f"RM-ANOVA F({df1:g},{df2:g}) = {F:.2f}, {_p_phrase(p)}")
+
+
+def pairwise_bin_tests(pct_frame):
+    """Holm-corrected paired t-tests between every pair of bins (the post-hoc
+    for a significant RM-ANOVA). Returns a tidy dataframe; empty when fewer than
+    two complete sessions."""
+    frame = pct_frame.dropna(axis=0, how="any")
+    labels = list(frame.columns)
+    if len(frame) < 2:
+        return pd.DataFrame()
+    rows = []
+    for i in range(len(labels)):
+        for j in range(i + 1, len(labels)):
+            a = frame[labels[i]].to_numpy(dtype=float)
+            b = frame[labels[j]].to_numpy(dtype=float)
+            if np.allclose(a - b, 0.0):
+                t, p = 0.0, 1.0
+            else:
+                res = ttest_rel(a, b)
+                t, p = float(res.statistic), float(res.pvalue)
+            rows.append({"bin_a": labels[i], "bin_b": labels[j],
+                         "mean_diff": float(np.mean(a - b)), "t": t, "p": p,
+                         "n_sessions": len(frame)})
+    out = pd.DataFrame(rows)
+    if len(out):
+        out["p_holm"] = _holm_adjust(out["p"].to_numpy())
+    return out
+
+
+def plot_reward_rate_bars(corr_by_bin, bins, param, *, bin_tables=None,
+                          min_abs_corr=0.3, n_perm=1000, by_region=True,
+                          seed=0, run_stats=True, common_neurons=True,
+                          value_label="Reward rate", save=False, save_root=None,
+                          model_name=None, ext="pdf"):
+    """% of ``param``-correlated neurons at each reward-rate level.
+
+    The reward-rate variation of :func:`plot_fast_slow_bars`: instead of two RT
+    terciles the x-axis is the reward-rate bins (:func:`reward_rate_correlations`),
+    shaded pale → dark with the reward-rate colour so low → high reads off the
+    bar. A neuron counts at a bin when ``|r| >= min_abs_corr`` for ``param``
+    *within that bin's trials*; each bar is the session mean ± SEM of that
+    percentage. ``by_region=True`` draws one panel per MFC/LFC (shared y-range);
+    ``by_region=False`` pools the regions into one panel.
+
+    With ``common_neurons`` (default) only neurons whose correlation is defined
+    in **every** bin are used — see :func:`_common_assessable`; the shuffle null
+    is restricted to the same neurons so bars and chance level agree.
+
+    When ``run_stats`` two families are annotated, each Holm-corrected:
+      1. **vs chance** — a ``*/**/***`` star above each bar from the per-neuron
+         activity shuffle (``n_perm`` permutations, ``+1/(n+1)`` p-value; needs
+         ``bin_tables`` — skipped with a warning if omitted), Holm-corrected
+         across the bars of a panel;
+      2. **across bins** — the session-paired :func:`paired_bins_test` (paired
+         t-test for 2 bins, RM-ANOVA beyond), Holm-corrected across panels, drawn
+         as one bracket spanning the bins with its statistic printed above. For
+         more than two bins the Holm-corrected pairwise post-hocs
+         (:func:`pairwise_bin_tests`) are appended to the summary.
+
+    Sessions are **never dropped silently**: any session that cannot be paired
+    across all bins is named, with the bins it lacks, and raises a warning. The
+    counts are also on every summary row as ``n_sessions_region`` /
+    ``n_sessions_dropped`` / ``n_paired_sessions``, so a shrunken paired-``n``
+    can always be traced back. Zero pairable sessions is handled, not an error:
+    the bars still draw and the test reports ``"none"``.
+
+    Returns a tidy summary keyed by a ``scope`` column:
+    ``"bin"`` — one row per region × bin (the bars), carrying the panel's test
+    result; ``"session"`` — the per-session detail behind each bar (its own
+    ``pct``, ``n_trials``, ``n_neurons``, ``trials_per_neuron`` and whether it
+    was ``paired``), since the bar is just the mean of these; ``"comparison"`` —
+    the pairwise post-hocs. Filter with ``summary[summary.scope == "session"]``.
+    ``save`` also writes the figure + summary CSV under
+    ``{save_root}/{model_name}/reward_rate_bars/{param}/``.
+    """
+    spec = PARAM_BY_KEY[param]
+    rcol = f"{spec.key}_r"
+    for corr in corr_by_bin:
+        if rcol not in corr.columns:
+            raise KeyError(f"{param!r} not in the binned correlation dataframes "
+                           f"(columns: {list(corr.columns)}).")
+    if len(bins) != len(corr_by_bin):
+        raise ValueError(f"{len(bins)} bins but {len(corr_by_bin)} correlation "
+                         "frames.")
+    if len(bins) < 2:
+        raise ValueError("Need at least 2 bins to compare reward-rate levels.")
+
+    # Kept unfiltered so the session-drop report can measure against every
+    # session that contributed neurons, not only the ones that survived.
+    corr_before_filter = list(corr_by_bin)
+
+    # Restrict to the neurons assessable in every bin (bars AND shuffle null).
+    if common_neurons:
+        keep = _common_assessable(corr_by_bin, rcol)
+        if not keep:
+            warnings.warn(
+                "plot_reward_rate_bars: no neuron has a defined correlation in "
+                "EVERY bin, so common_neurons=True leaves nothing to plot — "
+                "usually a bin that is empty or too sparse to correlate within. "
+                "Widen/merge the bins, or pass common_neurons=False.")
+        corr_by_bin = [c[c.long_trace_id.isin(keep)] for c in corr_by_bin]
+        if bin_tables is not None:
+            bin_tables = [t[t.long_trace_id.isin(keep)] for t in bin_tables]
+
+    rng = np.random.default_rng(seed)
+    bundles = None
+    if run_stats:
+        if bin_tables is not None:
+            bundles = [_shuffle_null_tuned(t, [spec.key], min_abs_corr, n_perm,
+                                           rng)
+                       for t in bin_tables]
+        else:
+            warnings.warn("plot_reward_rate_bars: `bin_tables` not supplied — "
+                          "skipping the per-bar vs-chance test (the across-bin "
+                          "paired test still runs).")
+
+    if by_region:
+        regions = [(r, [r]) for r in
+                   sorted(set().union(*(set(c.BrainRegion.dropna().unique())
+                                        for c in corr_by_bin)))]
+    else:
+        regions = [("MFC & LFC", None)]
+    if not regions:
+        raise ValueError("No neurons left to plot (empty correlation frames).")
+
+    colors = _param_gradient(PARAM_BY_KEY["RewardRate"].color, len(bins))
+    x = np.arange(len(bins))
+
+    # ---- pass 1: per-panel stats ---------------------------------------------
+    panels, rows = {}, []
+    for region, rvals in regions:
+        pct_frame = _bin_pct_frame(corr_by_bin, bins, rcol, min_abs_corr,
+                                   region_values=rvals)
+        # Per column so an all-empty bin is a plain NaN bar, not a warning.
+        n_obs = [int(pct_frame[c].notna().sum()) for c in pct_frame.columns]
+        means = np.array([pct_frame[c].mean() if n else np.nan
+                          for c, n in zip(pct_frame.columns, n_obs)], dtype=float)
+        sems = np.array([pct_frame[c].sem() if n > 1 else 0.0
+                         for c, n in zip(pct_frame.columns, n_obs)], dtype=float)
+        sems = np.nan_to_num(sems, nan=0.0)
+        vs_chance = []
+        for bi, b in enumerate(bins):
+            p = np.nan
+            if bundles is not None:
+                p = _bar_vs_chance(bundles[bi], spec.key, rvals, means[bi],
+                                   n_perm)
+            vs_chance.append(p)
+        holm_chance = (_holm_adjust(vs_chance) if run_stats
+                       else np.full(len(bins), np.nan))
+        test = paired_bins_test(pct_frame)
+        pairwise = (pairwise_bin_tests(pct_frame)
+                    if len(bins) > 2 and run_stats else pd.DataFrame())
+        region_sessions = _region_sessions(corr_before_filter, rvals)
+        _kept, dropped = _session_drop_report(pct_frame, region_sessions)
+        panels[region] = dict(pct_frame=pct_frame, means=means, sems=sems,
+                              vs_chance=np.asarray(vs_chance, dtype=float),
+                              holm_chance=holm_chance, test=test,
+                              pairwise=pairwise, rvals=rvals,
+                              n_sessions_total=len(region_sessions),
+                              n_sessions_dropped=len(dropped))
+        print(f"\t{region}: " + " | ".join(
+            f"{b.label} {m:.1f}±{s:.1f}% ({n} sess)"
+            for b, m, s, n in zip(bins, means, sems, n_obs)))
+        if test["label"]:
+            print(f"\t  across bins: {test['label']}  "
+                  f"[{test['n_sessions']} of {len(region_sessions)} sessions "
+                  "paired]")
+        # Never let sessions vanish quietly: name them and say what they lack.
+        if dropped:
+            print(f"\t  {len(dropped)} session(s) EXCLUDED from the paired test "
+                  f"(no data in every bin):")
+            for sess, missing in dropped.items():
+                print(f"\t    {sess}: nothing assessable in {', '.join(missing)}")
+            warnings.warn(
+                f"plot_reward_rate_bars [{region}]: {len(dropped)} of "
+                f"{len(region_sessions)} sessions dropped from the paired "
+                f"across-bin test because they have no assessable neuron in "
+                f"every bin ({', '.join(sorted(dropped))}). Widen/merge the "
+                "bins (see quantile_bin_edges / session_bin_coverage) if that "
+                "is more sessions than you expect.")
+
+    # Holm the across-bin test across panels (one comparison per region).
+    across_holm = (_holm_adjust([panels[r]["test"]["p"] for r, _ in regions])
+                   if run_stats else np.full(len(regions), np.nan))
+    for (region, _), ph in zip(regions, across_holm):
+        panels[region]["p_across_holm"] = float(ph) if np.isfinite(ph) else np.nan
+
+    # ---- summary rows ---------------------------------------------------------
+    for region, rvals in regions:
+        d = panels[region]
+        t = d["test"]
+        paired_sessions = set(d["pct_frame"].dropna(axis=0, how="any").index)
+        for bi, b in enumerate(bins):
+            n_trials = n_rows = n_neurons = np.nan
+            sub = None
+            if bin_tables is not None:
+                sub = (bin_tables[bi] if rvals is None
+                       else bin_tables[bi][bin_tables[bi].BrainRegion.isin(rvals)])
+                n_rows = int(len(sub))
+                n_trials = int(sub.drop_duplicates(
+                    subset=["ShortName", "TrialNumber"]).shape[0])
+                n_neurons = int(sub.long_trace_id.nunique())
+            rows.append({
+                "scope": "bin",
+                "BrainRegion": region, "ShortName": "", "bin": b.label,
+                "bin_lo": b.lo,
+                "bin_hi": b.hi, "param": spec.key, "pct": d["means"][bi],
+                "sem": d["sems"][bi],
+                "n_sessions": int(d["pct_frame"][b.label].notna().sum()),
+                "n_neurons": n_neurons,
+                # n_trials counts distinct TRIALS; n_rows counts (neuron x trial)
+                # rows. Trials-per-neuron = n_rows / n_neurons is what sets the
+                # correlation's precision, so both are worth having.
+                "n_trials": n_trials, "n_rows": n_rows,
+                # Raw alongside corrected: without the raw p there is no way to
+                # tell a bar that Holm pushed over the line from one that was
+                # never near it (the largest p in a family is multiplied by 1).
+                "p_vs_chance": (float(d["vs_chance"][bi])
+                                if np.isfinite(d["vs_chance"][bi]) else np.nan),
+                "p_vs_chance_holm": (float(d["holm_chance"][bi])
+                                     if np.isfinite(d["holm_chance"][bi])
+                                     else np.nan),
+                "test_across_bins": t["test"], "stat_across_bins": t["stat"],
+                "p_across_bins": t["p"], "p_across_bins_holm": d["p_across_holm"],
+                "df1": t["df1"], "df2": t["df2"],
+                "n_paired_sessions": t["n_sessions"],
+                # Audit trail for the paired-n: how many sessions the region has
+                # and how many could not be paired across all bins.
+                "n_sessions_region": d["n_sessions_total"],
+                "n_sessions_dropped": d["n_sessions_dropped"]})
+
+            # Per-session detail behind this bar: the bar is the mean of these,
+            # so an outlying session (or one with far fewer trials than the rest)
+            # is visible instead of being averaged away.
+            if sub is None:
+                continue
+            per_sess_rows = sub.drop_duplicates(
+                subset=["ShortName", "TrialNumber"]).groupby("ShortName")
+            neurons_by_sess = sub.groupby("ShortName")["long_trace_id"].nunique()
+            rows_by_sess = sub.groupby("ShortName").size()
+            for sess, sg in per_sess_rows:
+                pct = (d["pct_frame"].loc[sess, b.label]
+                       if sess in d["pct_frame"].index else np.nan)
+                n_neu = int(neurons_by_sess.get(sess, 0))
+                n_row = int(rows_by_sess.get(sess, 0))
+                rows.append({
+                    "scope": "session", "BrainRegion": region,
+                    "ShortName": sess, "bin": b.label, "bin_lo": b.lo,
+                    "bin_hi": b.hi, "param": spec.key,
+                    "pct": float(pct) if pd.notna(pct) else np.nan,
+                    "n_neurons": n_neu, "n_trials": int(len(sg)),
+                    "n_rows": n_row,
+                    # What actually sets this session's correlation precision.
+                    "trials_per_neuron": (n_row / n_neu if n_neu else np.nan),
+                    "paired": sess in paired_sessions})
+
+        for _, pr in d["pairwise"].iterrows():
+            rows.append({"scope": "comparison", "BrainRegion": region,
+                         "ShortName": "",
+                         "bin": f"{pr.bin_a} vs {pr.bin_b}", "param": spec.key,
+                         "test_across_bins": "paired t-test (post-hoc)",
+                         "stat_across_bins": pr.t, "p_across_bins": pr.p,
+                         "p_across_bins_holm": pr.p_holm,
+                         "df1": pr.n_sessions - 1,
+                         "n_paired_sessions": pr.n_sessions})
+
+    # ---- pass 2: draw, on a shared y-range ------------------------------------
+    # Paddings scale with the data range: fixed point-offsets collide with the
+    # vs-chance stars as soon as a bar's SEM is tall.
+    bar_top = 0.0
+    for region, _ in regions:
+        d = panels[region]
+        tops = [m + s for m, s in zip(d["means"], d["sems"]) if np.isfinite(m)]
+        if tops:
+            bar_top = max(bar_top, max(tops))
+    bar_top = bar_top if bar_top > 0 else 1.0
+    _STAR_PAD = 0.03 * bar_top      # gap under a vs-chance star
+    _BRK_TICK = 0.02 * bar_top      # bracket end drop-down
+    _TXT_PAD = 0.02 * bar_top       # gap under the bracket's statistic text
+    # The bracket must clear the tallest bar AND the star sitting above it.
+    _BRK_BASE = bar_top + 4.0 * _STAR_PAD
+    y_top = _BRK_BASE + _BRK_TICK + _TXT_PAD + 0.09 * bar_top
+
+    fig, axs = plt.subplots(1, len(regions), figsize=(4.6 * len(regions), 4.6),
+                            squeeze=False, sharey=True)
+    for ax, (region, rvals) in zip(axs[0], regions):
+        d = panels[region]
+        ax.bar(x, d["means"], width=0.62, color=colors, alpha=0.9,
+               edgecolor="k", linewidth=0.5, yerr=d["sems"], capsize=3, zorder=2)
+        if run_stats:
+            for xi, m, s, ph in zip(x, d["means"], d["sems"], d["holm_chance"]):
+                if np.isfinite(m):
+                    ax.text(xi, m + s + _STAR_PAD, _sigstar(ph), ha="center",
+                            va="bottom", fontsize=11)
+            # One bracket over the whole bin range = the across-bin paired test.
+            # The star reflects the HOLM-corrected p, so the text must report it
+            # too — a raw "p = 0.049" beside an "n.s." star reads as a bug.
+            t = d["test"]
+            star = _sigstar(d["p_across_holm"])
+            if star and np.isfinite(d["means"]).any():
+                label = t["label"]
+                ph = d["p_across_holm"]
+                if np.isfinite(ph) and not np.isclose(ph, t["p"]):
+                    label += f"  →  Holm {_p_phrase(ph)}"
+                _add_sig_bracket(ax, x[0], x[-1], _BRK_BASE, star,
+                                 tick=_BRK_TICK, fontsize=11)
+                ax.text((x[0] + x[-1]) / 2.0, _BRK_BASE + _BRK_TICK + _TXT_PAD,
+                        label, ha="center", va="bottom", fontsize="x-small",
+                        color="0.25")
+        ax.set_xticks(x)
+        ax.set_xticklabels([b.label for b in bins], rotation=20, ha="right",
+                           fontsize="small")
+        ax.set_xlabel(value_label)
+        ax.set_title(f"{region}  (|r| ≥ {min_abs_corr:g})")
+        ax.set_ylim(0, y_top)
+        ax.spines[["top", "right"]].set_visible(False)
+    axs[0][0].set_ylabel(f"{spec.label}-correlated neurons (%)")
+    fig.suptitle(f"{spec.label} tuning across {value_label.lower()} — "
+                 f"{model_name or ''}", y=1.02)
+    fig.tight_layout()
+    if run_stats:
+        # Below the axes, not inside them: the across-bin bracket spans the full
+        # panel width, so any in-axes corner overlaps it.
+        fig.legend(
+            handles=[Line2D([0], [0], marker="*", color="k", linestyle="None",
+                            label="★ above bar: vs shuffle chance"),
+                     Line2D([0], [0], color="k", lw=1,
+                            label="⊓ bracket: across bins (paired)")],
+            fontsize="x-small", frameon=False, loc="upper center",
+            bbox_to_anchor=(0.5, 0.0), ncol=2, title="Holm-corrected across "
+            "bars within a panel / across panels respectively",
+            title_fontsize="x-small")
+
+    summary = pd.DataFrame(rows)
+    if save:
+        if save_root is None or model_name is None:
+            raise ValueError("save needs save_root and model_name")
+        out_dir = (pathlib.Path(save_root) / _safe_filename(model_name)
+                   / "reward_rate_bars" / spec.key)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        tag = "by_region" if by_region else "combined"
+        fig.savefig(out_dir / f"bars_{tag}.{ext}", bbox_inches="tight")
+        summary.to_csv(out_dir / f"summary_{tag}.csv", index=False)
+        print(f"Saved reward-rate bars -> {out_dir}")
+    plt.show()
+    return summary
