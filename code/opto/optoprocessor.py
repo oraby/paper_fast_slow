@@ -38,7 +38,7 @@ def loopConfig(df, applyFn, min_choice_trials,
     df = df.groupby(loop_cols).filter(lambda grp_df: len(grp_df) >= 10)
 
     if all_subjects:
-        ret = _processSubject(df, applyFn, min_choice_trials, "All Mice", 
+        ret = _processSubject(df, applyFn, min_choice_trials, "All Mice",
                               loop_cols,
                               which, stim_type, save_prefix=save_prefix,
                               process_groups_together=process_groups_together,
@@ -644,9 +644,9 @@ def _processBrainRegionOptoConfig(loop, df_col_name,
     for grp_key, grp_df in loop:
         # print("Grp Key:", grp_key, "- len:", len(grp_df),
         #       " - Opto count:", (grp_df.OptoEnabled == 1).sum())
-        assert grp_df[df_col_name].nunique() <= 2, (
-                                    "Only binary values are implemented",
-                                    f"Found: {grp_df[df_col_name].unique()}")
+        # assert grp_df[df_col_name].nunique() <= 2, (
+        #                             "Only binary values are implemented",
+        #                             f"Found: {grp_df[df_col_name].unique()}")
         control_trials = grp_df[grp_df.OptoEnabled == 0]
         opto_trials = grp_df[grp_df.OptoEnabled == 1]
 

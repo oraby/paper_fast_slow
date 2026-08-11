@@ -35,7 +35,8 @@ def optoReactionTime(start_state, start_delay, max_dur, stimulus_time,
                      end_state, stim_type, df, min_choice_trials, subject_name,
                      z_score, plot_sem, save_prefix, save_figs=False,
                      only_brain_regions : List[BrainRegion] = [],
-                     rt_plots : RTPlots = RTPlots.ALL_PLOTS):
+                     rt_plots : RTPlots = RTPlots.ALL_PLOTS,
+                     filter_above_sampling_time=True, MT_COL="MT"):
     # print("Df len:", len(df))
     Z_SCORE_SAVE_STR = "Z_Scored_" if z_score else ""
     WITH_SEM_SAVE_SAVE_STR = "_SEM" if plot_sem else ""
@@ -50,7 +51,8 @@ def optoReactionTime(start_state, start_delay, max_dur, stimulus_time,
         save_prefix = f"{save_prefix}/{subject_name}_"
     # Remove trials where animal stayed over-styaed, it will never equal to
     # GUI_StimulusTime due to the way we calculate, we check for - .1 sec
-    df = df[df.calcStimulusTime < df.GUI_StimulusTime - 0.1]
+    if filter_above_sampling_time:
+        df = df[df.calcStimulusTime < df.GUI_StimulusTime - 0.1]
     df_cntrl = df[df.OptoEnabled == 0]
     df_opto  = df[df.OptoEnabled == 1]
 
@@ -83,7 +85,7 @@ def optoReactionTime(start_state, start_delay, max_dur, stimulus_time,
     # z-scored (against each subject's own control MT) and in raw seconds.
     if rt_plots & RTPlots.AFTER_OPTO_END_MT_BARS:
         for bars_z_score in (True, False):
-            _plotReactionBars(df_cntrl, df_opto, df_col="MT",
+            _plotReactionBars(df_cntrl, df_opto, df_col=MT_COL,
                               start_delay=start_delay, max_dur=max_dur,
                               name=name, only_after_opto=True,
                               bars_z_score=bars_z_score,
@@ -92,7 +94,7 @@ def optoReactionTime(start_state, start_delay, max_dur, stimulus_time,
 
     if rt_plots & RTPlots.WHOLE_SAMPLING_MT_BARS:
         for bars_z_score in (True, False):
-            _plotReactionBars(df_cntrl, df_opto, df_col="MT",
+            _plotReactionBars(df_cntrl, df_opto, df_col=MT_COL,
                               start_delay=start_delay, max_dur=max_dur,
                               name=name, only_after_opto=False,
                               bars_z_score=bars_z_score,
@@ -186,6 +188,7 @@ def _plotReactionBars(df_cntrl, df_opto,
     #
     Z_SCORE = bars_z_score and not df_col == "ChoiceCorrect"
     METRIC_STR = {"calcStimulusTime": "Sampling Time",
+                  "calcDecisionTime": "Decision Time",
                   "MT": "Movement Time",
                   "ChoiceCorrect": "Performance"}[df_col]
     # Z-score stats come from each subject's control trials over the whole
