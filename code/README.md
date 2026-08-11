@@ -39,6 +39,11 @@ The notebooks are as follows:
       Two-photon imaging analyses focusing on single-cell and population-level
       heatmaps.
 
+    - [`plottraces3.ipynb`](plottraces3.ipynb)
+      Summed population activity by trial duration and quantile, per-session
+      choice decoders, and correlations between reaction time and neural
+      activity at the single-cell and population level.
+
 - **Movement Tracking**
     - [`Tracking.ipynb`](Tracking.ipynb)
       Movement tracking analyses.
