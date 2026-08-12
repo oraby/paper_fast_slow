@@ -1,6 +1,105 @@
+import warnings
+
 import numpy as np
 import scipy.stats as stats
 
+#: Shapiro-Wilk (normality) and Levene (equal-variance) decision threshold.
+NORMALITY_ALPHA = 0.05
+
+TEST_MWU = "MannWhitneyU"
+TEST_TTEST_STUDENT = "t-test (Student)"
+TEST_TTEST_WELCH = "t-test (Welch)"
+
+
+def pStars(pval, na="n.a."):
+  """``***`` / ``**`` / ``*`` / ``n.s.`` for a p-value (``na`` when unavailable)."""
+  pval = np.nan if pval is None else float(pval)
+  if np.isnan(pval):
+    return na
+  return ("***" if pval <= 0.001 else "**" if pval <= 0.01 else
+          "*" if pval <= 0.05 else "n.s.")
+
+
+def shapiroNormality(vals, alpha=NORMALITY_ALPHA):
+  """Shapiro-Wilk on one sample -> ``(W, pval, is_normal)``.
+
+  NaN (and "not normal") when the sample is too small for the test or is
+  constant -- both leave normality unestablished, so a caller gating on this
+  should fall back to the non-parametric test.
+  """
+  vals = np.asarray(vals, dtype=float)
+  vals = vals[~np.isnan(vals)]
+  if len(vals) < 3:  # Shapiro-Wilk needs at least 3 observations
+    return np.nan, np.nan, False
+  try:
+    with warnings.catch_warnings():  # constant input -> nan, not a crash
+      warnings.simplefilter("ignore", RuntimeWarning)
+      W, pval = stats.shapiro(vals)
+  except ValueError:  # e.g. constant input
+    return np.nan, np.nan, False
+  if np.isnan(pval):
+    return W, pval, False
+  return W, pval, bool(pval > alpha)
+
+
+def normalityGatedTest(left_vals, right_vals, alpha=NORMALITY_ALPHA,
+                       left_name="left", right_name="right"):
+  """Two independent samples, with the test chosen by a normality check.
+
+  Runs Shapiro-Wilk on *each* sample first (they are independent samples, so
+  there are no paired differences to test). Both normal -> two-sample t-test,
+  with Levene's test picking Student (equal variances) vs Welch; otherwise
+  Mann-Whitney U. All two-sided.
+
+  Returns a dict with ``{left_name,right_name}_shapiro_W/_shapiro_pval``,
+  ``is_normal``, ``levene_pval``, then ``test``/``statistic``/``pval`` for the
+  test the gate selected, plus ``ttest_pval`` and ``mwu_pval`` -- both are
+  always computed when possible, so the choice can be second-guessed.
+  """
+  left = np.asarray(left_vals, dtype=float)
+  right = np.asarray(right_vals, dtype=float)
+  left, right = left[~np.isnan(left)], right[~np.isnan(right)]
+
+  row = {f"{left_name}_shapiro_W": np.nan, f"{left_name}_shapiro_pval": np.nan,
+         f"{right_name}_shapiro_W": np.nan,
+         f"{right_name}_shapiro_pval": np.nan,
+         "is_normal": False, "levene_pval": np.nan, "test": TEST_MWU,
+         "statistic": np.nan, "pval": np.nan,
+         "ttest_pval": np.nan, "mwu_pval": np.nan}
+  if len(left) < 1 or len(right) < 1:
+    return row
+
+  both_normal = True
+  for name, vals in [(left_name, left), (right_name, right)]:
+    W, pval, is_normal = shapiroNormality(vals, alpha)
+    row[f"{name}_shapiro_W"] = W
+    row[f"{name}_shapiro_pval"] = pval
+    both_normal = both_normal and is_normal
+  row["is_normal"] = both_normal
+
+  mwu = StatsTest.mannwhitneyu(left, right).resultDict()
+  row["mwu_pval"] = mwu["pval"]
+
+  t_res = None
+  if len(left) >= 2 and len(right) >= 2:
+    try:
+      with warnings.catch_warnings():  # degenerate (constant) samples
+        warnings.simplefilter("ignore", RuntimeWarning)
+        row["levene_pval"] = stats.levene(left, right).pvalue
+        t_res = stats.ttest_ind(left, right,
+                                equal_var=row["levene_pval"] > alpha)
+      row["ttest_pval"] = t_res.pvalue
+    except ValueError:  # e.g. constant input to Levene
+      t_res = None
+
+  if row["is_normal"] and t_res is not None:
+    row["test"] = (TEST_TTEST_STUDENT if row["levene_pval"] > alpha
+                   else TEST_TTEST_WELCH)
+    row["statistic"], row["pval"] = t_res.statistic, t_res.pvalue
+  else:
+    row["test"] = TEST_MWU
+    row["statistic"], row["pval"] = mwu["statistic"], mwu["pval"]
+  return row
 
 
 class StatsTest:
