@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN"
+  "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg xmlns:xlink="http://www.w3.org/1999/xlink" width="572.4pt" height="341.018182pt" viewBox="0 0 572.4 341.018182" xmlns="http://www.w3.org/2000/svg" version="1.1">
+ <metadata>
+  <rdf:RDF xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:cc="http://creativecommons.org/ns#" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+   <cc:Work>
+    <dc:type rdf:resource="http://purl.org/dc/dcmitype/StillImage"/>
+    <dc:date>2026-08-13T23:04:44.933691</dc:date>
+    <dc:format>image/svg+xml</dc:format>
+    <dc:creator>
+     <cc:Agent>
+      <dc:title>Matplotlib v3.8.0, https://matplotlib.org/</dc:title>
+     </cc:Agent>
+    </dc:creator>
+   </cc:Work>
+  </rdf:RDF>
+ </metadata>
+ <defs>
+  <style type="text/css">*{stroke-linejoin: round; stroke-linecap: butt}</style>
+ </defs>
+ <g id="figure_1">
+  <g id="patch_1">
+   <path d="M 0 341.018182 
+L 572.4 341.018182 
+L 572.4 -0 
+L 0 -0 
+z
+" style="fill: #ffffff"/>
+  </g>
+  <g id="axes_1">
+   <g id="patch_2">
+    <path d="M 134.018182 105.545455 
+C 120.158052 105.545455 106.443813 108.38569 93.723733 113.890483 
+C 81.003652 119.395276 69.545511 127.448742 60.058032 137.552747 
+C 50.570552 147.656752 43.253462 159.59859 38.559347 172.639621 
+C 33.865232 185.680651 31.892911 199.546337 32.764379 213.379042 
+L 134.018182 207 
+z
+" style="fill: #808080"/>
+   </g>
+   <g id="patch_3">
+    <path d="M 40.160393 220.323768 
+C 41.404821 240.076434 48.402513 259.039825 60.287109 274.866156 
+C 72.171706 290.692487 88.431634 302.70051 107.053812 309.403559 
+C 125.675991 316.106608 145.858825 317.216147 165.103555 312.59481 
+C 184.348285 307.973473 201.826518 297.820185 215.37434 283.391986 
+C 228.922162 268.963788 237.956404 250.881743 241.358572 231.384521 
+C 244.76074 211.8873 242.384387 191.814163 234.523719 173.65029 
+C 226.663051 155.486417 213.656433 140.013674 197.114164 129.147684 
+C 180.571896 118.281694 161.206042 112.490184 141.414215 112.490181 
+L 141.414196 213.944726 
+z
+" style="fill: #ffd700"/>
+   </g>
+   <g id="matplotlib.axis_1"/>
+   <g id="matplotlib.axis_2"/>
+   <g id="text_1">
+    <text style="font: 10px 'Arial', sans-serif" transform="translate(219.072347 274.299974)">74.00%</text>
+    <text style="font: 10px 'Arial', sans-serif" transform="translate(219.072347 284.876849)">±3.34%</text>
+   </g>
+   <g id="text_2">
+    <text style="font: 12px 'Arial', sans-serif; text-anchor: middle" x="134.018182" y="48.818182" transform="rotate(-0 134.018182 48.818182)">LFC</text>
+   </g>
+  </g>
+  <g id="axes_2">
+   <g id="patch_4">
+    <path d="M 438.381818 105.545455 
+C 424.130463 105.545455 410.037728 108.548294 397.024247 114.357806 
+C 384.010766 120.167318 372.366224 128.654182 362.851321 139.263977 
+C 353.336418 149.873772 346.162961 162.370321 341.799567 175.937263 
+C 337.436174 189.504205 335.979976 203.839536 337.526101 218.006774 
+L 438.381818 207 
+z
+" style="fill: #808080"/>
+   </g>
+   <g id="patch_5">
+    <path d="M 345.079151 224.780376 
+C 347.204928 244.259005 354.928834 262.710935 367.312923 277.895475 
+C 379.697012 293.080015 396.218853 304.356595 414.872131 310.355853 
+C 433.52541 316.355112 453.523226 316.823966 472.437163 311.705482 
+C 491.3511 306.586999 508.383263 296.097102 521.465365 281.509625 
+C 534.547468 266.922148 543.127634 248.852471 546.163938 229.494869 
+C 549.200243 210.137267 546.564599 190.308352 538.577062 172.416031 
+C 530.589525 154.52371 517.587055 139.322781 501.148594 128.659155 
+C 484.710134 117.995528 465.52915 112.319057 445.934868 112.319057 
+L 445.934868 213.773602 
+z
+" style="fill: #ffd700"/>
+   </g>
+   <g id="matplotlib.axis_3"/>
+   <g id="matplotlib.axis_4"/>
+   <g id="text_3">
+    <text style="font: 10px 'Arial', sans-serif" transform="translate(525.24189 272.332051)">73.27%</text>
+    <text style="font: 10px 'Arial', sans-serif" transform="translate(525.24189 282.908926)">±2.63%</text>
+   </g>
+   <g id="text_4">
+    <text style="font: 12px 'Arial', sans-serif; text-anchor: middle" x="438.381818" y="48.818182" transform="rotate(-0 438.381818 48.818182)">MFC</text>
+   </g>
+  </g>
+  <g id="text_5">
+   <text style="font: 12px 'Arial', sans-serif; text-anchor: middle" x="277.2" y="15.789375" transform="rotate(-0 277.2 15.789375)">Prev. Direction</text>
+  </g>
+ </g>
+</svg>
