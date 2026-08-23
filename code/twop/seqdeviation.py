@@ -40,6 +40,8 @@ The main dataframe (``build_penalty_df``) has one row per trial x neuron and is
 meant to be saved and reused for later analysis / significance testing.
 """
 
+from types import SimpleNamespace
+
 import numpy as np
 import pandas as pd
 
@@ -457,7 +459,7 @@ def plot_session_histograms(pen_df, save_figs=False, fig_save_prefix=None,
             ax.spines[["right", "top"]].set_visible(False)
             _save_or_show(
                 fig, save_figs, fig_save_prefix,
-                f"SeqWithinDeviation/sessions/hist_{score_col}_{br_str}_{sess}.svg")
+                f"SeqWithinDeviation/sessions/hist_{score_col}_{br_str}_{sess}.pdf")
 
 
 def _session_means(pen_df, score_col="penalty", group_col="trial_strategy"):
@@ -879,15 +881,17 @@ def plot_shuffle_level_bars(df, brain_region, calib, group_col="trial_strategy",
         clr = {STRATEGY_FAST: FAST_CLR, STRATEGY_SLOW: SLOW_CLR}
         lab = {STRATEGY_FAST: STRATEGY_FAST, STRATEGY_SLOW: STRATEGY_SLOW}
         subtitle = "Within-strategy trial-to-trial variability"
+        ref_tag = ""                 # one figure per region; no reference to disambiguate
     else:  # condition
         reference = br_df["reference"].iloc[0]
         other = STRATEGY_SLOW if reference == STRATEGY_FAST else STRATEGY_FAST
         order = [CONDITION_MATCHED, CONDITION_CROSS]
         clr = {CONDITION_MATCHED: (FAST_CLR if reference == STRATEGY_FAST else SLOW_CLR),
                CONDITION_CROSS: (SLOW_CLR if reference == STRATEGY_FAST else FAST_CLR)}
-        lab = {CONDITION_MATCHED: f"{reference} (matched)",
+        lab = {CONDITION_MATCHED: f"{reference} (within)",
                CONDITION_CROSS: f"{other} (cross)"}
         subtitle = f"Do {other} trials follow the {reference} sequence?"
+        ref_tag = f"{reference}_ref_"  # keep Fast-ref / Slow-ref figures distinct
     xpos = {g: i + 1 for i, g in enumerate(order)}
 
     fig, ax = plt.subplots(figsize=(5, 6))
@@ -898,7 +902,7 @@ def plot_shuffle_level_bars(df, brain_region, calib, group_col="trial_strategy",
         ax.bar(xpos[g], vals.mean(), yerr=vals.sem(), width=0.5, color=clr[g],
                alpha=0.85, capsize=4,
                label=(f"{lab[g]} ({len(vals)} sessions, "
-                      f"{vals.mean():.0f}%±{vals.sem():.0f})"))
+                      f"{vals.mean():.2f}%±{vals.sem():.2f})"))
 
     cols = [g for g in order if g in pivot.columns]
     for _sess, row in pivot[cols].iterrows():
@@ -908,21 +912,27 @@ def plot_shuffle_level_bars(df, brain_region, calib, group_col="trial_strategy",
             ax.plot(xs, ys, color="gray", alpha=0.3, lw=1, linestyle=":",
                     marker="o", markerfacecolor="none")
 
+    # y-axis extent follows the calibration's level range: full 0-100 (with
+    # 100 = reversed) or, when the calibration is capped at <=50%, a chance-topped
+    # 0-50 axis (random is the ceiling, no reversed region).
+    lvl_max = float(calib["level"].max() * 100)
+    capped = lvl_max < 99
     ax.axhline(50, ls="--", color="0.4", lw=1)
-    ax.text(0.55, 50, "random (chance)", va="bottom", ha="left",
-            fontsize="x-small", color="0.35")
-    ax.set_ylim(0, 100)
+    ax.text(0.55, 50, "random (chance)", va=("top" if capped else "bottom"),
+            ha="left", fontsize="x-small", color="0.35")
+    ax.set_ylim(0, (lvl_max + 3) if capped else 100)
     ax.set_xticks([xpos[g] for g in cols])
     ax.set_xticklabels([lab[g] for g in cols])
     ax.set_xlim(0.5, len(order) + 0.5)
+    rand_note = "50 = random (chance)" if capped else "50 = random,  100 = reversed"
     ax.set_ylabel("Disorder as shuffle level  (% of neuron pairs inverted "
-                  "vs reference)\n0 = reference order,  50 = random,  100 = reversed")
+                  f"vs reference)\n0 = reference order,  {rand_note}")
     ax.set_title(f"{brain_region} - {subtitle}\n(chance-centered gap-aware disorder)")
     ax.legend(fontsize="x-small")
     ax.spines[["right", "top"]].set_visible(False)
     _save_or_show(
         fig, save_figs, fig_save_prefix,
-        f"SeqWithinDeviation/shufflelevel_{group_col}_{score_col}_{brain_region}.svg")
+        f"SeqWithinDeviation/shufflelevel_{ref_tag}{group_col}_{score_col}_{brain_region}.pdf")
 
 
 def _session_shuffle_means(cross_df, score_col="norm_penalty", n_perm=1000,
@@ -995,7 +1005,7 @@ def plot_region_bars(pen_df, brain_region, save_figs=False,
     ax.legend(fontsize="x-small")
     ax.spines[["right", "top"]].set_visible(False)
     _save_or_show(fig, save_figs, fig_save_prefix,
-                  f"SeqWithinDeviation/bars_{score_col}_{brain_region}.svg")
+                  f"SeqWithinDeviation/bars_{score_col}_{brain_region}.pdf")
 
 
 CONDITION_SHUFFLE = "shuffled"   # random within-trial order (chance floor)
@@ -1070,7 +1080,7 @@ def plot_cross_bars(cross_df, brain_region, save_figs=False,
     ax.spines[["right", "top"]].set_visible(False)
     _save_or_show(
         fig, save_figs, fig_save_prefix,
-        f"SeqWithinDeviation/cross_{reference}ref_{score_col}_{brain_region}.svg")
+        f"SeqWithinDeviation/cross_{reference}ref_{score_col}_{brain_region}.pdf")
 
 
 def plot_shuffle_calibration(cross_df, brain_region, calib,
@@ -1181,9 +1191,9 @@ def plot_shuffle_calibration(cross_df, brain_region, calib,
             continue
         mx, my, n = xs.mean(), ys.mean(), len(xs)
         xsem = xs.std(ddof=1) / np.sqrt(n) if n > 1 else 0.0
-        lab = (f"{strat}: {mx:.0f}±{xsem:.0f}% shuffle ({n} sessions)" if recenter
+        lab = (f"{strat}: {mx:.2f}±{xsem:.2f}% shuffle ({n} sessions)" if recenter
                else f"{strat}: {my:.3g} disorder = "
-                    f"{mx:.0f}±{xsem:.0f}% shuffle ({n} sessions)")
+                    f"{mx:.2f}±{xsem:.2f}% shuffle ({n} sessions)")
         ax.errorbar(mx, my, xerr=xsem, fmt="o", ms=13, color=clr[strat],
                     ecolor="black", elinewidth=1.5, capsize=4, capthick=1.5,
                     markeredgecolor="black", markeredgewidth=0.8, alpha=0.5,
@@ -1195,15 +1205,22 @@ def plot_shuffle_calibration(cross_df, brain_region, calib,
             ax.scatter(sess_x[strat], sess_y[strat], s=26, color=clr[strat],
                        alpha=1.0, edgecolors="black", linewidths=0.5, zorder=3)
 
-    ax.set_xlim(-2, 102)
-    ax.set_xticks(np.arange(0, 101, 10))
+    # Axis extent follows the calibration's level range: full 0-100% (order ->
+    # random -> reversed) or, when the calibration is restricted to <=50%, a
+    # chance-capped 0-50% axis (order -> random) with no artificial sign-flip.
+    xmax = float(levels.max() * 100)
+    capped = xmax < 99
+    end_label = "Fully random (chance)" if capped else "Reversed rank deviation"
+    rand_note = "50 = random (chance)" if capped else "50 = random,  100 = reversed"
+    ax.set_xlim(-2, xmax + 2)
+    ax.set_xticks(np.arange(0, xmax + 1, 10))
     ax.set_xlabel("Rank-shuffle level (% of neuron pairs inverted vs reference)")
     other = STRATEGY_SLOW if reference == STRATEGY_FAST else STRATEGY_FAST
     if recenter:
-        ax.set_ylim(-2, 102)
-        ax.set_yticks(np.arange(0, 101, 10))
+        ax.set_ylim(-2, xmax + 2)
+        ax.set_yticks(np.arange(0, xmax + 1, 10))
         ax.set_ylabel("Disorder recentered to shuffle level (%)\n"
-                      "0 = reference order,  50 = random,  100 = reversed")
+                      f"0 = reference order,  {rand_note}")
         ax.set_title(f"{brain_region} - {reference} reference: calibration "
                      f"recentered so random = 50%\n(y remapped like the F2 bars; "
                      f"curve collapses to y = x)")
@@ -1213,11 +1230,11 @@ def plot_shuffle_calibration(cross_df, brain_region, calib,
         ax.set_title(f"{brain_region} - {reference} reference: observed disorder as "
                      f"a shuffle level\n(red = Fast, gold = Slow; x read off each "
                      f"session's calibration)")
-    # Vertical descriptor labels under the 0% and 100% ends of the axis.
+    # Vertical descriptor labels under the two ends of the shuffle axis.
     tr = ax.get_xaxis_transform()
     ax.text(0, -0.07, "No rank deviation", transform=tr, rotation=90,
             ha="center", va="top", fontsize="x-small", color="0.3")
-    ax.text(100, -0.07, "Reversed rank deviation", transform=tr, rotation=90,
+    ax.text(xmax, -0.07, end_label, transform=tr, rotation=90,
             ha="center", va="top", fontsize="x-small", color="0.3")
     ax.legend(fontsize="x-small", loc="upper left")
     ax.spines[["right", "top"]].set_visible(False)
@@ -1225,5 +1242,134 @@ def plot_shuffle_calibration(cross_df, brain_region, calib,
     suffix = "_recentered" if recenter else ""
     _save_or_show(
         fig, save_figs, fig_save_prefix,
-        f"SeqWithinDeviation/shuffle_calib_{reference}ref_{score_col}"
-        f"_{brain_region}{suffix}.svg")
+        f"SeqWithinDeviation/shuffle_calib_{reference}_ref_{score_col}"
+        f"_{brain_region}{suffix}.pdf")
+
+
+# ---------------------------------------------------------------------------
+# Shuffle replay (backend for the step-by-step RIM visualiser widget)
+#
+# These reproduce, in a *recordable* form, the very shuffle the calibration uses
+# (:func:`_rim_perms` / :func:`_mallows_phi`) so a single draw can be replayed one
+# insertion at a time. Pure/plotting-free so they stay uv-testable; the ipywidgets
+# UI lives in ``shuffle_replay.py``.
+# ---------------------------------------------------------------------------
+def rim_trace(e, phi, rng) -> "list[dict]":
+    """One Mallows(``phi``) permutation by repeated insertion, recording each step.
+
+    Mirrors a single draw of :func:`_rim_perms` (scalar ``rng.random()`` consumes the
+    same stream as its ``rng.random(1)``), but keeps the full construction trace so a
+    widget can step through it. ``e`` is the trial's reference ranks sorted ascending
+    (length ``n``); items are 0-based reference positions inserted in order.
+
+    Returns a list of ``n`` step dicts (one per inserted item, including the initial
+    item 0):
+
+    - ``j``        : number of items placed so far (1..n)
+    - ``inserted`` : the item (0-based reference position) placed this step
+    - ``z``        : inversions it added (jumps in front of ``z`` placed items)
+    - ``pos``      : 0-based slot it landed in (``j-1-z``)
+    - ``r``        : the uniform draw used (``None`` for the initial item)
+    - ``probs``    : ``P(z) ∝ phi^z`` it was drawn from (length ``j``)
+    - ``order``    : item-index list after this insertion (the partial permutation)
+    - ``cum_inv``  : cumulative inversions ``Σz`` == Kendall distance of ``order``
+    """
+    e = np.asarray(e)
+    n = len(e)
+    phi = float(phi)
+    order = [0]
+    cum = 0
+    steps: "list[dict]" = [dict(j=1, inserted=0, z=0, pos=0, r=None,
+                                probs=np.array([1.0]), order=[0], cum_inv=0)]
+    for j in range(2, n + 1):
+        w = phi ** np.arange(j)
+        probs = w / w.sum()
+        r = float(rng.random())
+        z = int(min(np.searchsorted(np.cumsum(probs), r), j - 1))
+        pos = (j - 1) - z
+        order.insert(pos, j - 1)
+        cum += z
+        steps.append(dict(j=j, inserted=j - 1, z=z, pos=pos, r=r, probs=probs,
+                          order=list(order), cum_inv=cum))
+    return steps
+
+
+def mallows_inversion_curve(n, num=200):
+    """``(phi_grid, frac)`` for plotting the expected inverted-pair fraction vs ``phi``.
+
+    ``frac = E[Kendall distance](phi, n) / max`` rises monotonically from 0 (``phi=0``,
+    identity) to 0.5 (``phi=1``, uniform random); inverting it is how :func:`_mallows_phi`
+    turns a target shuffle level into ``phi``."""
+    max_d = n * (n - 1) / 2.0
+    phi_grid = np.linspace(0.0, 1.0, num)
+    if max_d == 0:
+        return phi_grid, np.zeros(num)
+    frac = np.array([_mallows_expected_d(p, n) for p in phi_grid]) / max_d
+    return phi_grid, frac
+
+
+def _matched_ranks(cross_df, brain_region, session, reference):
+    """The reference sequence (one row per neuron) for a (region, session, reference):
+    the ``matched`` rows on the common-neuron set, unique per neuron, sorted by rank."""
+    m = cross_df[(cross_df.BrainRegion == brain_region)
+                 & (cross_df.ShortName == session)
+                 & (cross_df.reference == reference)
+                 & (cross_df.condition == CONDITION_MATCHED)]
+    return m
+
+
+def replay_sessions(cross_df, brain_region):
+    """Sessions available in ``brain_region`` (matched rows), sorted."""
+    m = cross_df[(cross_df.BrainRegion == brain_region)
+                 & (cross_df.condition == CONDITION_MATCHED)]
+    return sorted(m["ShortName"].unique())
+
+
+def replay_trials(cross_df, brain_region, session, reference):
+    """Trials for a (region, session, reference), each with its active-neuron count.
+
+    Returns a list of ``(TrialNumber, n_active)`` sorted by trial number -- the
+    per-trial active set is exactly what the calibration shuffles."""
+    m = _matched_ranks(cross_df, brain_region, session, reference)
+    if len(m) == 0:
+        return []
+    counts = m.groupby("TrialNumber")["trace_id"].nunique().sort_index()
+    return [(int(t), int(c)) for t, c in counts.items()]
+
+
+def replay_shuffle(cross_df, brain_region, session, reference, trial_number,
+                   level, permute_number):
+    """Record one shuffle of a single trial's active neurons, step by step.
+
+    Reconstructs the trial's reference ranks ``e`` (the ``matched`` rows for that
+    trial), solves ``phi`` for the requested ``level`` (fraction of neuron pairs
+    inverted, 0..0.5), draws one permutation seeded by ``permute_number`` and traces
+    its repeated-insertion construction. Everything the widget needs is returned on a
+    ``SimpleNamespace``: ``e, trace_ids, n, level, phi, max_d, target_inv, steps,
+    final_order, cum_inv, kendall_frac, gap_norm, phi_grid, phi_frac``.
+    """
+    m = _matched_ranks(cross_df, brain_region, session, reference)
+    trial = m[m.TrialNumber == trial_number].drop_duplicates("trace_id")
+    trial = trial.sort_values(["ref_rank", "trace_id"], kind="stable")
+    e = trial["ref_rank"].to_numpy()
+    trace_ids = trial["trace_id"].tolist()
+    n = len(e)
+    max_d = n * (n - 1) / 2.0
+    phi = _mallows_phi(n, float(level))
+    steps = rim_trace(e, phi, np.random.default_rng(int(permute_number)))
+    final_order = np.asarray(steps[-1]["order"]) if steps else np.arange(n)
+    cum_inv = steps[-1]["cum_inv"] if steps else 0
+    kendall_frac = (cum_inv / max_d) if max_d else 0.0
+    if n >= 2:
+        gap_norm = float(_perm_scores(np.sort(e), final_order[None, :],
+                                      ["gap_norm_penalty"])["gap_norm_penalty"][0])
+    else:
+        gap_norm = 0.0
+    phi_grid, phi_frac = mallows_inversion_curve(n)
+    return SimpleNamespace(
+        brain_region=brain_region, session=session, reference=reference,
+        trial_number=int(trial_number), permute_number=int(permute_number),
+        e=e, trace_ids=trace_ids, n=n, level=float(level), phi=phi, max_d=max_d,
+        target_inv=float(level) * max_d, steps=steps, final_order=final_order,
+        cum_inv=cum_inv, kendall_frac=kendall_frac, gap_norm=gap_norm,
+        phi_grid=phi_grid, phi_frac=phi_frac)

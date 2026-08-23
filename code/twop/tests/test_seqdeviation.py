@@ -31,7 +31,11 @@ from code.twop.seqdeviation import (  # noqa: E402
     cross_shuffle_test,
     cross_significance,
     extractIQR,
+    mallows_inversion_curve,
     reference_ranks,
+    replay_shuffle,
+    replay_trials,
+    rim_trace,
     shuffle_calibration,
     shuffle_level_summary,
     trial_penalties,
@@ -492,5 +496,58 @@ def test_shuffle_levels_spec():
     assert {12, 14, 16, 18} <= set(lv.tolist())          # 2% steps 10-20
     assert {25, 30, 55, 95} <= set(lv.tolist())          # 5% steps 20-100
     assert (np.diff(SHUFFLE_LEVELS) > 0).all()           # strictly increasing
+
+
+# --- Shuffle replay (widget backend) ----------------------------------------
+def _synth_cross_for_replay(n=6, n_trials=3, session="S0", region="MFC",
+                            reference="Fast"):
+    rows = []
+    for t in range(n_trials):
+        for k in range(n):
+            rows.append(dict(BrainRegion=region, ShortName=session,
+                             reference=reference, condition=CONDITION_MATCHED,
+                             TrialNumber=t, trace_id=f"nrn_{k}", ref_rank=k + 1,
+                             n_ref_neurons=n, gap_norm_penalty=0.0))
+    return pd.DataFrame(rows)
+
+
+def test_rim_trace_matches_rim_perms_and_records_steps():
+    n = 9
+    phi = _mallows_phi(n, 0.25)
+    e = np.arange(1, n + 1)
+    steps = rim_trace(e, phi, np.random.default_rng(7))
+    # identical to a single _rim_perms draw with a matched seed
+    assert steps[-1]["order"] == list(_rim_perms(n, phi, 1, np.random.default_rng(7))[0])
+    assert len(steps) == n
+    for k, s in enumerate(steps, start=1):
+        assert sorted(s["order"]) == list(range(k))              # valid partial perm
+        assert s["cum_inv"] == _kendall_inversions(np.array(s["order"]))[0]
+        assert s["pos"] == (s["j"] - 1) - s["z"]                 # insertion slot
+    # phi = 0 -> identity, no inversions
+    steps0 = rim_trace(e, 0.0, np.random.default_rng(1))
+    assert steps0[-1]["order"] == list(range(n))
+    assert all(s["z"] == 0 for s in steps0)
+
+
+def test_mallows_inversion_curve_endpoints_and_monotone():
+    pg, fr = mallows_inversion_curve(15)
+    assert pg[0] == 0.0 and pg[-1] == pytest.approx(1.0)
+    assert fr[0] == pytest.approx(0.0)
+    assert fr[-1] == pytest.approx(0.5, abs=1e-6)               # phi=1 -> half the pairs
+    assert (np.diff(fr) >= -1e-12).all()
+
+
+def test_replay_shuffle_end_to_end():
+    df = _synth_cross_for_replay(n=6, n_trials=3)
+    assert replay_trials(df, "MFC", "S0", "Fast") == [(0, 6), (1, 6), (2, 6)]
+    r = replay_shuffle(df, "MFC", "S0", "Fast", 1, 0.20, 0)
+    assert r.n == 6 and len(r.steps) == 6
+    assert list(np.sort(r.final_order)) == list(range(6))       # valid permutation
+    assert 0.0 <= r.gap_norm <= 1.0
+    assert r.phi == _mallows_phi(6, 0.20)                       # level -> phi
+    assert r.cum_inv == _kendall_inversions(r.final_order)[0]
+    # same permute number -> identical, reproducible draw
+    r2 = replay_shuffle(df, "MFC", "S0", "Fast", 1, 0.20, 0)
+    assert list(r2.final_order) == list(r.final_order)
 
 
