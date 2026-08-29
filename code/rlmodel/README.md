@@ -93,6 +93,13 @@ The code is organized as follows:
     Provides a command-line interface to run the model optimization. Run
   `python model_runner.py --help` for more information.
 
+- [`metrics_runner.py`](metrics_runner.py)
+
+    Command-line interface for collecting
+  [`model_analysis.ipynb`](model_analysis.ipynb)'s repeat evaluations on a
+  cluster instead of in the notebook. See
+  [Collecting the aggregate metrics on a cluster](#collecting-the-aggregate-metrics-on-a-cluster).
+
 - [`model/`](model/)
 
   Contains the implementation of the model logic and functions:
@@ -331,6 +338,79 @@ Results from model fitting are stored in the
   An expanded correlation plot for each model showing each subject's
   individual metrics. Each subject is assigned a distinct color across the same
   model and different models.
+
+
+## Collecting the aggregate metrics on a cluster
+
+The bar figures above are averaged over `NUM_EVALUATIONS` repeat simulations per
+(model × subject) — the DDM forward pass is stochastic, so iteration *i* is
+seed *i*. One evaluation costs ~2.5–12 s (mostly the psychometric fit's 20
+Nelder-Mead multi-starts), so at `NUM_EVALUATIONS = 100` collecting all four
+figure presets in the notebook takes many hours.
+
+[`metrics_shards.py`](model/metrics_shards.py) runs the same work as thousands
+of independent single-CPU Slurm tasks — one per (model, subject, iteration)
+combination — each writing **its own** result file, so nothing is shared and
+nothing can race. A merge step then writes the very pickle
+[`model_analysis.ipynb`](model_analysis.ipynb) already reads, so the notebook
+just cache-hits.
+
+```bash
+# from the project root, in the conda env (the fit pickles need it)
+python code/rlmodel/slurm/launch_metrics.py --num-evaluations 100 \
+    --max-concurrent 200
+```
+
+That does everything: builds a work dir per figure, submits the array(s), and
+chains a dependent merge job. To run one figure, or to see the `sbatch` commands
+first:
+
+```bash
+python code/rlmodel/slurm/launch_metrics.py --figure fig1l --dry-run
+```
+
+The three phases are also usable on their own via
+[`metrics_runner.py`](metrics_runner.py) — including a plain local run, no
+Slurm involved:
+
+```bash
+python code/rlmodel/metrics_runner.py --mode prepare --figure fig1l \
+    --num-evaluations 100
+python code/rlmodel/metrics_runner.py --mode run  --work-dir <dir> --all --num-cpus 8
+python code/rlmodel/metrics_runner.py --mode merge --work-dir <dir>
+```
+
+Notes:
+
+- **`prepare` is what makes a task cheap.** It resolves the fits and slices the
+  behavior dataframe once, so a task loads two small files instead of
+  re-preparing the behavior frame and unpickling a 29–339 MB fit file for a few
+  floats.
+- **Results are reproducible.** Each task seeds the global RNG from its own
+  (model, subject, iteration) coordinates, so two full runs of the pipeline
+  produce identical frames — which a serial notebook collection does *not*,
+  because the psychometric multi-starts draw from an unseeded global.
+- **Resubmitting is cheap.** A finished combination already has its file and is
+  skipped, so re-running the whole array only redoes what is missing. `merge`
+  prints a ready-to-paste `--array=` spec for the combinations that failed;
+  feed it back with `--skip-prepare --array <spec>`.
+- **`conda: command not found` in a job log** means the compute node can't see
+  conda — `conda` is a shell *function* from an interactive rc file and doesn't
+  exist in a batch job. The launcher detects the conda root from your shell and
+  exports it, and [`activate_conda.sh`](slurm/activate_conda.sh) falls back to
+  `CONDA_EXE` and the usual install dirs. If it still can't find it, pass
+  `--conda-base $HOME/miniconda3`.
+- **If `sbatch` starts rejecting submissions**, the cluster caps how many jobs
+  you may have *queued* (`sacctmgr show assoc user=$USER
+  format=user,maxjobs,maxsubmitjobs`). `--max-concurrent` won't help — it only
+  throttles what *runs*. Use `--items-per-task K` instead: each array task then
+  walks `K` consecutive combinations, so 15,900 of them at `K=20` is 795 jobs
+  rather than 15,900. Same total work, `K`× longer per job, so raise the
+  `--time` in [`metrics.sbatch`](slurm/metrics.sbatch) to match.
+- **After a cluster run**, copy `data/RLModel/metrics/*.pkl` back. Cells 18 /
+  26 / 28 / 30 then print `Loaded …metrics_<name>.pkl` and simulate nothing.
+  The `simcache_<name>.pkl` sidecar restores the seed-0 per-subject frames, so
+  the per-subject fit panels work off a cache hit too.
 
 # Schematic-like figure (Fig. 5f, middle)
 
