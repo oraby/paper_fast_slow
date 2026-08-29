@@ -20,6 +20,8 @@ from scipy import stats
 
 import matplotlib.pyplot as plt
 
+from .aggregate import mle_loss_summary
+
 
 BAR_WIDTH = 0.6
 # Blank x-slots between consecutive model groups. A group occupies
@@ -29,6 +31,13 @@ BAR_WIDTH = 0.6
 _INTER_GROUP_GAP = 1
 _LABEL_Y = 1.3          # group label height (cell 24)
 _TITLE_PAD = 28         # points; clears the group labels drawn at _LABEL_Y
+_LABEL_FONTSIZE = 12
+# The MLE-loss line sits at _LABEL_Y and the group label is lifted one line
+# above it, so the loss reads as a subtitle under the model name. Both stay
+# outside the axes (_LABEL_Y is the ylim ceiling), where there is room; below
+# the label is bar territory.
+_MLE_LOSS_FONTSIZE = 9
+_MLE_LOSS_LINE_PTS = 12   # points of lift; ~1.3 lines of _MLE_LOSS_FONTSIZE
 
 # Short x-tick label per metric, and whether it is an R² (vs. a correlation).
 _METRIC_TICK = {"R2_Psych": "Psych", "RewardRateCorr": "RR",
@@ -65,6 +74,27 @@ def _subject_stats(metrics_df, spec, metric):
     return grouped.mean(), grouped.std()
 
 
+def _fmt_loss(value):
+    """Loss to a readable width at either scale.
+
+    ``NegLogLikPerTrial`` is order 1 and wants decimals; a raw ``NegLogLik`` is
+    order 1e3-1e5 and wants a thousands separator instead.
+    """
+    return f"{value:,.1f}" if abs(value) >= 100 else f"{value:.3f}"
+
+
+def _mle_loss_text(summary_row, label):
+    """``"MLE/trial: 0.812 ±0.017"`` for one model's summary row.
+
+    The SEM is dropped rather than printed as ``nan`` when a single subject was
+    scored -- there is no across-subject spread to report.
+    """
+    mean, sem = float(summary_row.Mean), float(summary_row.SEM)
+    if not np.isfinite(sem):
+        return f"{label}: {_fmt_loss(mean)}"
+    return f"{label}: {_fmt_loss(mean)} ±{_fmt_loss(sem)}"
+
+
 def subsample_evaluations(metrics_df, num_evaluations):
     """Keep the first ``num_evaluations`` iterations (``None`` keeps all).
 
@@ -89,7 +119,9 @@ def subsample_evaluations(metrics_df, num_evaluations):
 
 def plot_aggregates(metrics_df, specs, *,
                     metric_keys=("R2_Psych", "RewardRateCorr"),
-                    num_evaluations=None,
+                    num_evaluations=None, mle_losses=None,
+                    mle_loss_metric="NegLogLikPerTrial",
+                    mle_loss_label="MLE/trial",
                     ax=None, figsize=(12, 8), title=None):
     """Grouped bars: one group per ``EvalSpec``, one bar per metric.
 
@@ -105,10 +137,24 @@ def plot_aggregates(metrics_df, specs, *,
 
     ``num_evaluations`` plots only the first *n* of the collected iterations
     (see :func:`subsample_evaluations`); ``None`` uses every one present.
+
+    ``mle_losses`` is ``aggregate.collect_mle_losses``' frame. When given, each
+    model's title gains a smaller second line with the across-subject mean ±
+    SEM of ``mle_loss_metric`` — by default the per-trial negative
+    log-likelihood, the length-normalized one that is comparable between
+    subjects. The numbers are :func:`aggregate.mle_loss_summary`'s, so the
+    annotation and a printed summary table always agree. A model with no scored
+    subject in the frame keeps its title and is reported, rather than taking
+    the figure down with it.
     """
     metrics_df = subsample_evaluations(metrics_df, num_evaluations)
     num_evals = int(metrics_df.Iteration.nunique())
     num_subjects = int(metrics_df.Name.nunique())
+    loss_summary = (None if mle_losses is None
+                    else mle_loss_summary(mle_losses, metric=mle_loss_metric))
+    # Every group label is lifted by the same amount whether or not its own
+    # loss line came out, so the titles stay on one baseline across the figure.
+    label_dy = 3 if loss_summary is None else 3 + _MLE_LOSS_LINE_PTS
     if ax is None:
         _fig, ax = plt.subplots(figsize=figsize)
 
@@ -156,11 +202,23 @@ def plot_aggregates(metrics_df, specs, *,
             x_ticks.append(x)
             x_tick_labels.append(_tick_label(metric))
 
-        # Group label, centred over the group's bars.
-        ax.annotate(spec.label,
-                    xy=(global_offset_x + (len(metric_keys) - 1) / 2, _LABEL_Y),
-                    xytext=(0, 3), textcoords="offset points", ha="center",
-                    va="bottom", fontsize=12)
+        # Group label, centred over the group's bars, with the MLE-loss line
+        # as a smaller subtitle beneath it.
+        group_x = global_offset_x + (len(metric_keys) - 1) / 2
+        if loss_summary is not None:
+            if spec.label in loss_summary.index:
+                ax.annotate(_mle_loss_text(loss_summary.loc[spec.label],
+                                           mle_loss_label),
+                            xy=(group_x, _LABEL_Y), xytext=(0, 3),
+                            textcoords="offset points", ha="center",
+                            va="bottom", fontsize=_MLE_LOSS_FONTSIZE,
+                            color="dimgray")
+            else:
+                print(f"No scored {mle_loss_metric} for spec {spec.label!r} — "
+                      f"drawing its title without a loss line.")
+        ax.annotate(spec.label, xy=(group_x, _LABEL_Y),
+                    xytext=(0, label_dy), textcoords="offset points",
+                    ha="center", va="bottom", fontsize=_LABEL_FONTSIZE)
         global_offset_x += len(metric_keys) + _INTER_GROUP_GAP + spec.gap_after
 
     ax.axhline(0, c="black", ls="--")
@@ -180,5 +238,5 @@ def plot_aggregates(metrics_df, specs, *,
             title += " · dot: one subject (single evaluation)"
     # The group labels sit at the axes top (_LABEL_Y == the ylim ceiling), so
     # the title needs clearance or it lands on top of them.
-    ax.set_title(title, fontsize=10, pad=_TITLE_PAD)
+    ax.set_title(title, fontsize=10, pad=_TITLE_PAD + label_dy - 3)
     return ax

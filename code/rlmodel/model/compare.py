@@ -241,10 +241,22 @@ def _routed_kwargs(params, biasFn, driftFn, noiseFn):
 # --------------------------------------------------------------------------
 # The two forward passes (module-level so tests can monkeypatch them)
 # --------------------------------------------------------------------------
-def _compute_mle(subject, fid, payload, df_behavior, include_Q,
-                 include_RewardRate, terminal_c, lapse_override):
-    """Re-evaluate the column's params under pure MLE. Returns
-    ``(mle_df|None, neg_loglik|None, lapse|None, error|None)``."""
+def mle_eval_result(subject, fid, payload, df_behavior, include_Q,
+                    include_RewardRate, terminal_c, lapse_override):
+    """Re-evaluate the column's fitted params under the PURE-MLE objective.
+
+    Returns ``(MLEEvalResult|None, lapse|None, error|None)``. The result
+    carries ``.neg_loglik`` — the pure negative log-likelihood, which is
+    comparable across columns *however each was actually fit* — alongside
+    ``.n_trials_loss`` (the valid, finite-loglik trials that entered that sum,
+    i.e. the denominator for a per-trial loss) and ``.mle_df``.
+
+    This is the one place a saved fit becomes a likelihood. Both
+    :func:`_compute_mle` (the grid header + loss rows) and
+    ``aggregate.collect_mle_losses`` (the bar figures' per-trial loss
+    annotation) go through it, so they cannot drift apart on how the config is
+    built, which lapse applies, or how a failure degrades.
+    """
     try:
         params = fitted_params_from_result(payload)
         config = build_mle_config(
@@ -256,26 +268,38 @@ def _compute_mle(subject, fid, payload, df_behavior, include_Q,
         lapse = params.get("LAPSE_RATE") if fid.fit_mode == "mle" else None
         if lapse_override is not None and fid.fit_mode == "mle":
             lapse = float(lapse_override)
-        return res.mle_df, float(res.neg_loglik), lapse, None
+        return res, lapse, None
     except Exception as exc:  # noqa: BLE001 — degrade one column, not the grid
-        return None, None, None, f"{type(exc).__name__}: {exc}"
+        return None, None, f"{type(exc).__name__}: {exc}"
 
 
-def _compute_sim(subject, fid, payload, df_behavior, include_Q,
-                 include_RewardRate, seed=0):
-    """Run the Chi²-style forward simulation for the column's params (no
-    plotting). Returns ``(sim_df|None, bound, biasFn_kwargs, error|None)``.
+def _compute_mle(subject, fid, payload, df_behavior, include_Q,
+                 include_RewardRate, terminal_c, lapse_override):
+    """Re-evaluate the column's params under pure MLE. Returns
+    ``(mle_df|None, neg_loglik|None, lapse|None, error|None)``."""
+    res, lapse, error = mle_eval_result(
+        subject, fid, payload, df_behavior, include_Q, include_RewardRate,
+        terminal_c, lapse_override)
+    if res is None:
+        return None, None, None, error
+    return res.mle_df, float(res.neg_loglik), lapse, None
 
-    ``seed`` selects the simulation's RNG trajectory (see
-    ``logic.makeOneRun``). It defaults to 0 — the historical single
-    trajectory — and is varied per iteration by ``aggregate.collect_metrics``
-    when repeat-evaluating a subject.
+
+def _compute_sim_from_params(subject, fid, params, df_behavior, include_Q,
+                             include_RewardRate, seed=0):
+    """:func:`_compute_sim` given the already-extracted fitted params.
+
+    Split out so a caller that only has the params can run the simulation
+    without the fit ``payload``. That matters for the sharded cluster
+    collection (``model/metrics_shards.py``): a payload lives inside a
+    29–339 MB pickle, but ``_compute_sim`` reads exactly one thing out of it
+    (``fitted_params_from_result``), so the per-task manifest ships the params
+    dict — kilobytes — instead.
     """
     try:
         biasFn = BIAS_FN_DICT[fid.bias]
         driftFn = DRIFT_FN_DICT[fid.drift]
         noiseFn = NOISE_FN_DICT[fid.noise]
-        params = fitted_params_from_result(payload)
         routed = _routed_kwargs(params, biasFn, driftFn, noiseFn)
         subject_df = df_behavior[df_behavior.Name == subject].copy()
         _, sim_df = runAndPlot(
@@ -295,6 +319,25 @@ def _compute_sim(subject, fid, payload, df_behavior, include_Q,
         return sim_df, routed["top_kwargs"]["BOUND"], routed["biasFn_kwargs"], None
     except Exception as exc:  # noqa: BLE001 — degrade one column, not the grid
         return None, 1.0, {}, f"{type(exc).__name__}: {exc}"
+
+
+def _compute_sim(subject, fid, payload, df_behavior, include_Q,
+                 include_RewardRate, seed=0):
+    """Run the Chi²-style forward simulation for the column's params (no
+    plotting). Returns ``(sim_df|None, bound, biasFn_kwargs, error|None)``.
+
+    ``seed`` selects the simulation's RNG trajectory (see
+    ``logic.makeOneRun``). It defaults to 0 — the historical single
+    trajectory — and is varied per iteration by ``aggregate.collect_metrics``
+    when repeat-evaluating a subject.
+    """
+    try:
+        params = fitted_params_from_result(payload)
+    except Exception as exc:  # noqa: BLE001 — degrade one column, not the grid
+        return None, 1.0, {}, f"{type(exc).__name__}: {exc}"
+    return _compute_sim_from_params(
+        subject, fid, params, df_behavior, include_Q=include_Q,
+        include_RewardRate=include_RewardRate, seed=seed)
 
 
 # --------------------------------------------------------------------------

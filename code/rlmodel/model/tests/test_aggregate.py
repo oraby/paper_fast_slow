@@ -20,13 +20,18 @@ from matplotlib.container import BarContainer
 import numpy as np
 import pandas as pd
 import pytest
+from scipy import stats
 
 from .. import aggregate
 from ..aggregate import (EvalSpec, collect_metrics, load_or_collect_metrics,
+                         collect_mle_losses, load_or_collect_mle_losses,
+                         mle_loss_summary, select_subjects,
+                         select_sim_cache_subjects,
                          resolve_spec, rows_for_spec_from, model_key,
                          safe_filename, N_PSYCH_FITS,
                          FIG1L_SPECS, SCALE_BOUND_SPECS, MLE_WEIGHT_SPECS,
                          CHI2_ONLY_RRQ_SPEC)
+from ..initvals import MLE_TERMINAL_C
 from ..aggregate_plot import (plot_aggregates, subsample_evaluations,
                               BAR_WIDTH)
 from ..compare import ColumnFit, ModelEntry
@@ -693,13 +698,581 @@ def test_cache_unreadable_file_recollects_rather_than_raising(cache_env):
     assert len(cache_env.calls) == 2
 
 
-def test_sim_cache_filled_on_collect_and_empty_on_cache_hit(cache_env):
-    """A cache hit runs no simulation, so the per-subject figure cells have
-    nothing to draw — they must check for this."""
+def test_sim_cache_filled_on_collect_and_restored_from_the_sidecar(cache_env):
+    """A cache hit runs no simulation, so the per-subject frames can only come
+    back off disk — that is what the sidecar is for."""
     fresh = {}
     _collect(cache_env, num_evaluations=1, sim_cache=fresh)
     assert sorted(fresh["RR+Q"]) == ["S1", "S2"]
+    assert aggregate.sim_cache_path("t", cache_env.cache_dir).exists()
+
+    cache_env.calls.clear()
+    on_hit = {}
+    _collect(cache_env, num_evaluations=1, sim_cache=on_hit)
+    assert cache_env.calls == [], "the cache hit re-simulated"
+    assert sorted(on_hit["RR+Q"]) == ["S1", "S2"]
+
+
+def test_sim_cache_stays_empty_without_a_sidecar(cache_env):
+    """Caches collected before the sidecar existed still hit — the figure cells
+    that want the frames must keep tolerating an empty sim_cache."""
+    _collect(cache_env, num_evaluations=1, sim_cache={})
+    aggregate.sim_cache_path("t", cache_env.cache_dir).unlink()
 
     on_hit = {}
     _collect(cache_env, num_evaluations=1, sim_cache=on_hit)
     assert on_hit == {}
+
+
+def test_sim_cache_file_false_writes_no_sidecar(cache_env):
+    _collect(cache_env, num_evaluations=1, sim_cache={}, sim_cache_file=False)
+    assert not aggregate.sim_cache_path("t", cache_env.cache_dir).exists()
+
+# --------------------------------------------------------------------------
+# Pure-MLE loss per subject
+# --------------------------------------------------------------------------
+def _eval_result(neg_loglik, n_trials_loss, n_trials_total=None):
+    return types.SimpleNamespace(
+        neg_loglik=neg_loglik, n_trials_loss=n_trials_loss,
+        n_trials_total=n_trials_total or n_trials_loss, mle_df=None)
+
+
+@pytest.fixture
+def stub_mle(monkeypatch):
+    """Replace the likelihood pass; per-subject loss and trial count differ.
+
+    S1 gets 1000 trials at 0.5 nats each and S2 gets 2000 at 0.7, so the raw
+    sums (500 vs 1400) rank the subjects the opposite way from the per-trial
+    values — which is exactly the confound normalization removes.
+    """
+    losses = {"S1": (500.0, 1_000), "S2": (1_400.0, 2_000)}
+    calls = []
+
+    def fake_mle_eval_result(subject, fid, payload, df_behavior, include_Q,
+                             include_RewardRate, terminal_c, lapse_override):
+        calls.append({"subject": subject, "terminal_c": terminal_c,
+                      "lapse_override": lapse_override})
+        neg_loglik, n_loss = losses[subject]
+        return _eval_result(neg_loglik, n_loss), None, None
+
+    monkeypatch.setattr(aggregate.compare, "mle_eval_result",
+                        fake_mle_eval_result)
+    return calls
+
+
+def test_mle_losses_report_raw_and_per_trial_values(stub_mle):
+    df = collect_mle_losses(_fits(), [_SPEC], None, verbose=False)
+    assert list(df.Name) == ["S1", "S2"]
+    assert list(df.NegLogLik) == [500.0, 1_400.0]
+    assert list(df.NTrialsLoss) == [1_000, 2_000]
+    assert list(df.NegLogLikPerTrial) == [0.5, 0.7]
+
+
+def test_mle_losses_key_columns_lead_and_identify_the_fit(stub_mle):
+    df = collect_mle_losses(_fits(), [_SPEC], None, verbose=False)
+    n_lead = len(aggregate.MLE_LOSS_LEAD_COLUMNS)
+    assert list(df.columns[:n_lead]) == aggregate.MLE_LOSS_LEAD_COLUMNS
+    assert set(df.SpecLabel) == {_SPEC.label}
+    assert set(df.ModelKey) == {_SPEC.model_key}
+    assert set(df.ColumnLabel) == {_SPEC.column_label}
+
+
+def test_mle_losses_carry_the_fits_own_objective_for_comparison(stub_mle):
+    """``OptimRes.fun`` is the objective THAT fit minimized — a pure negative
+    log-likelihood only for an MLE column. Keeping it beside the re-scored
+    value is what lets a reader check the two agree where they should."""
+    df = collect_mle_losses(_fits(), [_SPEC], None, verbose=False)
+    assert list(df.FitObjective) == [100.0, 100.0]  # _payload's default fun
+
+
+def test_mle_losses_one_row_per_subject_not_per_seed(stub_mle):
+    """The likelihood is deterministic given the params, so unlike
+    collect_metrics there is no trajectory to repeat."""
+    df = collect_mle_losses(_fits(), [_SPEC], None, verbose=False)
+    assert len(df) == 2
+    assert "Iteration" not in df.columns and "Seed" not in df.columns
+
+
+def test_mle_losses_forward_scoring_settings(stub_mle):
+    collect_mle_losses(_fits(), [_SPEC], None, mle_terminal_c=0.25,
+                       lapse_override=0.05, verbose=False)
+    assert all(c["terminal_c"] == 0.25 for c in stub_mle)
+    assert all(c["lapse_override"] == 0.05 for c in stub_mle)
+
+
+def test_mle_losses_default_terminal_c_is_the_fitting_default(stub_mle):
+    """Scoring under a different C than the fits were run under would compare
+    the params against an objective nobody minimized."""
+    collect_mle_losses(_fits(), [_SPEC], None, verbose=False)
+    assert all(c["terminal_c"] == MLE_TERMINAL_C.Default for c in stub_mle)
+
+
+def test_mle_losses_degrade_one_subject_on_failure(monkeypatch, capsys):
+    def half_failing(subject, fid, payload, df_behavior, include_Q,
+                     include_RewardRate, terminal_c, lapse_override):
+        if subject == "S2":
+            return None, None, "ValueError: boom"
+        return _eval_result(500.0, 1_000), None, None
+
+    monkeypatch.setattr(aggregate.compare, "mle_eval_result", half_failing)
+    df = collect_mle_losses(_fits(), [_SPEC], None, verbose=False)
+    good = df[df.Name == "S1"].iloc[0]
+    bad = df[df.Name == "S2"].iloc[0]
+    assert good.NegLogLikPerTrial == 0.5 and good.Error is None
+    assert np.isnan(bad.NegLogLik) and np.isnan(bad.NegLogLikPerTrial)
+    assert pd.isna(bad.NTrialsLoss)
+    assert "boom" in bad.Error
+    assert "boom" in capsys.readouterr().out
+
+
+def test_mle_losses_zero_valid_trials_is_nan_not_a_zero_division(monkeypatch):
+    monkeypatch.setattr(
+        aggregate.compare, "mle_eval_result",
+        lambda *a, **k: (_eval_result(0.0, 0), None, None))
+    df = collect_mle_losses(_fits(), [_SPEC], None, verbose=False)
+    assert df.NegLogLikPerTrial.isna().all()
+
+
+def test_mle_losses_missing_include_flags_raises(monkeypatch, stub_mle):
+    monkeypatch.setattr(aggregate.compare, "_include_flags",
+                        lambda payload: (None, None))
+    with pytest.raises(KeyError, match="include_Q"):
+        collect_mle_losses(_fits(), [_SPEC], None, verbose=False)
+
+
+def test_mle_loss_summary_is_mean_and_sem_over_subjects(stub_mle):
+    df = collect_mle_losses(_fits(), [_SPEC], None, verbose=False)
+    row = mle_loss_summary(df).loc[_SPEC.label]
+    assert row.Mean == pytest.approx(0.6)
+    assert row.SEM == pytest.approx(stats.sem([0.5, 0.7]))
+    assert row.NumSubjects == 2
+
+
+def test_mle_loss_summary_can_report_the_unnormalized_loss(stub_mle):
+    df = collect_mle_losses(_fits(), [_SPEC], None, verbose=False)
+    row = mle_loss_summary(df, metric="NegLogLik").loc[_SPEC.label]
+    assert row.Mean == pytest.approx(950.0)
+
+
+def test_mle_loss_summary_excludes_failed_subjects_from_n(stub_mle):
+    df = collect_mle_losses(_fits(), [_SPEC], None, verbose=False)
+    df.loc[df.Name == "S2", "NegLogLikPerTrial"] = np.nan
+    row = mle_loss_summary(df).loc[_SPEC.label]
+    assert row.NumSubjects == 1
+    assert row.Mean == pytest.approx(0.5)
+    assert np.isnan(row.SEM)
+
+
+# --------------------------------------------------------------------------
+# MLE-loss disk cache
+# --------------------------------------------------------------------------
+@pytest.fixture
+def mle_cache_env(tmp_path, stub_mle):
+    result_dir = tmp_path / "fits"
+    result_dir.mkdir()
+    fname = ("chisq_NoiseGain-RewardRate_biasQ-Val (Offset)_"
+             "Normal(0, 1)_4.8s_dt0.005.pkl")
+    (result_dir / fname).write_bytes(b"x")
+    return types.SimpleNamespace(
+        calls=stub_mle, cache_dir=tmp_path / "cache", result_dir=result_dir,
+        fit_fp=result_dir / fname,
+        kwargs=dict(cache_name="t", cache_dir=tmp_path / "cache",
+                    result_dir=result_dir, df_behavior=None, verbose=False))
+
+
+def _score(env, **over):
+    kw = {**env.kwargs, **over}
+    return load_or_collect_mle_losses(_fits(), [_SPEC], **kw)
+
+
+def test_mle_cache_cold_scores_then_warm_does_not(mle_cache_env):
+    cold = _score(mle_cache_env)
+    assert len(mle_cache_env.calls) == 2
+    mle_cache_env.calls.clear()
+    warm = _score(mle_cache_env)
+    assert mle_cache_env.calls == []
+    pd.testing.assert_frame_equal(cold, warm)
+
+
+def test_mle_cache_force_recompute_rescores(mle_cache_env):
+    _score(mle_cache_env)
+    mle_cache_env.calls.clear()
+    _score(mle_cache_env, force_recompute=True)
+    assert len(mle_cache_env.calls) == 2
+
+
+def test_mle_cache_rescores_when_scoring_settings_change(mle_cache_env):
+    _score(mle_cache_env)
+    mle_cache_env.calls.clear()
+    _score(mle_cache_env, mle_terminal_c=0.25)
+    assert len(mle_cache_env.calls) == 2, "a different C reused the old scores"
+    mle_cache_env.calls.clear()
+    _score(mle_cache_env, mle_terminal_c=0.25, lapse_override=0.02)
+    assert len(mle_cache_env.calls) == 2, "a different lapse reused old scores"
+
+
+def test_mle_cache_rescores_when_specs_change_under_same_name(mle_cache_env):
+    _score(mle_cache_env)
+    other = EvalSpec("Other label", _SPEC.model_key, _SPEC.column_label, "red")
+    mle_cache_env.calls.clear()
+    load_or_collect_mle_losses(_fits(), [other], **mle_cache_env.kwargs)
+    assert len(mle_cache_env.calls) == 2
+
+
+def test_mle_cache_rescores_when_a_fit_file_is_newer(mle_cache_env):
+    _score(mle_cache_env)
+    cache_fp = aggregate.mle_loss_cache_path("t", mle_cache_env.cache_dir)
+    newer = cache_fp.stat().st_mtime + 60
+    os.utime(mle_cache_env.fit_fp, (newer, newer))
+    mle_cache_env.calls.clear()
+    _score(mle_cache_env)
+    assert len(mle_cache_env.calls) == 2
+
+
+def test_mle_cache_unreadable_file_rescores_rather_than_raising(mle_cache_env):
+    _score(mle_cache_env)
+    aggregate.mle_loss_cache_path(
+        "t", mle_cache_env.cache_dir).write_bytes(b"not a pickle")
+    mle_cache_env.calls.clear()
+    _score(mle_cache_env)
+    assert len(mle_cache_env.calls) == 2
+
+
+def test_mle_cache_is_separate_from_the_metrics_cache(mle_cache_env):
+    """Same cache_name, two derived products — one must not overwrite the
+    other."""
+    _score(mle_cache_env)
+    loss_fp = aggregate.mle_loss_cache_path("t", mle_cache_env.cache_dir)
+    assert loss_fp != mle_cache_env.cache_dir / "metrics_t.pkl"
+    assert loss_fp.exists()
+
+
+# --------------------------------------------------------------------------
+# The MLE-loss line under each model title
+# --------------------------------------------------------------------------
+def _loss_frame(specs, per_trial):
+    """One row per (spec, subject) with the given per-trial losses."""
+    rows = []
+    for spec in specs:
+        for subject, value in per_trial.items():
+            rows.append({"SpecLabel": spec.label, "ModelKey": spec.model_key,
+                         "ColumnLabel": spec.column_label, "Name": subject,
+                         "NegLogLik": value * 1_000, "NTrialsLoss": 1_000,
+                         "NTrialsTotal": 1_000, "NegLogLikPerTrial": value,
+                         "FitObjective": np.nan, "Filename": "f.pkl",
+                         "Error": None})
+    return aggregate.mle_loss_frame_from_rows(rows)
+
+
+def _annotation_texts(ax):
+    return [c.get_text() for c in ax.texts]
+
+
+def test_loss_line_annotates_mean_and_sem_under_the_title():
+    specs = [_SPEC]
+    ax = plot_aggregates(_metrics_frame(num_evals=1), specs,
+                         mle_losses=_loss_frame(specs, {"S1": 0.5, "S2": 0.7}))
+    expected = f"MLE/trial: 0.600 ±{stats.sem([0.5, 0.7]):.3f}"
+    assert expected in _annotation_texts(ax)
+    plt.close(ax.figure)
+
+
+def test_loss_line_sits_below_the_title_at_the_same_x():
+    specs = [_SPEC]
+    ax = plot_aggregates(_metrics_frame(num_evals=1), specs,
+                         mle_losses=_loss_frame(specs, {"S1": 0.5, "S2": 0.7}))
+    title = next(t for t in ax.texts if t.get_text() == _SPEC.label)
+    loss = next(t for t in ax.texts if t.get_text().startswith("MLE/trial"))
+    assert title.xy == loss.xy, "the lines are not centred on the same group"
+    assert title.get_position()[1] > loss.get_position()[1], \
+        "the loss line is not below the title"
+    assert loss.get_fontsize() < title.get_fontsize()
+    plt.close(ax.figure)
+
+
+def test_no_loss_frame_leaves_the_original_title_placement():
+    ax = plot_aggregates(_metrics_frame(num_evals=1), [_SPEC])
+    plain = next(t for t in ax.texts if t.get_text() == _SPEC.label)
+    assert plain.get_position() == (0, 3)
+    assert not any(t.get_text().startswith("MLE/trial") for t in ax.texts)
+    plt.close(ax.figure)
+
+
+def test_loss_line_can_show_the_unnormalized_loss():
+    specs = [_SPEC]
+    ax = plot_aggregates(
+        _metrics_frame(num_evals=1), specs, mle_losses=_loss_frame(specs, {"S1": 0.5}),
+        mle_loss_metric="NegLogLik", mle_loss_label="MLE")
+    assert "MLE: 500.0" in _annotation_texts(ax)
+    plt.close(ax.figure)
+
+
+def test_single_subject_loss_line_omits_the_undefined_sem():
+    specs = [_SPEC]
+    ax = plot_aggregates(_metrics_frame(num_evals=1), specs,
+                         mle_losses=_loss_frame(specs, {"S1": 0.5}))
+    assert "MLE/trial: 0.500" in _annotation_texts(ax)
+    assert not any("nan" in t for t in _annotation_texts(ax))
+    plt.close(ax.figure)
+
+
+def test_spec_missing_from_the_loss_frame_still_gets_its_title(capsys):
+    """A model whose likelihood could not be scored must not take the whole
+    figure down — the bars are the paper's result, the loss is an annotation."""
+    other = EvalSpec("Other", _SPEC.model_key, _SPEC.column_label, "red")
+    metrics = pd.concat([_metrics_frame(num_evals=1),
+                         _metrics_frame(num_evals=1).assign(SpecLabel="Other")],
+                        ignore_index=True)
+    ax = plot_aggregates(metrics, [_SPEC, other],
+                         mle_losses=_loss_frame([_SPEC], {"S1": 0.5}))
+    texts = _annotation_texts(ax)
+    assert "Other" in texts and _SPEC.label in texts
+    assert sum(t.startswith("MLE/trial") for t in texts) == 1
+    assert "Other" in capsys.readouterr().out
+    plt.close(ax.figure)
+
+
+def test_titles_share_one_baseline_even_when_a_loss_line_is_missing():
+    other = EvalSpec("Other", _SPEC.model_key, _SPEC.column_label, "red")
+    metrics = pd.concat([_metrics_frame(num_evals=1),
+                         _metrics_frame(num_evals=1).assign(SpecLabel="Other")],
+                        ignore_index=True)
+    ax = plot_aggregates(metrics, [_SPEC, other],
+                         mle_losses=_loss_frame([_SPEC], {"S1": 0.5}))
+    ys = {t.get_position()[1] for t in ax.texts
+          if t.get_text() in (_SPEC.label, "Other")}
+    assert len(ys) == 1
+    plt.close(ax.figure)
+
+
+# --------------------------------------------------------------------------
+# Subject selection
+# --------------------------------------------------------------------------
+def _named(*subjects):
+    return pd.DataFrame({"Name": list(subjects), "v": range(len(subjects))})
+
+
+def test_select_subjects_drops_the_named_ones():
+    out = select_subjects(_named("S1", "S2", "S3"), exclude=("S2",),
+                          verbose=False)
+    assert list(out.Name) == ["S1", "S3"]
+
+
+def test_select_subjects_reports_a_name_that_is_not_there(capsys):
+    """The realistic failure is a typo'd id (GP-23 for GP4-23) silently
+    filtering nothing, so an absent name must be said out loud."""
+    out = select_subjects(_named("GP4-23", "S1"), exclude=("GP-23",))
+    assert list(out.Name) == ["GP4-23", "S1"]
+    printed = capsys.readouterr().out
+    assert "GP-23" in printed and "nothing to exclude" in printed
+
+
+def test_select_subjects_keep_restricts_to_the_given_set():
+    out = select_subjects(_named("S1", "S2", "S3"), keep={"S1", "S3"},
+                          verbose=False)
+    assert list(out.Name) == ["S1", "S3"]
+
+
+def test_select_subjects_applies_exclude_before_keep():
+    out = select_subjects(_named("S1", "S2", "S3"), exclude=("S1",),
+                          keep={"S1", "S2"}, verbose=False)
+    assert list(out.Name) == ["S2"]
+
+
+def test_select_subjects_no_filter_is_a_noop():
+    df = _named("S1", "S2")
+    pd.testing.assert_frame_equal(select_subjects(df, verbose=False), df)
+
+
+def test_select_subjects_preserves_the_original_index():
+    """It is applied to df_behavior too, where a silent reindex would be a
+    behavior change for everything downstream."""
+    out = select_subjects(_named("S1", "S2", "S3"), exclude=("S1",),
+                          verbose=False)
+    assert list(out.index) == [1, 2]
+
+
+def test_imaging_only_subjects_are_the_df_2p_missing_pair():
+    """These two are fitted from data/RLModel/df_2p_missing.pkl for
+    model_neural_correlate.ipynb only; model_analysis.ipynb must not show
+    them."""
+    assert aggregate.IMAGING_ONLY_SUBJECTS == ("GP4-23", "GP4-28")
+
+
+def test_select_sim_cache_subjects_drops_from_every_spec():
+    sim_cache = {"A": {"S1": 1, "S2": 2}, "B": {"S2": 3, "S3": 4}}
+    out = select_sim_cache_subjects(sim_cache, exclude=("S2",), verbose=False)
+    assert out is sim_cache, "the notebook holds this dict; filter in place"
+    assert sim_cache == {"A": {"S1": 1}, "B": {"S3": 4}}
+
+
+def test_select_sim_cache_subjects_tolerates_an_absent_name():
+    sim_cache = {"A": {"S1": 1}}
+    select_sim_cache_subjects(sim_cache, exclude=("nope",), verbose=False)
+    assert sim_cache == {"A": {"S1": 1}}
+
+
+# --------------------------------------------------------------------------
+# exclude_subjects is a view, not a cache input
+# --------------------------------------------------------------------------
+def test_excluded_subject_is_absent_from_the_returned_metrics(cache_env):
+    out = _collect(cache_env, num_evaluations=1, exclude_subjects=("S2",))
+    assert sorted(out.Name.unique()) == ["S1"]
+
+
+def test_exclusion_does_not_invalidate_the_cache(cache_env):
+    """The whole point: the collection costs hours, so changing who is shown
+    must never trigger one."""
+    _collect(cache_env, num_evaluations=1)
+    cache_env.calls.clear()
+    out = _collect(cache_env, num_evaluations=1, exclude_subjects=("S2",))
+    assert cache_env.calls == [], "excluding a subject re-simulated"
+    assert sorted(out.Name.unique()) == ["S1"]
+
+
+def test_the_cache_keeps_the_excluded_subject_for_a_later_run(cache_env):
+    """Filtered on the way out, stored unfiltered — so un-excluding is free
+    rather than another collection."""
+    _collect(cache_env, num_evaluations=1, exclude_subjects=("S2",))
+    cache_env.calls.clear()
+    out = _collect(cache_env, num_evaluations=1)
+    assert cache_env.calls == []
+    assert sorted(out.Name.unique()) == ["S1", "S2"]
+
+
+def test_exclusion_also_prunes_the_sim_cache(cache_env):
+    fresh = {}
+    _collect(cache_env, num_evaluations=1, sim_cache=fresh,
+             exclude_subjects=("S2",))
+    assert sorted(fresh["RR+Q"]) == ["S1"]
+
+
+def test_exclusion_prunes_the_sim_cache_restored_from_the_sidecar(cache_env):
+    _collect(cache_env, num_evaluations=1, sim_cache={})
+    cache_env.calls.clear()
+    on_hit = {}
+    _collect(cache_env, num_evaluations=1, sim_cache=on_hit,
+             exclude_subjects=("S2",))
+    assert cache_env.calls == []
+    assert sorted(on_hit["RR+Q"]) == ["S1"]
+
+
+# --------------------------------------------------------------------------
+# require_cache — never start an hours-long collection by accident
+# --------------------------------------------------------------------------
+def test_require_cache_serves_a_valid_cache_without_collecting(cache_env):
+    _collect(cache_env, num_evaluations=1)
+    cache_env.calls.clear()
+    out = _collect(cache_env, num_evaluations=1, require_cache=True)
+    assert cache_env.calls == []
+    assert sorted(out.Name.unique()) == ["S1", "S2"]
+
+
+def test_require_cache_uses_a_merely_stale_cache_and_warns(cache_env, capsys):
+    """A newer fit pickle leaves every asked-for row present and consistent —
+    the one rejection worth overriding rather than paying hours for."""
+    _collect(cache_env, num_evaluations=1)
+    cache_fp = cache_env.cache_dir / "metrics_t.pkl"
+    newer = cache_fp.stat().st_mtime + 60
+    os.utime(cache_env.fit_fp, (newer, newer))
+    cache_env.calls.clear()
+
+    out = _collect(cache_env, num_evaluations=1, require_cache=True,
+                   verbose=True)
+    assert cache_env.calls == [], "a stale cache still re-simulated"
+    assert sorted(out.Name.unique()) == ["S1", "S2"]
+    printed = capsys.readouterr().out
+    assert "stale" in printed and "newer" in printed
+
+
+def test_require_cache_raises_when_there_is_no_cache(cache_env):
+    with pytest.raises(aggregate.CacheUnavailable, match="no cache yet"):
+        _collect(cache_env, num_evaluations=1, require_cache=True)
+    assert cache_env.calls == []
+
+
+def test_require_cache_raises_rather_than_collecting_more_evaluations(cache_env):
+    _collect(cache_env, num_evaluations=1)
+    cache_env.calls.clear()
+    with pytest.raises(aggregate.CacheUnavailable, match="fewer than 5"):
+        _collect(cache_env, num_evaluations=5, require_cache=True)
+    assert cache_env.calls == [], "the raise still ran a simulation"
+
+
+def test_require_cache_raises_when_the_specs_changed(cache_env):
+    _collect(cache_env, num_evaluations=1)
+    other = EvalSpec("Other label", _SPEC.model_key, _SPEC.column_label, "red")
+    cache_env.calls.clear()
+    with pytest.raises(aggregate.CacheUnavailable, match="specs changed"):
+        load_or_collect_metrics(_fits(), [other], num_evaluations=1,
+                                require_cache=True, **cache_env.kwargs)
+    assert cache_env.calls == []
+
+
+def test_require_cache_raises_on_an_unreadable_cache(cache_env):
+    _collect(cache_env, num_evaluations=1)
+    (cache_env.cache_dir / "metrics_t.pkl").write_bytes(b"not a pickle")
+    cache_env.calls.clear()
+    with pytest.raises(aggregate.CacheUnavailable, match="could not be read"):
+        _collect(cache_env, num_evaluations=1, require_cache=True)
+    assert cache_env.calls == []
+
+
+def test_require_cache_with_force_recompute_is_rejected_up_front(cache_env):
+    with pytest.raises(ValueError, match="contradict"):
+        _collect(cache_env, num_evaluations=1, require_cache=True,
+                 force_recompute=True)
+
+
+def test_mle_require_cache_raises_when_there_is_no_cache(mle_cache_env):
+    with pytest.raises(aggregate.CacheUnavailable, match="no cache yet"):
+        _score(mle_cache_env, require_cache=True)
+    assert mle_cache_env.calls == []
+
+
+def test_mle_require_cache_serves_a_stale_cache(mle_cache_env):
+    _score(mle_cache_env)
+    cache_fp = aggregate.mle_loss_cache_path("t", mle_cache_env.cache_dir)
+    newer = cache_fp.stat().st_mtime + 60
+    os.utime(mle_cache_env.fit_fp, (newer, newer))
+    mle_cache_env.calls.clear()
+    out = _score(mle_cache_env, require_cache=True)
+    assert mle_cache_env.calls == []
+    assert sorted(out.Name.unique()) == ["S1", "S2"]
+
+
+# --------------------------------------------------------------------------
+# Keeping the MLE-loss frame on the same subjects as the bars
+# --------------------------------------------------------------------------
+def test_mle_losses_can_be_restricted_to_the_plotted_subjects(mle_cache_env):
+    """Scoring covers every subject in the fit files; the bars cover only those
+    that cleared min_num_trials. Without this the annotation would average a
+    different, larger cohort than the bar it sits under."""
+    out = _score(mle_cache_env, subjects=["S1"])
+    assert sorted(out.Name.unique()) == ["S1"]
+
+
+def test_restricting_mle_losses_does_not_rescore(mle_cache_env):
+    _score(mle_cache_env)
+    mle_cache_env.calls.clear()
+    _score(mle_cache_env, subjects=["S1"])
+    assert mle_cache_env.calls == []
+
+
+def test_mle_losses_exclude_subjects_drops_the_imaging_only_pair(mle_cache_env):
+    out = _score(mle_cache_env, exclude_subjects=("S2",))
+    assert sorted(out.Name.unique()) == ["S1"]
+
+
+def test_zero_valid_trials_warns_that_the_subject_has_no_behavior(monkeypatch,
+                                                                  capsys):
+    """A subject in the fit pickle but absent from df_behavior scores the
+    likelihood of an empty frame — 0, i.e. a perfect score — without raising.
+    That must not pass quietly."""
+    monkeypatch.setattr(
+        aggregate.compare, "mle_eval_result",
+        lambda *a, **k: (_eval_result(-0.0, 0), None, None))
+    df = collect_mle_losses(_fits(), [_SPEC], None, verbose=False)
+    assert df.NegLogLikPerTrial.isna().all()
+    printed = capsys.readouterr().out
+    assert "0 valid trials" in printed and "df_behavior" in printed
