@@ -736,6 +736,7 @@ dependencies = [
     { name = "scikit-learn" },
     { name = "scikit-posthocs" },
     { name = "scipy" },
+    { name = "seaborn" },
     { name = "statsmodels" },
     { name = "tqdm" },
 ]
@@ -752,6 +753,7 @@ requires-dist = [
     { name = "scikit-learn" },
     { name = "scikit-posthocs" },
     { name = "scipy" },
+    { name = "seaborn" },
     { name = "statsmodels" },
     { name = "tqdm" },
 ]

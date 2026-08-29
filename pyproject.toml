@@ -21,6 +21,9 @@ dependencies = [
     "scikit-learn",
     "ipympl",
     "pytest",
+    # behavior.stdispersion imports seaborn at module scope (so far it only
+    # came in transitively through scikit-posthocs).
+    "seaborn",
 ]
 
 [tool.uv]
@@ -37,4 +40,4 @@ package = false
 # chain, so the local `code/` package never shadows the stdlib `code` module.
 # That is why no parent-directory dance is needed any more.
 testpaths = ["code/rlmodel/model/tests", "code/widefield/tests",
-             "code/common/tests"]
+             "code/common/tests", "code/twop/tests", "code/behavior/tests"]
