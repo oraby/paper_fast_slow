@@ -1,7 +1,9 @@
 from .logic import makeOneRun
 from .drift import (
-    DRIFT_FN_DICT, _REWARDRATE_ALIAS_FOR_INTERNAL, resolve_drift_alias,
+    DRIFT_FN_DICT, RR_CHANNEL_BOUND, _REWARDRATE_ALIAS_FOR_INTERNAL,
+    channel_for_drift, is_rewardrate_alias, resolve_drift_alias,
     user_facing_drift_keys)
+from .state_updates import DEFAULT_RR_DRIFT_MAP, RR_DRIFT_MAPS
 from .noise import NOISE_FN_DICT
 from .bias import BIAS_FN_DICT
 from .plotter import runAndPlot, createFig
@@ -176,14 +178,29 @@ def _resolved_drift_fn_value(all_widgets):
     The dropdown shows the alias; all downstream code (``DRIFT_FN_DICT``
     lookups, ``_get_subject_fit_entry`` saved-fit keys, the
     ``startswith("Bound-RewardRate")`` per-trial-bound check) expects
-    the resolved internal name. The Scale-How dropdown is the source
-    of truth for which implementation the alias maps to.
+    the resolved internal name. Two controls decide which implementation
+    the alias maps to: the "RR as Drift" checkbox (which wins — it routes
+    the reward rate to the drift, overriding the noise / threshold
+    channel, with "RR-Drift Map" picking g(r)) and otherwise the
+    Scale-How dropdown.
+
+    Because the resolved name feeds ``updateGUI``'s variant-change
+    detector, flipping either control re-triggers the saved-fit
+    auto-apply for free — no new ``_variant_suffix`` component is needed
+    (the drift name is already part of the pickle filename).
     """
     raw = all_widgets["Drift Fn"].value
     scale_bound_active = (
         "Scale-How" in all_widgets
         and all_widgets["Scale-How"].value == "Bound")
-    return resolve_drift_alias(raw, scale_bound_active)
+    use_drift_rr = ("RR as Drift" in all_widgets
+                    and bool(all_widgets["RR as Drift"].value))
+    drift_rr_map = (str(all_widgets["RR-Drift Map"].value)
+                    if "RR-Drift Map" in all_widgets
+                    else DEFAULT_RR_DRIFT_MAP)
+    return resolve_drift_alias(raw, scale_bound_active,
+                               use_drift_rr=use_drift_rr,
+                               drift_rr_map=drift_rr_map)
 
 
 def _preferred_modes_for(base_mode, all_widgets):
@@ -215,6 +232,36 @@ def _preferred_modes_for(base_mode, all_widgets):
     return (f"{base_mode}{_variant_suffix(all_widgets)}",)
 
 
+# Hover help for the controls whose meaning isn't obvious from the label.
+# Keyed by widget ``description``, which stays the identity key everywhere
+# else (gui_cache keys, the all_kwargs_names disable check) — tooltips are
+# purely presentational and must never be substituted for it.
+# ipywidgets >= 8 spelling (``tooltip=``); the repo pins 8.1.8.
+_WIDGET_TOOLTIPS = {
+    "RR as Drift": (
+        "Route the learned reward rate r to the DRIFT instead of the noise "
+        "or the threshold:\n"
+        "    d(t) = d(t-1) + DV*V*g(r)*dt + S*sqrt(dt)*eps\n"
+        "with the noise sigma and the bound both left FLAT.\n\n"
+        "This OVERRIDES the default reward-rate behavior — Scale-How=Noise's "
+        "sigma *= r and Scale-How=Bound's b = BOUND*(2-r) — rather than "
+        "adding to it. Scale-How then only picks which of "
+        "(NOISE_SIGMA, BOUND) is the fitted scale axis.\n\n"
+        "Only available on an R-learning model (Drift Fn = RewardRate...). "
+        "Equivalent to --use-drift-rr on model_runner.py; the fit loaded is "
+        "the DriftGain-* pickle, distinct from the noise / bound ones."),
+    "RR-Drift Map": (
+        "The r -> drift-gain mapping g(r) used by 'RR as Drift'.\n\n"
+        "2-r  (default):  d += DV*(2V - r*V). A HIGH reward rate WEAKENS the "
+        "drift => slower and less accurate. Note this is the opposite SPEED "
+        "direction from the noise and bound channels, which both get faster "
+        "at high r.\n"
+        "1+r:             d += DV*(V + r*V). Flipped — a high reward rate is "
+        "faster and more accurate, matching the other channels.\n\n"
+        "Both keep g(r) in [1, 2] for r in [0, 1]. CLI: --drift-rr-map."),
+}
+
+
 def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
                  is_small_fig_mode, subjects_defaults=None, save_figs=False,
                  save_ovewrite=True):
@@ -233,8 +280,9 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
                 "Bound" if cached_drift.startswith("Bound-RewardRate")
                 else "Noise")
 
-    drop_downs_labels = ["Scale-How", "Joint Wt", "Subject", "DV", "Drift Fn",
-                         "Bias Fn", "Psychometric", "Noise Fn"]
+    drop_downs_labels = ["Scale-How", "RR-Drift Map", "Joint Wt", "Subject",
+                         "DV", "Drift Fn", "Bias Fn", "Psychometric",
+                         "Noise Fn"]
     # Joint-loss weight variants discovered from the loaded fit cache (the
     # "Joint Wt" dropdown), leading with the pure ("None", "") option.
     weight_suffix_options = _discover_weight_suffixes(subjects_defaults)
@@ -254,6 +302,12 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
         # below) to avoid double-firing interactive_output when the two
         # individual boxes are updated in sequence.
         "Asym: Both": (gui_cache.get("Asym: Both") or False),
+        # Reward-rate CHANNEL override: tick to send the reward rate to the
+        # drift (DriftGain-*) instead of the noise / threshold. Unlike the
+        # asym boxes this changes the resolved drift function, not just a
+        # gating flag — see _resolved_drift_fn_value. Disabled by updateGUI
+        # when Drift Fn isn't an R-learning alias.
+        "RR as Drift": gui_cache.get("RR as Drift", False),
     }
     # NOTE: ``Scale Bound`` was a checkbox in earlier work; the same
     # capability is now driven by the ``Scale-How`` dropdown (top of
@@ -332,6 +386,15 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
             options_str = ["Noise", "Bound"]
             values = options_str
             default_val_idx = 0
+        elif label == "RR-Drift Map":
+            # g(r) for the "RR as Drift" channel. Only consulted when that
+            # checkbox is ticked; updateGUI disables this dropdown otherwise.
+            # Mirrors --drift-rr-map, and the choice is carried in the
+            # resolved drift name (DriftGain- vs DriftGain(1+r)-), which is
+            # what keeps the two mappings in separate saved-fit pickles.
+            options_str = list(RR_DRIFT_MAPS)
+            values = options_str
+            default_val_idx = options_str.index(DEFAULT_RR_DRIFT_MAP)
         elif label == "Joint Wt":
             # Joint MLE+Chi² weight variant, a fourth orthogonal model axis
             # (like asym / Scale-How). ``None`` (value "") is the pure fit;
@@ -372,10 +435,12 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
         drop_down_widgets[label]  = widgets.Dropdown(options=options,
                                                      value=values[val_idx],
                                                      description=label,
+                                                     tooltip=_WIDGET_TOOLTIPS.get(label, ""),
                                                      equals=equals_fn)
 
     # TODO: Add callbacks to the checkboxes
-    checkbox_widgets = {label:widgets.Checkbox(value=val, description=label)
+    checkbox_widgets = {label:widgets.Checkbox(value=val, description=label,
+                                               tooltip=_WIDGET_TOOLTIPS.get(label, ""))
                         for label, val in checkboxes_labels.items()}
     button_widgets_li = [widgets.Button(description=label) if label != "Update" else widgets.ToggleButton(description=label,
                                                                                                           value=True)
@@ -398,8 +463,13 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
     # NOISE_SIGMA + _NOISE_FIXED (the noise axis) and BOUND + _BOUND_FIXED
     # (the bound axis). Exactly one of each pair is enabled at a time
     # — see the gating block in updateGUI.
+    # "RR as Drift" + "RR-Drift Map" sit right under Drift Fn: together with
+    # Scale-How they are the three controls that decide which DRIFT_FN_DICT
+    # entry the RewardRate alias resolves to.
     first_col = [drop_down_widgets.pop("Scale-How"),
                  drop_down_widgets.pop("Drift Fn"),
+                 checkbox_widgets.pop("RR as Drift"),
+                 drop_down_widgets.pop("RR-Drift Map"),
                  slider_widgets.pop("DRIFT_COEF"),
                  slider_widgets.pop("NOISE_SIGMA"),
                  slider_widgets.pop("_NOISE_FIXED"),
@@ -592,6 +662,18 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
             all_widgets["_BOUND_FIXED"].disabled = True
             all_widgets["BOUND"].disabled        = False
             all_widgets["_NOISE_FIXED"].disabled = False
+        # "RR as Drift" gating. Unlike the asym checkboxes this is keyed off
+        # the RAW dropdown value, not include_RewardRate: include_* is derived
+        # FROM the resolved drift, and the resolution depends on this very
+        # checkbox, so gating on it would be circular. Matching the CLI rule
+        # (--use-drift-rr requires an R-learning --drift) keeps the two
+        # surfaces consistent. A stale tick left over from a RewardRate model
+        # is harmless — resolve_drift_alias is a no-op on non-alias drifts.
+        drift_rr_supported = is_rewardrate_alias(all_widgets["Drift Fn"].value)
+        rr_drift_cb = all_widgets["RR as Drift"]
+        rr_drift_cb.disabled = not drift_rr_supported
+        all_widgets["RR-Drift Map"].disabled = not (
+            drift_rr_supported and rr_drift_cb.value)
         # Asymmetric-LR gating is now orthogonal to the model identity:
         # the checkbox is the source of truth. The checkbox itself is
         # disabled when the active model wouldn't learn the matching
@@ -877,14 +959,26 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
                         # subjects_defaults is keyed by INTERNAL drift
                         # names (the saved-fit filename uses those);
                         # the dropdown now shows RewardRate aliases.
-                        # Translate before assigning + pre-set Scale-How
-                        # so the figure folder layout still works.
-                        if driftFn in _REWARDRATE_ALIAS_FOR_INTERNAL:
+                        # Translate before assigning + pre-set the
+                        # channel controls so the figure folder layout
+                        # still works. Assigning an internal name straight
+                        # to the dropdown would raise TraitError.
+                        selection = channel_for_drift(driftFn)
+                        if selection is not None:
+                            alias, channel = selection
+                            is_drift_rr = channel.startswith("drift:")
+                            # The DriftGain- name carries no scale-axis
+                            # information (it runs under either), so it maps
+                            # to the "Noise" default — i.e. the non-_scaledB
+                            # fits. Only Bound-RewardRate pins Scale-How.
                             all_widgets["Scale-How"].value = (
-                                "Bound" if driftFn.startswith("Bound-RewardRate")
+                                "Bound" if channel == RR_CHANNEL_BOUND
                                 else "Noise")
-                            all_widgets["Drift Fn"].value = (
-                                _REWARDRATE_ALIAS_FOR_INTERNAL[driftFn])
+                            all_widgets["RR as Drift"].value = is_drift_rr
+                            if is_drift_rr:
+                                all_widgets["RR-Drift Map"].value = (
+                                    channel.split(":", 1)[1])
+                            all_widgets["Drift Fn"].value = alias
                         else:
                             all_widgets["Drift Fn"].value = driftFn
                         # Now switch to real time to update the plots
