@@ -2,12 +2,10 @@ from ..common.plottracesprocessor import PlotTraces
 from ..common.clr import colorMapParula, colorMapFireFiji
 from ..pipeline.pipeline import (DFProcessor, getRowTracesSets,
                                  createRowTracesSet)
-try:
-    from wfield.utils import reconstruct
-except ModuleNotFoundError:
-    import sys
-    print("wfield package (https://github.com/jcouto/wfield) not found",
-          file=sys.stderr)
+# Was ``from wfield.utils import reconstruct``. Vendored instead -- wfield is
+# not on PyPI and this was the only thing used from it. See svdreconstruct.py
+# for the provenance.
+from .svdreconstruct import reconstruct
 import cv2
 import tifffile
 import matplotlib.pyplot as plt
