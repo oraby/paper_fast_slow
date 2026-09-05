@@ -13,6 +13,8 @@ from .mle import (
     result_payload,
 )
 from .util import initDF, driftFnColsAndKwargs, biasFnColsAndKwargs, noiseFnColsAndKwargs
+from .fitio import toStorable
+from ...util.portablepickle import assertPortable
 import numpy as np
 import pandas as pd
 from scipy.optimize import differential_evolution
@@ -442,7 +444,7 @@ def _processSubject(subject_df, fixed_params_names, fixed_params_vals,
             candidate_trace, fit_params_names, model_config)
         print("MLE backend info:", dict_res["mle_backend_info"])
         with open(evolve_dump_FP_subject, 'wb') as f:
-            pickle.dump(dict_res, f)
+            pickle.dump(toStorable(dict_res), f)
         return dict_res
 
     if dry_run:
@@ -516,7 +518,7 @@ def _processSubject(subject_df, fixed_params_names, fixed_params_vals,
                     )
 
     with open(evolve_dump_FP_subject, 'wb') as f:
-        pickle.dump(dict_res, f)
+        pickle.dump(toStorable(dict_res), f)
 
     return dict_res
 
@@ -642,7 +644,11 @@ def _merge_save_evolve(evolve_dump_FP, subject, dict_res):
                 merged = pickle.load(f)
         except (EOFError, pickle.UnpicklingError):
             merged = {}  # tolerate a concurrent half-write; re-add below
-    merged[subject] = dict_res
+    # Stored form, not the live objects: the shipped fit must open with a bare
+    # ``pd.read_pickle`` on a machine that does not have this package. The guard
+    # refuses the write rather than producing a file only this repo can read.
+    merged[subject] = toStorable(dict_res)
+    assertPortable(merged)
     tmp_path = dump_path.with_suffix(dump_path.suffix + f".tmp.{os.getpid()}")
     with open(tmp_path, "wb") as f:
         pickle.dump(merged, f)

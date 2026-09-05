@@ -1,11 +1,12 @@
 """Golden test: does the extracted Fig. 1l code reproduce the notebook's?
 
-Run this in the environment that can read the fit pickles (the conda/Jupyter
-env — the saved fits embed a ``subject_df`` written by a newer pandas and do
-not unpickle under the uv venv, which is why this is a script and not a pytest
-test)::
+Run it from the repo root::
 
-    python code/rlmodel/golden_fig1l.py            # from the repo root
+    uv run python code/rlmodel/golden_fig1l.py
+
+(It reads the fits through ``model.fitio.loadFit``, so the conda env is no
+longer needed — see ``docs/data-portability.md``. Still a script rather than a
+pytest test because it needs the real fits, which are not in git.)
 
 It runs both implementations over the same ``chisq_*`` fits and compares them:
 
@@ -25,6 +26,7 @@ same math.
 from __future__ import annotations
 
 import pathlib
+import importlib
 import sys
 
 import numpy as np
@@ -32,25 +34,38 @@ import pandas as pd
 
 
 def _bootstrap():
-    """Make the deep-relative ``paper_fast_slow.code.rlmodel`` imports work when
-    run as a plain script (the notebooks do this in their first cell)."""
+    """Make the deep package imports work when run as a plain script (the
+    notebooks do the same thing in their first cell).
+
+    The package prefix is read from the checkout's own directory name rather
+    than hardcoded, so this still runs if the repo is cloned under a different
+    name or nested somewhere else.
+    """
     here = pathlib.Path(__file__).resolve()
-    repo_root = here.parents[2]           # .../paper_fast_slow
+    repo_root = here.parents[2]           # the checkout, whatever it is called
     sys.path.insert(0, str(repo_root.parent))
-    return repo_root
+    return repo_root, f"{repo_root.name}.code.rlmodel.model"
 
 
-REPO_ROOT = _bootstrap()
+REPO_ROOT, _MODEL_PKG = _bootstrap()
 
-from paper_fast_slow.code.rlmodel.model import compare, fit  # noqa: E402
-from paper_fast_slow.code.rlmodel.model.aggregate import (   # noqa: E402
-    FIG1L_SPECS, MIN_NUM_TRIALS, collect_metrics, subject_metrics)
-from paper_fast_slow.code.rlmodel.model.bias import BIAS_FN_DICT      # noqa: E402
-from paper_fast_slow.code.rlmodel.model.drift import DRIFT_FN_DICT    # noqa: E402
-from paper_fast_slow.code.rlmodel.model.noise import NOISE_FN_DICT    # noqa: E402
-from paper_fast_slow.code.rlmodel.model.plotter import runAndPlot     # noqa: E402
-from paper_fast_slow.code.rlmodel.model.util import (                 # noqa: E402
-    biasFnColsAndKwargs, driftFnColsAndKwargs, noiseFnColsAndKwargs)
+_model = importlib.import_module(_MODEL_PKG)
+compare = importlib.import_module(f"{_MODEL_PKG}.compare")
+fit = importlib.import_module(f"{_MODEL_PKG}.fit")
+_aggregate = importlib.import_module(f"{_MODEL_PKG}.aggregate")
+FIG1L_SPECS = _aggregate.FIG1L_SPECS
+MIN_NUM_TRIALS = _aggregate.MIN_NUM_TRIALS
+collect_metrics = _aggregate.collect_metrics
+subject_metrics = _aggregate.subject_metrics
+BIAS_FN_DICT = importlib.import_module(f"{_MODEL_PKG}.bias").BIAS_FN_DICT
+DRIFT_FN_DICT = importlib.import_module(f"{_MODEL_PKG}.drift").DRIFT_FN_DICT
+NOISE_FN_DICT = importlib.import_module(f"{_MODEL_PKG}.noise").NOISE_FN_DICT
+runAndPlot = importlib.import_module(f"{_MODEL_PKG}.plotter").runAndPlot
+loadFit = importlib.import_module(f"{_MODEL_PKG}.fitio").loadFit
+_util = importlib.import_module(f"{_MODEL_PKG}.util")
+biasFnColsAndKwargs = _util.biasFnColsAndKwargs
+driftFnColsAndKwargs = _util.driftFnColsAndKwargs
+noiseFnColsAndKwargs = _util.noiseFnColsAndKwargs
 
 # The frozen scale axis is absent from a fit (BOUND for a noise-scaled fit,
 # NOISE_SIGMA for a scale-bound one). The original cell indexed params_dict
@@ -119,7 +134,7 @@ def collect_baseline(df_behavior):
                           is_loss_no_dir=False, fit_mode="chisq")
         path = REPO_ROOT / fp
         print(f"  baseline: {path.name}")
-        res_dict = pd.read_pickle(path)
+        res_dict = loadFit(path)
         noiseFn = NOISE_FN_DICT[noise_fn_str]
         driftFn = DRIFT_FN_DICT[drift_fn_str]
         biasFn = BIAS_FN_DICT[bias_fn_str]

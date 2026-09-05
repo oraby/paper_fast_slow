@@ -53,15 +53,23 @@ import subprocess
 import sys
 
 _SLURM_DIR = pathlib.Path(__file__).resolve().parent
-# code/rlmodel/slurm -> parents: [0]=rlmodel, [1]=code, [2]=paper_fast_slow.
+# code/rlmodel/slurm -> parents: [0]=rlmodel, [1]=code, [2]=the checkout.
 _PROJECT_ROOT = _SLURM_DIR.parents[2]
 if str(_PROJECT_ROOT.parent) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT.parent))
 
-from paper_fast_slow.code.rlmodel.metrics_runner import (   # noqa: E402
-    DEFAULT_CACHE_DIR, DEFAULT_DF_FP, DEFAULT_RESULT_DIR, DEFAULT_WORK_ROOT,
-    FIGURES, do_prepare)
-from paper_fast_slow.code.rlmodel.model import metrics_shards    # noqa: E402
+# Imported by name rather than with a hardcoded ``paper_fast_slow.`` prefix, so
+# a clone under any directory name works.
+import importlib                                                 # noqa: E402
+_RLMODEL_PKG = f"{_PROJECT_ROOT.name}.code.rlmodel"
+_metrics_runner = importlib.import_module(f"{_RLMODEL_PKG}.metrics_runner")
+DEFAULT_CACHE_DIR = _metrics_runner.DEFAULT_CACHE_DIR
+DEFAULT_DF_FP = _metrics_runner.DEFAULT_DF_FP
+DEFAULT_RESULT_DIR = _metrics_runner.DEFAULT_RESULT_DIR
+DEFAULT_WORK_ROOT = _metrics_runner.DEFAULT_WORK_ROOT
+FIGURES = _metrics_runner.FIGURES
+do_prepare = _metrics_runner.do_prepare
+metrics_shards = importlib.import_module(f"{_RLMODEL_PKG}.model.metrics_shards")
 
 _RUN_SCRIPT = _SLURM_DIR / "metrics.sbatch"
 _MERGE_SCRIPT = _SLURM_DIR / "merge_metrics.sbatch"
@@ -315,7 +323,8 @@ def main(argv=None):
                 sys.exit(f"--skip-prepare but {metrics_shards.manifest_path(work_dir)}"
                          f" does not exist; drop the flag to build it.")
     else:
-        from paper_fast_slow.code.rlmodel.model.aggregate import N_PSYCH_FITS
+        N_PSYCH_FITS = importlib.import_module(
+            f"{_RLMODEL_PKG}.model.aggregate").N_PSYCH_FITS
         prep = argparse.Namespace(
             figure=args.figure, num_evaluations=args.num_evaluations,
             n_psych_fits=args.n_psych_fits or N_PSYCH_FITS,

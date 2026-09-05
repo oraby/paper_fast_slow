@@ -7,6 +7,7 @@ import pickle
 
 import numpy as np
 import pandas as pd
+from ..fitio import loadFit
 
 
 @dataclass(frozen=True)
@@ -58,8 +59,7 @@ def load_mle_population_results(
     loaded: list[MLEModelResult] = []
     for mle_path in sorted(result_dir.glob("mle_*.pkl")):
         try:
-            with mle_path.open("rb") as f:
-                mle_payload = pickle.load(f)
+            mle_payload = loadFit(mle_path)
         except Exception as exc:  # noqa: BLE001 — surface every load failure
             print(
                 f"Warning: skipping {mle_path.name} "

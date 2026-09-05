@@ -22,6 +22,7 @@ import pathlib
 import os
 import pickle
 import re
+from .fitio import loadFit
 
 
 # Sliders that are NOT a kwarg of any drift/bias/noise/logic function but
@@ -1298,8 +1299,7 @@ def discover_saved_fits(subject, results_dir="data/RLModel"):
         if not (fp.name.startswith("mle_") or fp.name.startswith("chisq_")):
             continue
         try:
-            with open(fp, "rb") as f:
-                data = pickle.load(f)
+            data = loadFit(fp)
         except Exception:  # noqa: BLE001 — skip any unreadable pickle
             continue
         if not isinstance(data, dict) or subject not in data:

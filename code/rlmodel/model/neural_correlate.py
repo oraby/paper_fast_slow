@@ -47,6 +47,7 @@ from .mle_reeval import (parse_fit_filename, fitted_params_from_result,
                          build_mle_config, evaluate_params_under_mle,
                          prepare_behavior_df)  # re-exported for the notebook
 from ...common.definitions import BrainRegion
+from .fitio import loadFit
 
 
 # --------------------------------------------------------------------------
@@ -175,8 +176,7 @@ def load_mle_per_trial(fit_pkl_path, df_behavior=None, *, subjects=None,
     """
     fit_pkl_path = pathlib.Path(fit_pkl_path)
     fid = parse_fit_filename(fit_pkl_path.name)
-    with fit_pkl_path.open("rb") as f:
-        subject_payloads = pickle.load(f)
+    subject_payloads = loadFit(fit_pkl_path)
     if not isinstance(subject_payloads, dict) or not subject_payloads:
         raise ValueError(f"{fit_pkl_path.name} is not a non-empty "
                          "{subject: payload} dict")
@@ -633,7 +633,7 @@ def _plot_one_neuron(ax, neuron_df, spec, *, zscore):
 
 def plot_neuron_results(table, corr_df, param, *, mode="display", top_x=20,
                         zscore=False, min_abs_corr=None, save_root=None,
-                        model_name=None, ext="pdf"):
+                        model_name=None, ext="svg"):
     """Scatter neuron max-activity (y, in z-score units) vs a latent (x).
 
     Neurons are sorted by ``|r|`` for ``param`` (descending).
@@ -809,7 +809,7 @@ def plot_neuron_param_traces(table, corr_df, param, bin_edges, *,
                              mode="display", top_x=20, min_abs_corr=None,
                              display_figsize=(6, 4), display_dpi=110,
                              save_figsize=(10, 7), save_dpi=300,
-                             save_root=None, model_name=None, ext="pdf"):
+                             save_root=None, model_name=None, ext="svg"):
     """Per-neuron mean ± SEM time-normalized traces, grouped by value range.
 
     For each neuron, the trials are split by the value of ``param`` into the
@@ -1126,7 +1126,7 @@ def _hier_bootstrap_region_diff(mats_a, mats_b, min_abs_corr, n_boot, rng):
 def plot_region_bars(corr_df, table, param_keys=None, *, min_abs_corr=0.3,
                      n_shuffles=1000, by_region=True, seed=0, ci=(2.5, 97.5),
                      run_stats=True, save=False, save_root=None,
-                     model_name=None, ext="pdf"):
+                     model_name=None, ext="svg"):
     """Grouped "fraction tuned" bars per brain region.
 
     For each brain region (``by_region=True`` → one panel per MFC/LFC;
@@ -1319,7 +1319,7 @@ def _factor_null(null, assess, param_keys):
 def plot_factor_bars(corr_df, table, factors=None, *, min_abs_corr=0.3,
                      n_shuffles=1000, by_region=True, seed=0, ci=(2.5, 97.5),
                      run_stats=True, title=None, save=False, save_root=None,
-                     model_name=None, ext="pdf"):
+                     model_name=None, ext="svg"):
     """Grouped "% modulated neurons" bars, one bar per **factor** (a group of
     parameters OR'd together — see :class:`Factor`), with the same per-neuron
     activity-shuffle permutation test + ``*/**/***`` stars as
@@ -1469,7 +1469,7 @@ def plot_factor_bars_fastslow_dv(corr_all, table, *, factors=None, dv_key="DV",
                                  n_boot=10000, by_region=True, seed=0,
                                  ci=(2.5, 97.5), run_stats=True, bar_width=0.62,
                                  slot=1.0, title=None, save=False, save_root=None,
-                                 model_name=None, ext="pdf"):
+                                 model_name=None, ext="svg"):
     """Like :func:`plot_factor_bars`, but the **DV** factor is split into two
     touching sub-bars — DV within **fast** (tomato) and **slow** (goldenrod)
     trials — instead of one all-trials DV bar. This is the paper's factor-
@@ -1714,7 +1714,7 @@ def _bar_vs_chance(bundle, key, region_values, obs_mean, n_perm):
 def plot_fast_slow_bars(corr_fast, corr_slow, param, *, table=None,
                         min_abs_corr=0.3, n_perm=1000, n_boot=10000,
                         by_region=True, seed=0, run_stats=True, save=False,
-                        save_root=None, model_name=None, ext="pdf"):
+                        save_root=None, model_name=None, ext="svg"):
     """Fast-vs-slow % of drift-correlated neurons, with permutation significance.
 
     For ``param`` (``"DV"`` / ``"DVabs"``), a neuron is drift-correlated when
@@ -1911,7 +1911,7 @@ def plot_neuron_fastslow_scatter(table, corr_fast, corr_slow, param, *,
                                  mode="display", top_x=20, min_abs_corr=None,
                                  display_figsize=(6, 5), display_dpi=110,
                                  save_figsize=(9, 7), save_dpi=300,
-                                 save_root=None, model_name=None, ext="pdf"):
+                                 save_root=None, model_name=None, ext="svg"):
     """Per-neuron activity-vs-drift scatter, fast & slow overlaid.
 
     Neurons ranked by ``max(|r_fast|, |r_slow|)``. ``mode="display"`` shows the
@@ -1963,7 +1963,7 @@ def plot_neuron_fastslow_traces(table, corr_fast, corr_slow, param, bin_edges, *
                                 mode="display", top_x=20, min_abs_corr=None,
                                 display_figsize=(11, 4), display_dpi=110,
                                 save_figsize=(16, 6), save_dpi=300,
-                                save_root=None, model_name=None, ext="pdf"):
+                                save_root=None, model_name=None, ext="svg"):
     """Per-neuron normalized trace averages by value range, in two panels
     (Fast | Slow). Each panel is the gradient-by-range mean ± SEM style with
     sampling/movement epoch lines. Ranking / display / save behave like
@@ -2411,7 +2411,7 @@ def plot_session_value_hist(table, column="RewardRate", bins=None, *,
                             quantile_ranges=None,
                             group_col="ShortName", ncols=4,
                             panel_size=(2.6, 1.9), sharey=False, save=False,
-                            save_root=None, model_name=None, ext="pdf"):
+                            save_root=None, model_name=None, ext="svg"):
     """One histogram of ``column`` per session — how differently the sessions are
     distributed, at a glance.
 
@@ -2706,7 +2706,7 @@ def plot_paired_neuron_r(paired, labels, param, *, use_abs=True, by_region=False
                          title=None, bar_colors=("0.85", "0.6"),
                          line_color="0.6", show_session_test=True,
                          figsize=(4.4, 4.8), save=False, save_root=None,
-                         model_name=None, tag=None, ext="pdf"):
+                         model_name=None, tag=None, ext="svg"):
     """Per-neuron ``r`` in two conditions: bars ± SEM with paired lines over them.
 
     Each condition is a bar (mean ± SEM across neurons) and each neuron is a grey
@@ -3195,7 +3195,7 @@ def plot_reward_rate_bars(corr_by_bin, bins, param, *, bin_tables=None,
                           min_abs_corr=0.3, n_perm=1000, by_region=True,
                           seed=0, run_stats=True, common_neurons=True,
                           value_label="Reward rate", save=False, save_root=None,
-                          model_name=None, ext="pdf"):
+                          model_name=None, ext="svg"):
     """% of ``param``-correlated neurons at each reward-rate level.
 
     The reward-rate variation of :func:`plot_fast_slow_bars`: instead of two RT

@@ -45,6 +45,7 @@ from .bias import BIAS_FN_DICT
 from .noise import NOISE_FN_DICT
 from .initvals import InitVals
 from ...figcode.psychometric import _psychAxes
+from .fitio import loadFit
 
 
 DEFAULT_RESULT_DIR = "../../data/RLModel"
@@ -136,8 +137,7 @@ def discover_fits(result_dir=DEFAULT_RESULT_DIR, *, verbose=True):
             continue
         order_rank, column_label = col
         try:
-            with fp.open("rb") as f:
-                data = pickle.load(f)
+            data = loadFit(fp)
         except Exception as exc:  # noqa: BLE001 — tolerate unreadable pickles
             skipped.append((fp.name, f"unreadable ({exc!r})"))
             continue

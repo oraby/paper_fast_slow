@@ -81,6 +81,32 @@ RunData = namedtuple("RunData", ["df_src",
                                  "shortlong_df",
                                  "shortlong_quantiled_df"])
 
+
+def saveRunDataDict(run_data_dict, path):
+    """Write ``{run_idx: RunData}`` so a bare ``pd.read_pickle`` can read it.
+
+    ``RunData`` is defined here, so pickling it names this package and the file
+    then only opens where the checkout still carries the same name. Storing the
+    five frames as a plain dict avoids that; :func:`loadRunDataDict` puts the
+    namedtuple back, so callers keep using ``run_data.df_src``.
+    """
+    from ..util.portablepickle import savePortable
+    plain = {key: (value._asdict() if isinstance(value, RunData) else value)
+             for key, value in run_data_dict.items()}
+    return savePortable(plain, path)
+
+
+def loadRunDataDict(path):
+    """Read what :func:`saveRunDataDict` wrote, as ``{run_idx: RunData}``.
+
+    Also accepts a file written before that change, whose values are already
+    ``RunData``.
+    """
+    import pandas as pd
+    loaded = pd.read_pickle(path)
+    return {key: (value if isinstance(value, RunData) else RunData(**value))
+            for key, value in loaded.items()}
+
 def runSplitFn(splitFn, df_reduc, statsTestFn):
     _short_long_df, p_li = splitFn(df_reduc.copy(), statsTestFn=statsTestFn)
     _short_long_df = assignBrainRegion(_short_long_df, df_src=df_reduc)

@@ -16,12 +16,32 @@ Writes both ``<out>`` (pickle) and ``<out>.csv``. Pure extraction — no refit.
 from __future__ import annotations
 
 import argparse
+import importlib
 import pathlib
 import pickle
 import re
+import sys
 
 import numpy as np
 import pandas as pd
+
+
+def _loadFit():
+    """Resolve ``model.fitio.loadFit`` without hardcoding the checkout's name.
+
+    The fits embed the model's own functions, so they must be read through the
+    prefix-agnostic loader rather than a plain ``pickle.load``.
+    """
+    here = pathlib.Path(__file__).resolve()
+    repo_root = here.parents[2]
+    if str(repo_root.parent) not in sys.path:
+        sys.path.insert(0, str(repo_root.parent))
+    mod = importlib.import_module(
+        f"{repo_root.name}.code.rlmodel.model.fitio")
+    return mod.loadFit
+
+
+loadFit = _loadFit()
 
 # Matches the ``_mleW{m}_chi2W{c}`` suffix that ``fit.evolveFP`` appends to joint
 # MLE+Chi² fits (``{:g}`` formatted floats, so ``1``, ``0.5``, ``2.5`` …).
@@ -103,8 +123,7 @@ def extract_losses(results_dir="data/RLModel"):
         if not (fp.name.startswith("mle_") or fp.name.startswith("chisq_")):
             continue
         try:
-            with open(fp, "rb") as f:
-                data = pickle.load(f)
+            data = loadFit(fp)
         except Exception as exc:  # noqa: BLE001 — tolerate any unreadable pickle
             print(f"Skipping {fp.name}: unreadable ({exc!r})")
             continue

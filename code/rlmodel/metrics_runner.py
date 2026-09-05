@@ -50,22 +50,32 @@ matplotlib.use("Agg")    # no display on a compute node
 
 
 def _bootstrap():
-    """Make the deep ``paper_fast_slow.code.rlmodel`` imports work as a script
-    (the same trick as ``golden_fig1l.py`` and the notebooks' first cell)."""
+    """Make the deep package imports work as a script (the same trick as
+    ``golden_fig1l.py`` and the notebooks' first cell).
+
+    The prefix comes from the checkout's own directory name, so this runs from
+    a clone under any name or location.
+    """
     here = pathlib.Path(__file__).resolve()
-    repo_root = here.parents[2]           # .../paper_fast_slow
+    repo_root = here.parents[2]           # the checkout, whatever it is called
     if str(repo_root.parent) not in sys.path:
         sys.path.insert(0, str(repo_root.parent))
-    return repo_root
+    return repo_root, f"{repo_root.name}.code.rlmodel"
 
 
-_PROJECT_ROOT = _bootstrap()
+_PROJECT_ROOT, _RLMODEL_PKG = _bootstrap()
 
-from paper_fast_slow.code.rlmodel.model import (                  # noqa: E402
-    compare, metrics_shards)
-from paper_fast_slow.code.rlmodel.model.aggregate import (        # noqa: E402
-    DRIFT_RR_SPECS, FIG1L_SPECS, MIN_NUM_TRIALS, MLE_WEIGHT_SPECS,
-    N_PSYCH_FITS, SCALE_BOUND_SPECS)
+import importlib                                                  # noqa: E402
+compare = importlib.import_module(f"{_RLMODEL_PKG}.model.compare")
+metrics_shards = importlib.import_module(
+    f"{_RLMODEL_PKG}.model.metrics_shards")
+_aggregate = importlib.import_module(f"{_RLMODEL_PKG}.model.aggregate")
+DRIFT_RR_SPECS = _aggregate.DRIFT_RR_SPECS
+FIG1L_SPECS = _aggregate.FIG1L_SPECS
+MIN_NUM_TRIALS = _aggregate.MIN_NUM_TRIALS
+MLE_WEIGHT_SPECS = _aggregate.MLE_WEIGHT_SPECS
+N_PSYCH_FITS = _aggregate.N_PSYCH_FITS
+SCALE_BOUND_SPECS = _aggregate.SCALE_BOUND_SPECS
 
 
 DEFAULT_RESULT_DIR = _PROJECT_ROOT / "data" / "RLModel"
@@ -92,7 +102,9 @@ def _parse_range(text):
     return list(range(int(start), int(end) + 1))
 
 
-_ALIAS_PREFIX = "paper_fast_slow."
+# Derived from the checkout, never hardcoded -- a clone under a different
+# directory name aliases its own package, not this one.
+_ALIAS_PREFIX = f"{_PROJECT_ROOT.name}.code."
 
 
 @contextlib.contextmanager
@@ -110,12 +122,12 @@ def code_package_alias():
     *same* object, so unpickled classes are the ones this process is already
     using rather than a second, unrelated copy of each.
     """
+    root = _ALIAS_PREFIX.rstrip(".")          # "<checkout>.code"
     imported = {name: module for name, module in sys.modules.items()
-                if name == "paper_fast_slow.code"
-                or name.startswith("paper_fast_slow.code.")}
+                if name == root or name.startswith(root + ".")}
     originals = {}
     for name, module in imported.items():
-        alias = name[len(_ALIAS_PREFIX):]
+        alias = "code" + name[len(_ALIAS_PREFIX) - 1:]
         originals[alias] = sys.modules.get(alias)
         sys.modules[alias] = module
     before = set(sys.modules)
