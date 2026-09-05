@@ -24,6 +24,27 @@ dependencies = [
     # behavior.stdispersion imports seaborn at module scope (so far it only
     # came in transitively through scikit-posthocs).
     "seaborn",
+
+    # --- previously undeclared, found by auditing every import in code/ and
+    # --- the notebooks against this list (see docs/repo-audit.md).
+    # widefield.pipelineprocessors and Tracking.ipynb.
+    "opencv-python",
+    "tifffile",
+    # twop.plot.statsregiondist imports venn2/venn3 at module scope (twop.plot
+    # .rocplot guards it, that one does not), and 2pAnalysis.ipynb uses it.
+    "matplotlib-venn",
+    # data_downloader.ipynb fetches the 2-photon archive with it.
+    "requests",
+    # IPython.display.display is imported at module scope in ~17 modules, and
+    # ipywidgets drives the interactive model GUI. Both arrived transitively
+    # via ipykernel; naming them stops a transitive change breaking imports.
+    "ipython",
+    "ipywidgets",
+    # PIL: rlmodel.model.mle_notebooks.ddm_viewer, widefield.pipelineprocessors.
+    "pillow",
+    # common.cache falls back silently when dill is absent; declaring it makes
+    # the caching path deterministic rather than environment-dependent.
+    "dill",
 ]
 
 [tool.uv]
@@ -40,4 +61,5 @@ package = false
 # chain, so the local `code/` package never shadows the stdlib `code` module.
 # That is why no parent-directory dance is needed any more.
 testpaths = ["code/rlmodel/model/tests", "code/widefield/tests",
-             "code/common/tests", "code/twop/tests", "code/behavior/tests"]
+             "code/common/tests", "code/twop/tests", "code/behavior/tests",
+             "code/pipeline/tests", "code/util/tests"]
