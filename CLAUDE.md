@@ -54,3 +54,68 @@ unit tests and move it outside.
 - A global flag should control whether to save the figures or not.
 
 
+
+# Data files under `data/` — if a pickle fails to load
+
+Every pickle under `data/` was rewritten on **2026-08-31** so that it loads on
+any machine, under any pandas version, whatever the checkout is called. The
+originals are kept, byte-for-byte, in `data_bak/` (git-ignored, same layout).
+
+**So when a load fails, first check whether the backup loads:**
+
+```
+uv run python -c "import pandas as pd; print(pd.read_pickle(r'data_bak/<same/path>.pkl').shape)"
+```
+
+- **Backup loads, `data/` copy does not** → the rewrite is at fault. Restore
+  that file from `data_bak/` and re-run the conversion for it; see
+  `docs/data-portability.md`.
+- **Both fail the same way** → not the rewrite. It is the loading code, or the
+  environment.
+- **Backup fails but `data/` copy works** → expected for many files. The
+  backups are the *old* artifacts and most of them cannot be read by a plain
+  `pickle.load` at all; that is exactly why they were rewritten.
+
+What the rewrite removed: `pandas.core.indexes.numeric.Int64Index` (deleted in
+pandas 2.0), conda-built `string` extension arrays (unreadable by the PyPI
+build), the `caiman.…States` column (a package that exists nowhere; its values
+were already being discarded by an inline stub), and
+`scipy.io.matlab._mio5_params.mat_struct` (a private path scipy has renamed
+once already).
+
+**All 270 open with a plain `pd.read_pickle`**, on any machine, under any
+checkout name. The RL-model fits and `data_runs_*.pkl` used to embed
+repo-defined objects; they now store the model functions by their registry name
+and `MLEModelConfig` / `RunData` as plain dicts.
+
+**Writing a new pickle under `data/`: use the guard, never `pickle.dump`.**
+
+```python
+from ..util.portablepickle import savePortable    # any payload
+from .fitio import saveFit                        # a {subject: payload} fit
+from ..twop.genrundata import saveRunDataDict     # a {run_idx: RunData}
+```
+
+`savePortable` walks the object graph first and raises `NotPortableError`
+naming the offender and where it sits, rather than writing a file that only
+this checkout can read.
+
+To get the typed objects back, read with `fitio.loadFit` or
+`genrundata.loadRunDataDict`; a bare `pd.read_pickle` returns the same payload
+with those values left as plain dicts. Both work — that is the point.
+
+Do **not** hardcode `paper_fast_slow.` in an import. Scripts needing the deep
+package path derive it from the checkout directory (see `_bootstrap()` in
+`golden_fig1l.py` / `metrics_runner.py`).
+
+**Checks.** `uv run pytest` exercises the guard on every run
+(`code/util/tests/test_saveportable.py`, `code/rlmodel/model/tests/test_fitio.py`).
+Before a release, or after unzipping data from the download site, run the
+repo-wide audit — it reads ~8 GB, so it is deliberately not in the suite:
+
+```
+uv run python code/util/migratepickles.py --repo . --out ./data_portable --audit
+```
+
+Tooling lives in [`code/util/`](code/util/); the full account, including the
+survey and the procedure, is in [`docs/data-portability.md`](docs/data-portability.md).

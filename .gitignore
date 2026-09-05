@@ -8,3 +8,20 @@ __pycache__/
 # the fits in data/RLModel, regenerable with FORCE_RECOMPUTE.
 data/RLModel/metrics/
 
+
+# Pre-migration copies of the artifacts rewritten by code/util/migratepickles.py
+# (see docs/data-portability.md). Restore from here if a load fails.
+data_bak/
+
+# Intermediate portable payloads from the same migration. data_bak/ is the copy
+# that matters; this tree is regenerable and can be deleted.
+data_portable/
+
+# Pre-strip copies of the model fits, kept by code/rlmodel/model/stripfits.py.
+# The stripped files lose only the write-only optimiser trace, so this is a
+# safety net rather than something to publish.
+data/RLModel/model_full/
+
+# Upload archive built from the untracked data/2p files, fetched by
+# code/data_downloader.ipynb. Rebuildable; never commit it.
+2p_data.zip
