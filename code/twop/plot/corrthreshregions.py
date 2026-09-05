@@ -143,13 +143,17 @@ def regionSignificance(prcnt_df, regions=(MFC, LFC), alpha=0.05):
 
 def plotRegionBars(prcnt_df, stats_df=None, regions=(MFC, LFC),
                    corr_thresh=None, filter_key=None, plot_sessions=True,
-                   save_figs=False, fig_save_prefix=None):
+                   save_figs=False, fig_save_prefix=None, ext="svg"):
     """One figure, one panel per category: mean +/- SEM across sessions.
 
     Individual sessions are overlaid as dots (same convention as the other
     per-session bar figures in this notebook) so the spread behind the SEM stays
     visible. When ``stats_df`` is given, each panel is annotated with the chosen
     test's p-value and significance stars.
+
+    ``ext`` is the saved figure's file extension, matching the convention in
+    ``rlmodel/model/neural_correlate.py``. It defaults to ``svg`` because that
+    is what the manuscript figures are.
     """
     if stats_df is None:
         stats_df = regionSignificance(prcnt_df, regions=regions)
@@ -197,7 +201,7 @@ def plotRegionBars(prcnt_df, stats_df=None, regions=(MFC, LFC),
             "fig_save_prefix is required when save_figs is True")
         thresh_str = "" if corr_thresh is None else f"_above_{corr_thresh}"
         save_fp = (Path(fig_save_prefix) /
-                   f"rt_corr_regions_bars{thresh_str}.pdf")
+                   f"rt_corr_regions_bars{thresh_str}.{ext}")
         print("Save fp=", save_fp)
         fig.savefig(save_fp, bbox_inches="tight")
     plt.show()
