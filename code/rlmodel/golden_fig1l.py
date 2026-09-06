@@ -179,10 +179,11 @@ def main():
     if not fits:
         sys.exit(
             "discover_fits() found no readable fits in data/RLModel.\n"
-            "If the files are there, this is the pandas mismatch: the saved\n"
-            "fits embed a subject_df written by a newer pandas, and\n"
-            "discover_fits silently skips pickles it cannot read. Run this\n"
-            "script in the conda/Jupyter environment the notebooks use.")
+            "discover_fits silently skips pickles it cannot read, so check\n"
+            "the skip reasons above. The fits are stored portably now, so an\n"
+            "unreadable one is a real problem rather than the wrong\n"
+            "environment: see docs/data-portability.md, and check whether\n"
+            "the copy in data_bak/ loads.")
 
     print("\n=== baseline (notebook's original code) ===")
     baseline = collect_baseline(df_behavior)

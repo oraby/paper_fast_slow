@@ -356,8 +356,8 @@ nothing can race. A merge step then writes the very pickle
 just cache-hits.
 
 ```bash
-# from the project root, in the conda env (the fit pickles need it)
-python code/rlmodel/slurm/launch_metrics.py --num-evaluations 100 \
+# from the project root
+uv run python code/rlmodel/slurm/launch_metrics.py --num-evaluations 100 \
     --max-concurrent 200
 ```
 

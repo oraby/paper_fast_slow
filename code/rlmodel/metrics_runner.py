@@ -160,11 +160,10 @@ def do_prepare(args):
         sys.exit(
             f"discover_fits() found no readable fits in {args.result_dir}.\n"
             "discover_fits silently skips pickles it cannot read, so check the\n"
-            "skip reasons above. A pandas mismatch means the wrong "
-            "environment:\n"
-            "the saved fits embed a subject_df written by a newer pandas, so\n"
-            "run this in the conda environment the notebooks use, not the uv "
-            "venv.")
+            "skip reasons above. The fits are stored portably now, so this\n"
+            "is a real problem rather than the wrong environment: see\n"
+            "docs/data-portability.md, and check whether the copy in\n"
+            "data_bak/ loads.")
 
     built = {}
     for name in args.figure:

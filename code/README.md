@@ -6,18 +6,27 @@ The notebooks are as follows:
 
 - **Behavior**
     - [`behavior.ipynb`](behavior.ipynb)
-      Analyses of behavioral data.
+      Analyses of behavioural data, mice and human.
 
-- **DDM RL-Model**
+- **DDM RL-Model** (see [`rlmodel/README.md`](rlmodel/README.md) for the model's
+  design and implementation)
+    - [`rlmodel/model_analysis.ipynb`](rlmodel/model_analysis.ipynb)
+      Runs and saves the model-fitting analysis; the manuscript's model figures
+      come from here.
     - [`rlmodel/model_viewer.ipynb`](rlmodel/model_viewer.ipynb)
-      Provides tools to interactively modify model parameters and performs
-      analyses that quantify data fit across different model variants.
-
+      Interactively modify model parameters, and quantify data fit across model
+      variants.
+    - [`rlmodel/model_interactive.ipynb`](rlmodel/model_interactive.ipynb)
+      The parameter-tweaking GUI on its own.
     - [`rlmodel/model_to_behavior.ipynb`](rlmodel/model_to_behavior.ipynb)
-      A short notebook that generates schematic figures based on model fits.
-
-    - *Note: Please see [`rlmodel/README.md`](rlmodel/README.md) for additional
-      design and implementation details.*
+      Generates the schematic figure from the Q + reward-rate model fits.
+    - [`rlmodel/model_neural_correlate.ipynb`](rlmodel/model_neural_correlate.ipynb)
+      Correlates single neurons against the model's latent variables.
+    - [`rlmodel/model_compare.ipynb`](rlmodel/model_compare.ipynb)
+      Per-subject x fitting-criterion comparison grid.
+    - [`rlmodel/mle_debug.ipynb`](rlmodel/mle_debug.ipynb),
+      [`rlmodel/scale_bound_equivalence.ipynb`](rlmodel/scale_bound_equivalence.ipynb)
+      Diagnostics, not figure sources.
 
 - **Optogenetics**
     - [`opto.ipynb`](opto.ipynb)
@@ -25,29 +34,33 @@ The notebooks are as follows:
 
 - **Wide-Field Imaging**
     - [`widefield.ipynb`](widefield.ipynb)
-      Analyses of optogenetic perturbations using wide-field imaging data.
+      Cortical calcium dynamics and the MFC/LFC segmentation.
 
 - **2-Photon Imaging**
     - [`data_downloader.ipynb`](data_downloader.ipynb)
-      Downloads missing two-photon dataframes that are too large to be
-      included directly in the repository.
-
-    - [`TwoPAnalysis.ipynb`](TwoPAnalysis.ipynb)
-      Two-photon imaging analyses derived from statistical significance tests.
-
+      Downloads the two-photon dataframes that are too large for the
+      repository. **It overwrites what is already in `data/2p/`** -- see
+      [`../docs/data-portability.md`](../docs/data-portability.md).
+    - [`TwoPLoad.ipynb`](TwoPLoad.ipynb)
+      Builds the per-session trace frames the other 2P notebooks consume.
+    - [`2pAnalysis.ipynb`](2pAnalysis.ipynb)
+      Two-photon analyses derived from statistical significance tests.
     - [`TwoPTraces.ipynb`](TwoPTraces.ipynb)
-      Two-photon imaging analyses focusing on single-cell and population-level
-      heatmaps.
-
+      Single-cell and population-level heatmaps.
     - [`plottraces3.ipynb`](plottraces3.ipynb)
       Summed population activity by trial duration and quantile, per-session
-      choice decoders, and correlations between reaction time and neural
-      activity at the single-cell and population level.
+      choice decoders, and reaction-time/activity correlations.
+    - [`2pSeqWithinDeviation.ipynb`](2pSeqWithinDeviation.ipynb)
+      Within-strategy trial-to-trial sequence deviation, with an interactive
+      replay of the shuffle calibration.
 
 - **Movement Tracking**
     - [`Tracking.ipynb`](Tracking.ipynb)
-      Movement tracking analyses.
+      SLEAP-based posture and movement analyses.
 
+Which notebook produces which manuscript panel is mapped in
+[`../docs/manuscript-figure-map.md`](../docs/manuscript-figure-map.md). Note
+that notebook section headings still carry older figure numbering.
 
 # Data Schema
 
@@ -147,49 +160,43 @@ This approach nevertheless offers several advantages:
 
 # Dependencies
 
-The following conda packages were used to run the analyses:
-
+The environment is managed by [`uv`](https://docs.astral.sh/uv/) from
+[`pyproject.toml`](../pyproject.toml) and `uv.lock` at the repository root.
+There is nothing to install by hand and no conda environment: `uv` creates
+`.venv/` from the lockfile, and its PyPI wheels carry their own native
+libraries.
 
 ```
-channels:
-  - defaults
-dependencies:
-  - python=3.11
-  - ipykernel
-  - matplotlib
-  - numpy
-  - pandas[version='<2.0.0']
-  - scikit-learn
-  - scipy
-  - tqdm
-  - ipywidgets
-  - jupyterlab_widgets
-  - scikit-image
-  - seaborn
-  - opencv
-  - scikit-posthocs
-  - nbconvert
-  - ipympl
-  - h5py
+uv sync                  # create/refresh .venv from the lockfile
+uv run pytest            # run the suite (from the repository root)
+uv run python <script>   # run anything else
+uv run jupyter lab       # notebooks, against the same environment
 ```
 
-The following pip packages were also required:
-```
-matplotlib-inline         0.1.6
-matplotlib-venn           1.1.1
-Pillow                    10.0.1
-pyddm                     0.8.0
-statsmodels               0.14.1
-tifffile                  2023.4.12
-```
+To add a dependency, put it in `pyproject.toml` under `[project].dependencies`
+and run `uv sync`. Do not `pip install` into the virtualenv -- the lockfile is
+what makes a run reproducible.
+
+`code/util/tests/test_environment.py` keeps this honest: it imports every
+module under `code/` and checks that every absolute import in every notebook
+cell resolves from the locked environment alone. A dependency that is used but
+not declared fails the suite rather than working by accident on one machine.
+
+## Optional: GPU
+
+The MLE likelihood has a CuPy backend
+(`rlmodel/model/array_backend.resolve_array_backend`). CuPy is imported lazily
+and callers fall back to NumPy when it is absent, so it is **not** declared as a
+dependency -- the correct wheel name depends on your CUDA version
+(`cupy-cuda12x` and so on). Install it yourself if you want the GPU path;
+nothing else changes.
 
 # Missing
 
-This package is currently missing the following:
-
-- A requirements metadata file specifying library dependencies.
-- A command-line execution script (e.g., a [`uv`](https://docs.astral.sh/uv/guides/scripts/)
-  script combined with [`papermill`](https://papermill.readthedocs.io)) to enable
-  batch execution of all notebooks.
-    - Command-line arguments would allow generating either only paper figures or
-      all figures (including per-subject figures).
+- A command-line runner (e.g. [`papermill`](https://papermill.readthedocs.io)
+  driven from a `uv` script) for batch execution of all notebooks, with a flag
+  to generate either only the manuscript figures or every figure including the
+  per-subject ones.
+  `behavior.ipynb`, `opto.ipynb`, `widefield.ipynb` and `Tracking.ipynb`
+  already carry a papermill `parameters` cell; the rest do not, and several
+  cells still pass `save_figs=True` literally rather than honouring the flag.

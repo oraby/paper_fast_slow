@@ -23,7 +23,7 @@ The eight workstreams as stated:
 | | Workstream | Status |
 |---|---|---|
 | **G0** | Trustworthy baseline | **done** |
-| **A** | Unified `uv` | **mostly done** — A1–A3 done; A4 (retire conda), A5 (`code/README.md`), and a `cupy` decision remain |
+| **A** | Unified `uv` | **done** — everything runs from the lockfile; guarded by `test_environment.py` |
 | **B** | Model trim + docs | **not started** — `Decay Q` still in the registry, `rlmodel/README.md` still says 3 s and uses the oldest figure numbers |
 | **C** | Behaviour tests | **barely started** — 45 tests (was 42). Figures 2A and 2B are still inline in `behavior.ipynb`; no `varexplained` / `optimalsampling` module exists |
 | **D** | 2-photon reorg | **not started** — the six orphaned `twop/plot/stats*` modules are still referenced by nothing, `plottraces3.ipynb` still has 6 cells flagged as raising `NameError`, and the three inline unpicklers are still in place (now dead code) |
@@ -161,27 +161,31 @@ Full detail, including the survey and the two-stage procedure, is in
 
 ---
 
-## A — Unified `uv` environment — **mostly done** (2026-09-04)
+## A — Unified `uv` environment — **DONE** (2026-09-06)
 
-Done in a parallel session, not here:
-
-| | Item | Status |
+| | Item | Outcome |
 |---|---|---|
-| A1 | Fit payloads stop naming this package | **done** — `rlmodel/model/fitio.py` stores the bias/drift/noise functions by registry key and `MLEModelConfig` as a dict; `twop/genrundata.saveRunDataDict` / `loadRunDataDict` do the same for `RunData` |
-| A2 | Declare the undeclared dependencies | **done** — `opencv-python`, `tifffile`, `matplotlib-venn`, `requests`, `ipython`, `ipywidgets`, `pillow`, `dill` added to `pyproject.toml`, each with the module that needs it |
-| A3 | The `wfield` dependency | **done** — the one function used (`reconstruct`, 8 lines of numpy) is vendored into `widefield/svdreconstruct.py` with provenance and the GPLv3 note, instead of taking a git dependency |
-| A4 | Retire conda; drop `conftest.py`'s DLL workaround | **not started** — `conftest.py` still carries it |
-| A5 | Rewrite `code/README.md`'s dependency section | **not started** — still documents the conda env (`python=3.11`, `pandas<2.0.0`, `pyddm 0.8.0`) |
+| A1 | Fit payloads stop naming this package | `rlmodel/model/fitio.py` stores the bias/drift/noise functions by registry key and `MLEModelConfig` as a dict; `twop/genrundata.saveRunDataDict` / `loadRunDataDict` do the same for `RunData` |
+| A2 | Declare the undeclared dependencies | eight added to `pyproject.toml`, each annotated with the module that needs it |
+| A3 | The `wfield` dependency | the one function used (8 lines of numpy) vendored into `widefield/svdreconstruct.py`, with provenance and the GPLv3 note |
+| A4 | Retire conda | `conftest.py`'s DLL workaround removed — verified inert under `uv`, since the four conda directories it looked for do not exist in `.venv`. Stale "run this in the conda env" instructions in `golden_fig1l.py`, `metrics_runner.py` and `rlmodel/README.md` corrected; they stopped being true once the fits became portable |
+| A5 | `code/README.md` | dependency section rewritten for `uv`; the notebook list corrected (it named `TwoPAnalysis.ipynb`, which does not exist, and omitted eight notebooks) |
+| — | `cupy` | left undeclared, deliberately: it is imported lazily and callers fall back to NumPy, and the correct wheel name is CUDA-specific. Documented in `code/README.md` instead |
 
-**Data portability is now complete, and enforced rather than merely fixed.**
-All 270 pickles under `data/` load with a plain `pickle.load`, referencing only
-`numpy`, `pandas`, `builtins`, `datetime` — verified across every file, not
-sampled. `util/portablepickle.savePortable` / `assertPortable` now refuse to
-*write* a payload that would not load elsewhere, so the property holds going
-forward. See [`data-portability.md`](data-portability.md).
+**Verified, not assumed.** All 170 modules under `code/` import in one `uv`
+process, and every absolute import in every notebook cell resolves from the
+locked environment — the only exception is `psychofit` in the vendored
+library's own upstream demo notebook.
 
-Remaining in A: A4, A5, and a decision on `cupy` — still referenced by
-`rlmodel/benchmark_mle_backend.py` but not declared as an optional extra.
+`code/util/tests/test_environment.py` now guards both properties, so a
+dependency that is used but not declared fails the suite instead of working by
+accident on one machine. It would have caught all eight of the undeclared ones.
+
+Suite: **1045 passed, 1 skipped**.
+
+**One deliberate exception.** The Slurm launcher (`rlmodel/slurm/`,
+`model/metrics_shards.py`) still activates conda on the compute nodes. That is
+a property of the cluster, not of this repo, and is out of scope here.
 
 ## B — Model trim and documentation *(medium; fully parallel, off critical path)*
 
