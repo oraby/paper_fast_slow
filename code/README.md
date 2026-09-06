@@ -173,6 +173,10 @@ uv run python <script>   # run anything else
 uv run jupyter lab       # notebooks, against the same environment
 ```
 
+If this checkout sits inside OneDrive (or another cloud-synced folder), a
+fresh `uv sync` fails to hardlink out of the cache with `os error 396`. Set
+`UV_LINK_MODE=copy` for that first sync; an existing `.venv` is unaffected.
+
 To add a dependency, put it in `pyproject.toml` under `[project].dependencies`
 and run `uv sync`. Do not `pip install` into the virtualenv -- the lockfile is
 what makes a run reproducible.

@@ -21,9 +21,17 @@ are reproducible from the lockfile.
 - **Add a dependency**: put it in `pyproject.toml` `[project].dependencies`, then
   `uv sync`. Do not `pip install` into the venv.
 
-Do **not** invoke the bare `python` / `pytest` on PATH and do **not** rely on
-activating the conda `py312` env for tooling — both re-introduce the native-DLL
-load fault when the env is not activated.
+Do **not** invoke the bare `python` / `pytest` on PATH. The conda envs are no
+longer used for anything local: every module and every notebook import resolves
+from the lockfile, and `code/util/tests/test_environment.py` fails the suite if
+that stops being true. (`rlmodel/slurm/` still activates conda on the cluster's
+compute nodes — that is the cluster's property, not this repo's.)
+
+**This checkout lives inside OneDrive**, whose cloud-files driver cannot
+hardlink. A fresh `uv sync` / `uv run --isolated` fails with
+`os error 396 … incompatible hardlinks`. Set `UV_LINK_MODE=copy` (or pass
+`--link-mode=copy`) when populating an environment from scratch; an existing
+`.venv` is unaffected.
 
 ## Import layout (why `uv run pytest` works from the repo root)
 
