@@ -26,7 +26,7 @@ The eight workstreams as stated:
 | **A** | Unified `uv` | **done** — everything runs from the lockfile; guarded by `test_environment.py` |
 | **B** | Model trim + docs | **not started** — `Decay Q` still in the registry, `rlmodel/README.md` still says 3 s and uses the oldest figure numbers |
 | **C** | Behaviour tests | **barely started** — 45 tests (was 42). Figures 2A and 2B are still inline in `behavior.ipynb`; no `varexplained` / `optimalsampling` module exists |
-| **D** | 2-photon reorg | **not started** — the six orphaned `twop/plot/stats*` modules are still referenced by nothing, `plottraces3.ipynb` still has 6 cells flagged as raising `NameError`, and the three inline unpicklers are still in place (now dead code) |
+| **D** | 2-photon reorg | **D0 done** — the orphaned `twop/plot` modules are resolved and deleted. D1 (`plottraces3.ipynb`'s 6 `NameError` cells) and D2 (extraction) remain |
 | **E** | Runner / papermill | **started ahead of plan** — 4 notebooks carry a `parameters` cell; see the E section for what that does and does not yet cover |
 | **F** | Final cleanup | **not started** — `data/to_delete/` is still 563 MB |
 
@@ -251,12 +251,40 @@ Scale: 11,750 lines of notebook code and 143 inline `def`s across
 `2pAnalysis.ipynb`, `plottraces3.ipynb`, `TwoPTraces.ipynb` and
 `TwoPLoad.ipynb`, backing 20+ published panels.
 
-- **D0 — decision, before any code.** Adopt or delete the six orphaned
-  `twop/plot/stats*` modules plus `plotutil.py` and `plottracetrialsheatmap.py`
-  (909 lines, imported by nothing). They look like a *better* factoring of what
-  is currently inline for Figures 6B / 6E / 4H, so adopting them may be cheaper
-  than deleting them and re-extracting the same logic from the notebooks.
-  Compare their output to the published SVGs to decide.
+- **D0 — decision. Resolved 2026-09-06: delete, not adopt.**
+  The hypothesis in the audit was that these modules might be a *better*
+  factoring of what is inline, making D2 a wiring job rather than an
+  extraction. The evidence says otherwise, on five independent counts:
+
+  1. **Nothing imports them.** Seven modules, plus `plotutil.py`, which is
+     imported only by three of the seven — so the whole cluster is orphaned,
+     not just its leaves.
+  2. **They all write `.jpeg`.** `results/` holds 2,729 SVG, 957 PDF, 41 PNG,
+     27 CSV — and **zero JPEG**.
+  3. **None of their output names exists.** `pie_*_dist`, `pie_*_tuning`,
+     `pie_*_comb`, `early_late_sampling`, `sampling_feedback_tuning`,
+     `sigf_no_prior`, `prior_cur_overlap` — zero matches anywhere in
+     `results/`.
+  4. **The inline code demonstrably writes the published artifacts.** The
+     notebook's `plotPriorCurrentTuning` writes
+     `PriorCurrentTuning/{br}_{epoch}_prior_current_tuning.svg` and its Venn
+     cell writes `FastSlowVenn/valid_10%_{br}.svg`; both directories are
+     present and populated.
+  5. **They contain no analysis the inline code lacks.** No hypothesis test in
+     any of them — the only statistical calls are `sem()` for error bars,
+     which the inline `_plotBrainRegionTuning` also computes.
+
+  Last touched in the initial "Add Code" commit (2025-12-30) and never since,
+  while `corrthreshregions.py` beside them was edited this month. They are a
+  superseded JPEG-era generation, not a parallel implementation.
+
+  **Deleted: 1,052 lines.** The suite went 1045 → 1037, exactly the eight
+  module-import tests for the removed files and nothing else.
+
+  Consequence for D2: it is an **extraction** job. There is no existing module
+  layer to wire up, so the inline panels have to be moved out and tested as
+  they go — the pattern workstream C establishes.
+
 - **D1** Fix the five non-runnable cells in `plottraces3.ipynb`
   (`plotSgfActivitySum`, `_iqrPRCNT`, `max_firing_all_df`, `svm_normed_df` never
   defined; `res_corr_raw` order-dependent). **This is a hard prerequisite for E**

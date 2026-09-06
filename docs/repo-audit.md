@@ -203,8 +203,21 @@ notebook in the repository:
 | `figcode/prevoutcomecurquantile_new.py` | 217 | ditto | `prevoutcomecurquantile.py` |
 | `twop/relogit/vignette.py` | 87 | upstream demo of the vendored package | — |
 
-That is **1,888 lines** of unreferenced code, before counting the inline
-duplicates it shadows.
+That was **1,888 lines** of unreferenced code.
+
+> **Resolved 2026-09-06 (D0).** The `twop/plot` cluster — the seven `stats*` /
+> heatmap modules plus `plotutil.py` — was **deleted**, 1,052 lines. The
+> hypothesis above (that they might be a better factoring worth adopting) did
+> not survive contact with the evidence: they all write `.jpeg`, `results/`
+> contains zero JPEG, none of their output filenames appears anywhere in
+> `results/`, and they hold no hypothesis test the inline code lacks. The
+> notebook's inline functions demonstrably write the published SVGs. See
+> [`execution-plan.md`](execution-plan.md) for the full account.
+>
+> The rest of the table — `trackactivity.py`, `tuningliklihood.py`,
+> `permute2regions.py`, `plottershelper.py`, the two
+> `prevoutcomecurquantile` copies and `relogit/vignette.py` — is untouched and
+> still open.
 
 **Decision needed before deleting the `twop/plot/stats*` family:** they look
 like a *better* factoring of what is currently inline. It may be cheaper to
