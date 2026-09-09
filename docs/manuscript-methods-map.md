@@ -205,11 +205,60 @@ with bounds α > 0 (scale), β ≥ 1 (shape), 0 ≤ λ ≤ 20 (lapse).
 `R(t)` is min–max normalised within subject for display; the observed sampling
 time's mean ± SD is drawn as a horizontal error bar.
 
-**Implementation: inline in `behavior.ipynb`, in three duplicated copies.**
-Functions `_getAvgTrialExtraTime`, `_getAvgPerf`, `_build_perf_curve`,
-`_compute_reward_curve`, `getMetrics`, `plotMetrics`. The "Mixed" section is the
-live one; the two earlier copies ("Ext. Fig. 3b" and "Ext. Fig. 3b - take 2")
-are superseded.
+**Implementation: [`behavior/optimalsampling.py`](../code/behavior/optimalsampling.py)**
+— `perfModel` is eq. (1), `rewardCurve` eqs. (2)–(3), `optimalSamplingTime` the
+argmax. Previously inline in `behavior.ipynb` in three duplicated copies, all
+now replaced.
+
+### `t*` is not always an interior optimum
+
+Eq. (3) maximises reward per *hour*, not per trial. Because each trial costs
+its sampling time **plus** a fixed overhead, sampling longer only pays if the
+accuracy it buys outruns the time it costs. When it does not, the argmax sits
+at the shortest sampling time on the grid: the model's advice is to guess
+immediately and run more trials.
+
+Worked example, both with β = 3, τ_C = 1 s, τ_I = 2 s:
+
+| | | α = 0.3 (evidence accumulates fast) | | α = 3.0 (slowly) | |
+|---|---|---|---|---|---|
+| **t** | | **accuracy** | **rewards/h** | **accuracy** | **rewards/h** |
+| 0.05 s | | 50.2% | 1168 | 50.0% | 1161 |
+| 0.50 s | | 91.0% | **2064** | 50.2% | 907 |
+| 1.00 s | | 98.7% | 1763 | 51.8% | 751 |
+| 3.00 s | | 99.9% | 900 | 75.0% | 635 |
+| 5.00 s | | 100.0% | 600 | 91.1% | 539 |
+| | | *t\* = 0.54 s* | | *t\* = 0.05 s (the floor)* | |
+
+At α = 0.3, waiting 0.45 s more lifts accuracy from 50% to 91% while the
+expected trial barely lengthens — 1.55 s to 1.59 s. It stays almost free
+because a correct trial carries the *shorter* overhead (τ_C = 1 s vs
+τ_I = 2 s), so being right more often refunds most of the sampling time. Reward
+rate nearly doubles.
+
+At α = 3.0, the same 0.45 s buys 0.2 percentage points. The overhead refund
+never arrives, the trial stretches from 1.55 s to 1.99 s, and reward rate
+falls. Every subsequent second makes it worse, so the best policy is to stop
+sampling altogether.
+
+**Near the switch, `t*` is unstable.** It is a global argmax jumping between a
+local interior peak and the boundary, so it moves discontinuously:
+
+| α | 1.04 | 1.06 | **1.08** | 1.10 |
+|---|---|---|---|---|
+| best interior R | 1211 | 1199 | 1187 | 1175 |
+| R at the floor | 1192 | 1192 | 1192 | 1192 |
+| `t*` | 1.32 s | 1.33 s | **0.01 s** | 0.01 s |
+
+A 2% change in the fitted α swings `t*` from 1.33 s to the floor while the two
+policies differ by under 1% in reward rate. Worth knowing before reading `t*`
+as a precise quantity from a noisy fit.
+
+**None of this is observed here** — the 17 fitted animals land between 0.53 s
+and 1.88 s, all comfortably interior. It is a property of the equation, not a
+claim about the mice. It does bear on the paper's framing of impulsivity: under
+the paper's own normative objective there are parameter regimes where sampling
+briefly *is* the reward-maximising policy rather than a failure of one.
 
 ---
 

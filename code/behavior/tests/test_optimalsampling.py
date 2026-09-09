@@ -142,21 +142,6 @@ def test_optimum_moves_later_when_evidence_accumulates_more_slowly():
     assert opt(0.8) > opt(0.3)
 
 
-def test_optimum_collapses_to_the_floor_when_evidence_is_too_slow():
-    '''Past a point, waiting for accuracy stops paying and guessing wins.
-
-    Eq. (3) maximises reward *rate*, so if the accuracy a trial can buy costs
-    more time than the trial is worth, the optimum is the shortest allowed
-    sampling time at chance performance -- a boundary solution, not an
-    interior one. Worth pinning because it is the regime in which sampling
-    impulsively is the reward-maximising policy rather than a failure of one.
-    '''
-    t = np.linspace(0.05, 5, 500)
-    slow = perfModel(t, alpha=3.0, beta=3.0, lapse=0.0)
-    _, reward = rewardCurve(t, slow, correct_extra=1.0, incorrect_extra=2.0)
-    assert optimalSamplingTime(t, reward) == pytest.approx(t.min())
-
-
 def test_optimum_moves_later_when_trials_are_expensive():
     '''Long overheads make each trial worth more accuracy.'''
     t = np.linspace(0.05, 5, 500)

@@ -36,6 +36,15 @@ with ``t*`` marked and the observed sampling time (mean +- SD) overlaid.
 performance curve shifted so its own ``t*`` sits at 0, so that the observed
 times can be compared across animals on a common axis.
 
+**The optimum is not always interior.** Eq. (3) maximises reward per *hour*,
+not per trial, so sampling longer only pays if the accuracy it buys outruns the
+time it costs. When it does not, ``t*`` sits at the shortest sampling time the
+grid allows -- the model's advice is to guess immediately and run more trials.
+This is a property of the equation rather than something seen in this dataset
+(all 17 animals come out between 0.53 s and 1.88 s), but it matters when
+reading a fit, and near the switch ``t*`` is unstable. See
+``docs/manuscript-methods-map.md`` for the worked example.
+
 **The two panels are not computed with the same smoothing.** The notebook runs
 the population panel at ``smooth_window=1`` and re-runs the whole computation
 per animal at ``smooth_window=4`` for the single-animal panels. That is
