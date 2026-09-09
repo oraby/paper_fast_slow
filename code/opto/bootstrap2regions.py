@@ -211,6 +211,21 @@ def _hl_diff_unpaired(x, y):
     diffs = x[:,None] - y[None,:]
     return float(np.median(diffs))
 
+def _session_effects(region_df: pd.DataFrame,
+                     calcPerfFn: Callable[[float, float], float]) -> pd.Series:
+    """
+    One effect per session, for a single region within a single phase.
+
+    `include_groups=False` stops pandas handing the callback its own grouping
+    column (a FutureWarning in 2.2+, the default in 3.0). The callback reads
+    only OptoEnabled and ChoiceCorrect, so the numbers are unchanged.
+    """
+    return region_df.groupby('SessId').apply(
+        lambda x: calcPerfFn(x[x.OptoEnabled == 0].ChoiceCorrect.mean(),
+                             x[x.OptoEnabled == 1].ChoiceCorrect.mean()),
+        include_groups=False).dropna()
+
+
 def _aggregate_cross_region_effects(observed_trials_df: pd.DataFrame,
                                     calcPerfFn: Callable[[float, float], float],
                                     resample: bool = False,
@@ -243,14 +258,8 @@ def _aggregate_cross_region_effects(observed_trials_df: pd.DataFrame,
 
     for phase_str, is_early in [('Early', True), ('Late', False)]:
         sub = df[df['IsEarly'] == is_early]
-        mfc = sub[sub['OptoBrainRegion'] == 'MFC'].groupby('SessId').apply(
-            lambda x: calcPerfFn(x[x.OptoEnabled==0].ChoiceCorrect.mean(),
-                                 x[x.OptoEnabled==1].ChoiceCorrect.mean())
-        ).dropna()
-        lfc = sub[sub['OptoBrainRegion'] == 'LFC'].groupby('SessId').apply(
-            lambda x: calcPerfFn(x[x.OptoEnabled==0].ChoiceCorrect.mean(),
-                                 x[x.OptoEnabled==1].ChoiceCorrect.mean())
-        ).dropna()
+        mfc = _session_effects(sub[sub['OptoBrainRegion'] == 'MFC'], calcPerfFn)
+        lfc = _session_effects(sub[sub['OptoBrainRegion'] == 'LFC'], calcPerfFn)
 
         if (mfc.size == 0) or (lfc.size == 0):
             out[f'Delta_{phase_str}'] = np.nan

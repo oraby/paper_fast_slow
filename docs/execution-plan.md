@@ -25,7 +25,7 @@ The eight workstreams as stated:
 | **G0** | Trustworthy baseline | **done** |
 | **A** | Unified `uv` | **done** — everything runs from the lockfile; guarded by `test_environment.py` |
 | **B** | Model trim + docs | **not started** — `Decay Q` still in the registry, `rlmodel/README.md` still says 3 s and uses the oldest figure numbers |
-| **C** | Behaviour tests | **C1–C4 done** — Figures 2A, 2B, 1I-right, S3G, S2B and S2M all extracted (+102 tests, behaviour package 45 → 147); superseded `prevoutcomecurquantile` copies deleted. All reproduce their published values. **C5 remains** (first tests for `figcode/` and `opto/`) |
+| **C** | Behaviour tests | **done** — C1–C4 extracted Figures 2A, 2B, 1I-right, S3G, S2B and S2M (behaviour package 45 → 147 tests), all reproducing their published values; C5 gave `figcode/` and `opto/` their first tests (0 → 64 and 0 → 50). Suite 1266 passed / 1 skipped / 0 failed, and now free of `FutureWarning` |
 | **D** | 2-photon reorg | **D0 done** — the orphaned `twop/plot` modules are resolved and deleted. D1 (`plottraces3.ipynb`'s 6 `NameError` cells) and D2 (extraction) remain |
 | **E** | Runner / papermill | **started ahead of plan** — 4 notebooks carry a `parameters` cell; see the E section for what that does and does not yet cover |
 | **F** | Final cleanup | **not started** — `data/to_delete/` is still 563 MB |
@@ -242,9 +242,30 @@ Targets in priority order, highest-value first:
 - ~~**C4** Delete `figcode/prevoutcomecurquantile_{bak,new}.py`.~~ **Done**:
   407 lines. Git history confirmed the lineage (all three added together, only
   the live one updated since) and neither copy had an importer.
-- **C5** First tests for `figcode/` (0 tests today) and `opto/` (0 tests today).
-  The hierarchical bootstrap behind Figures 3D, 4C and S6G is the highest-value
-  target — it is a resampling procedure with no regression test.
+- ~~**C5** First tests for `figcode/` and `opto/`.~~ **Done.** 114 tests across
+  six new files; both packages added to `testpaths`.
+  - `opto/tests/test_bootstrapping.py` (16) — Figure 3D. Pins the three
+    resampling levels, and pins *why* the nesting is there: the same trials
+    nested under six animals give a bootstrap spread more than twice the flat
+    one, and quadrupling trials per animal halves the flat spread while barely
+    moving the clustered one.
+  - `opto/tests/test_bootstrap2regions.py` (34) — Figures 4C, S6G. Sign-rule
+    p-values, the two Holm families, stratified trial resampling, and the
+    subject-weighted-vs-trial-pooled difference from `bootstrapPerf`.
+  - `figcode/tests/` — `test_util.py` (13), `test_psychometric.py` (18),
+    `test_stayswitch.py` (17), `test_prevoutcomecurquantile.py` (16).
+
+  Side effects, all verified inert against saved before/after output: three
+  pandas-3 deprecation sites fixed (the suite now raises no `FutureWarning`),
+  and `bootstrapping.py`'s `__main__` demo removed — it was broken three ways
+  and could never have run. Findings, including a *wrong* unused
+  Benjamini–Hochberg helper and the two different hierarchical-bootstrap
+  estimators, are in [`repo-audit.md`](repo-audit.md).
+
+  **Not covered, and the obvious follow-on:** `figcode/stheatmap.py` (676
+  lines, Figure S3E) and `figcode/stbydifficulty.py` (502 lines, Figures 1D,
+  1G, S2E–F, S3A) still have no tests, and several `groupby(...).apply` sites
+  in `opto/optoprocessor.py` and `optoreactiontime.py` still warn.
 
 **Why C should precede D even though it does not block it:** C is the same
 refactor (inline → module → test) at roughly one-quarter of D's scale, on a

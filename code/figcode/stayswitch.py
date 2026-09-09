@@ -388,13 +388,18 @@ def _calcGroupUpdate(grp_df, is_many_subjects, prev_trial_val,
         #     res_dict[col] = []
         #     res_dict[f"{col}_SEM"] = []
 
-        subject_res_grp_by = grp_df.groupby("Name").apply(_calcUpdate)
+        # An explicit loop rather than groupby(...).apply: _calcUpdate both
+        # reads and returns "Name", so the grouping column cannot be excluded
+        # from it (which is what pandas 3 does by default). Same values, same
+        # order -- groupby sorts by key either way.
+        subject_updates = [_calcUpdate(subject_df)
+                           for _, subject_df in grp_df.groupby("Name")]
         local_dict = {}
         for col in more_cols_n_subj:
             if col == "nTrialsPrnct": # We will calculate it later
                 continue
             local_dict[col] = [subject_vals[col]
-                               for subject_vals in subject_res_grp_by.values]
+                               for subject_vals in subject_updates]
         # display(subject_res_dict)
         subject_grps_df = pd.DataFrame(local_dict)
         # display(subject_grps_df)

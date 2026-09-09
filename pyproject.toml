@@ -62,4 +62,7 @@ package = false
 # That is why no parent-directory dance is needed any more.
 testpaths = ["code/rlmodel/model/tests", "code/widefield/tests",
              "code/common/tests", "code/twop/tests", "code/behavior/tests",
+             "code/figcode/tests", "code/opto/tests",
              "code/pipeline/tests", "code/util/tests"]
+# code/figcode/psychofit/ is a git submodule (cortex-lab/psychofit) and carries
+# its own unittest suite; it is upstream's to run, not this repo's.

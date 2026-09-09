@@ -490,10 +490,27 @@ two-tailed *p* is twice the fraction of iterations in which the sign of the
 effect differs from the observed effect. Holm–Bonferroni across regions at
 family-wise α = 0.05.
 
-- `opto/bootstrapping.py::bootstrapPerf`
-- `opto/bootstrap2regions.py::bootstrapSignTestApproach2`
+- `opto/bootstrapping.py::bootstrapPerf` — Figure 3D. Tested by
+  `opto/tests/test_bootstrapping.py`.
+- `opto/bootstrap2regions.py::bootstrapSignTestApproach2` — Figures 4C and
+  S6G. Tested by `opto/tests/test_bootstrap2regions.py`.
 - `opto/permute2regions.py` — an alternative permutation approach, **not
   referenced by any notebook**.
+
+**The two are not the same estimator**, though the Methods describe both the
+same way. Both resample subject → session → trial, but `bootstrapPerf` then
+*pools every resampled trial* before applying the statistic, so an animal
+contributing more trials counts for more; `bootstrapSignTestApproach2`
+computes one effect per subject × region × phase and averages those, so every
+animal counts once. They agree on balanced data and diverge on unbalanced
+data. `bootstrapSignTestApproach2` also handles the cross-region Δ = MFC − LFC
+by a *third* scheme — resampling sessions only, and comparing 20 %-trimmed
+means of session-level effects — with Holm applied within phase for the
+within-region tests and across phases for the cross-region ones.
+
+Reproducibility differs too: `bootstrapSignTestApproach2` takes `seed`
+(default 42); `bootstrapPerf` draws from the global `numpy.random` state and
+takes no seed argument. See `docs/repo-audit.md`.
 
 **Mid-inhibition summary (Figure S13).** Sampling times are z-scored against
 each animal's *control* distribution, then a median per condition. RM-ANOVA on

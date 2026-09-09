@@ -187,7 +187,11 @@ def _getGroups(df, combine_sides, is_human_subject):
         dv_bins = [0] + dv_bins
         cut_col = df.DV.abs()
     # print("dv_bins:", dv_bins)
-    return df.groupby(pd.cut(cut_col, bins=dv_bins))
+    # observed=False is the current behaviour, stated explicitly because
+    # pandas 3 flips the default: a coherence bin with no trials is kept, and
+    # `_fitPsych` then feeds its NaN mean to the fit. Dropping empty bins
+    # instead would change published fits, so it is not done here.
+    return df.groupby(pd.cut(cut_col, bins=dv_bins), observed=False)
 
 def getGroupsDVstr(df, combine_sides):
     assert "DVstr" in df.columns, "DVstr column not found"

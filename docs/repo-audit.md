@@ -52,10 +52,14 @@ default extension is a real question, not only a test question.
 | `common` | 1 file | |
 | `widefield` | 1 file | |
 | `pipeline` | 1 file — **not collected**: `pipeline/tests` is missing from `testpaths` in `pyproject.toml`. |
-| `opto` | **0** | Hierarchical bootstrap (Figures 3D, 4C, S6G) is untested. |
-| `figcode` | **0** | Psychometrics, stay/switch, sampling-time heatmaps are untested. |
+| ~~`opto`~~ | ~~**0**~~ → 2 files, 50 tests | ~~Hierarchical bootstrap (Figures 3D, 4C, S6G) is untested.~~ Done in C5. |
+| ~~`figcode`~~ | ~~**0**~~ → 4 files, 64 tests | ~~Psychometrics, stay/switch, sampling-time heatmaps are untested.~~ Partly done in C5; `stheatmap` and `stbydifficulty` still have none. |
 
 *Fork 3.*
+
+**Current suite: 1266 passed, 1 skipped, 0 failed** (~68 s), across
+`rlmodel` 655, `util` 210, `behavior` 147, `twop` 100, `figcode` 64,
+`opto` 50, `widefield` 29, `common` 10, `pipeline` 2.
 
 ---
 
@@ -420,6 +424,105 @@ and the group collapses to sd = 0. They are pooled across animals instead,
 which keeps between-animal differences (sd = 0.265). `animals_per_subject`
 exposes both, and each is pinned by a test.
 
+## What the first `opto/` and `figcode/` tests turned up
+
+C5 added 114 tests to two packages that had none. Nothing here changed a
+published number — the two behaviour-preserving edits below were checked
+against saved output before and after.
+
+### Dead code, now with evidence
+
+| Where | What | Verdict |
+|---|---|---|
+| `bootstrapping.py` `__main__` block | Broken three ways: `_generateMockData` raises `ValueError: 'a' and 'p' must have same size`; it calls `bootstrapPerf(mock_data, num_iterations, …)`, which supplies 2 of the 5 required arguments; and its `_calcPerf` indexes `[:, 1]` while the real caller passes 1-D arrays | **Removed** — the tests are the runnable example now |
+| `bootstrap2regions._holm_step_down` | Exact duplicate of the `statsmodels.multipletests(method='holm')` call the module actually uses. Pinned as equivalent by `test_holm_step_down_duplicates_the_statsmodels_call_that_is_used` | Safe to delete |
+| `bootstrap2regions._bh_fdr` | **Incorrect.** Benjamini–Hochberg steps *up* from the largest p-value, so the running minimum must run in descending order; this takes `cummin` on the ascending sort, dragging every adjusted p down to the smallest. On `{.01, .04, .03}` it returns `.03/.03/.03` where BH gives `.03/.04/.04` — anti-conservative. Nothing calls it | **Delete, do not fix** |
+| `bootstrap2regions._hl_diff_unpaired` | Unreferenced Hodges–Lehmann helper | Safe to delete |
+| `bootstrap2regions` line 1 of `bootstrapSignTestApproach2` | `trials_df = trials_df[trials_df.ChoiceCorrect.notna()].copy()` appears twice in a row | Harmless, drop one |
+
+The `bootstrapSignTestApproach2` docstring says results are "BH/FDR
+corrected"; the code applies **Holm**, which is what the Methods and the
+figure legends say. The docstring is the stale part.
+
+### Two hazards, pinned rather than fixed
+
+- **Any region that is not `MFC` becomes `LFC`.** `_subject_entries_once`
+  maps `'MFC' if region == 'MFC' else 'LFC'`, so a third region reaching it is
+  silently folded into the LFC group instead of raising.
+  `optoprocessor` passes only two regions today, so no published number is
+  affected. Pinned by `test_any_region_that_is_not_mfc_is_relabelled_lfc`.
+- **A zero-coherence trial is binned inconsistently.** `psychometric._getGroups`
+  cuts with right-closed intervals, so with the sides separated a `DV` of
+  exactly 0 lands in `(-0.01, 0.0]` and counts as a *left* stimulus, while with
+  the sides combined the lowest bin starts at 0 and the trial is dropped. The
+  mice have no true 0% coherence level, so neither path shows up in the
+  published panels.
+
+### Two inconsistencies between modules
+
+- **Different significance thresholds for the same figure set.**
+  `figcode/prevoutcomecurquantile.py` stars at *p* < 0.05, while
+  `behavior/fastslowperf.py` uses 0.025 (carried over deliberately when
+  Figure S2M was extracted). Worth one decision rather than two conventions.
+- **Two different hierarchical-bootstrap estimators.**
+  `bootstrapping.bootstrapPerf` (Figure 3D) resamples subject → session →
+  trial and then **pools every resampled trial** before applying the
+  statistic, so an animal with more trials counts for more.
+  `bootstrap2regions` (Figures 4C, S6G) computes **one effect per subject**
+  and averages those. Both are defensible and both are described in the
+  Methods as "hierarchical bootstrap"; they are not the same estimator, and on
+  unbalanced data they disagree. Pinned from both sides by
+  `test_subjects_are_weighted_equally_not_by_trial_count`.
+
+### Reproducibility
+
+`bootstrapPerf` draws from the **global** `numpy.random` state — it takes no
+`seed` or `rng` argument, so Figure 3D's p-value is not reproducible without
+seeding the interpreter. `bootstrapSignTestApproach2` does take `seed`
+(default 42) and is reproducible. Pinned as current behaviour by
+`test_reproducibility_comes_only_from_the_global_numpy_seed`, so moving
+`bootstrapPerf` to a local `Generator` is a deliberate change.
+
+Separately, `psychofit.mle_fit_psycho` draws its random restarts from the same
+global state (`psychofit.py:114`), so a psychometric fit shifts slightly from
+run to run. The published panels use `nfits=100`, which makes the spread small
+but not zero.
+
+### Pandas 3 readiness — three sites fixed, verified inert
+
+All three raised `FutureWarning: DataFrameGroupBy.apply operated on the
+grouping columns` or the `observed=False` deprecation. The suite now runs with
+**no `FutureWarning` or `DeprecationWarning` anywhere**.
+
+| Site | Fix | Evidence it is inert |
+|---|---|---|
+| `figcode/util.py` `normalizeSTAcrossSubjects` | Rewritten as `groupby(...)[cols].transform(...)`. `include_groups=False` was *not* usable: the callback returns the whole sub-frame, so excluding `Name` would have dropped it from the result | Re-ran on the real 63,702-trial frame (20 animals): the transformed column is **bit-identical**, as are the index and `Name` |
+| `opto/bootstrap2regions.py` `_aggregate_cross_region_effects` | Two identical blocks factored into `_session_effects` with `include_groups=False`; the callback reads only `OptoEnabled`/`ChoiceCorrect` | Seeded run of `bootstrapSignTestApproach2` on two cohorts: all 36 result keys and 16 observed entries **byte-identical** |
+| `figcode/psychometric.py` `_getGroups` | `observed=False` stated explicitly rather than inherited. Switching to `True` would drop empty coherence bins and **change published fits**, so it was not done | Behaviour unchanged by construction; pinned by `test_an_empty_coherence_bin_is_kept_not_dropped` |
+| `figcode/stayswitch.py` `_calcGroupUpdate` | Per-animal `groupby(...).apply(_calcUpdate)` replaced by an explicit loop — `_calcUpdate` both reads and returns `Name`, so it cannot be excluded | Same values, same order (groupby sorts by key either way); 16 tests pinned the numbers first |
+
+An empty coherence bin still feeds `NaN` into `_psychFitBasic` via
+`_fitPsych`, which walks every bin and takes a mean. That is a latent issue,
+not a fixed one — dropping empty bins is the fix, and it changes fits.
+
+### Still untested in these packages
+
+`figcode/stheatmap.py` (676 lines, Figure S3E) and `figcode/stbydifficulty.py`
+(502 lines, Figures 1D, 1G, S2E–F, S3A) have no tests. `opto/optoprocessor.py`
+(780 lines) and `optoreactiontime.py` (1,019 lines) are tested only through the
+two bootstrap modules they call; several more `groupby(...).apply` sites in
+them still warn under pandas 2.3 and will need the same treatment.
+
+`opto/permute2regions.py` (272 lines) is the alternative permutation test and
+is not used by any manuscript figure — left untested pending the delete/keep
+decision.
+
+`figcode/prevoutcomecurquantile.py:31` calls `plt.show()` from library code,
+which warns under a non-interactive backend and is the one warning the suite
+still emits. Relevant to fork 7 (automated notebook execution).
+
+---
+
 ## Regenerating figures: what will and will not match
 
 Relevant to forks E and F, which will re-run notebooks and prune `results/`.
@@ -502,9 +605,19 @@ which will break under a runner invoked from the repo root.
   1,445, `behavior/` 249, `optogenetics/` 109, `tracking/` 28, `WF/` 13. Fork 6
   should decide what ships: only the files that back manuscript panels (a few
   dozen), or the full per-subject set that the README advertises as a feature.
-- **`figcode/psychofit/`** is a vendored copy of cortex-lab/psychofit with its
-  own `setup.py` and tests; the Methods cite the upstream URL. Either declare it
-  a dependency or document the vendoring.
+- **`figcode/psychofit/`** is a declared **git submodule** (`.gitmodules`:
+  `code/figcode/psychofit` → `https://github.com/cortex-lab/psychofit.git`),
+  not a vendored copy — its files are tracked in this repo as well, and the
+  Methods cite the upstream URL. It carries its own `unittest` suite, which is
+  upstream's to run; `testpaths` deliberately excludes it. Worth stating in the
+  README either way, since a fresh clone without `--recurse-submodules` breaks
+  every psychometric panel.
+- **`figcode/psychofit-FR03/`** is an empty leftover directory. Git cannot
+  track it, so it is invisible to `git status` and will not appear in a fresh
+  clone — but it is on disk here and should be removed locally.
+- **The nine untracked `data/2p/*.pkl` (3.7 GB) are not in `.gitignore`**, even
+  though the derived `2p_data.zip` is. They show up in every `git status` as
+  untracked, one `git add .` away from being committed.
 - **`twop/relogit/`** is a second vendored package, with its own
   `requirements.txt` that nothing reads.
 - **`conftest.py`** carries a Windows conda DLL workaround derived from
