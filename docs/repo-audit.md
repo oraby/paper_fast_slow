@@ -141,9 +141,10 @@ tests:
 |---|---|---|---|
 | ~~**Figure 2A**~~ | — | **extracted** to `behavior/varexplained.py` (21 tests) | Main figure; four numbers quoted in Results |
 | ~~**Figure 2B**~~ | — | **extracted** to `behavior/optimalsampling.py` (27 tests); the three duplicated copies collapsed to one | Main figure; eqs. 1–3 in Methods. Extraction found a published-figure bug — see below |
-| **Figure 1I-right** | `behavior.ipynb` | `plotSubjectsQuantileUpdate` | Main figure; *p* = 0.0046 |
-| **Figure S2B, S2M** | `behavior.ipynb` | `assignZScoredST`, `errorsDistribution`, `processSubject`, `_plotGroup`, `localSlowFasPsych` | Supplementary |
-| **Figure S3G** | `behavior.ipynb` | `_plotOverTime`, `loopDifficulties`, `loopWinStay`, `staySwitchCDF` | Supplementary; carries a documented 2-mouse exclusion rule |
+| ~~**Figure 1I-right**~~ | — | **extracted** to `behavior/stayswitchupdate.py` | Main figure; *p* = 0.0046 |
+| ~~**Figure S2M**~~ | — | **extracted** to `behavior/fastslowperf.py` | Supplementary |
+| **Figure S2B** | `behavior.ipynb` | `assignZScoredST`, `errorsDistribution`, `processSubject` | Supplementary; **the cell cannot run** — see below |
+| ~~**Figure S3G**~~ | — | **extracted** to `behavior/stayswitchupdate.py`, exclusion now derived | Supplementary |
 | **Figures S3J–M** | `Tracking.ipynb` | all of it — the notebook imports **no** repo module | Supplementary |
 | **Figures 4G, 6B, 6C, 6E, S9A–B, S14A** | `2pAnalysis.ipynb` | `_fastSlowOverlap`, `extractTracesPreferences`, `_plotBrainRegionTuning`, … | Main + supplementary |
 | **Figures 4K, S10A–C, S11A-mid/right, S11B, S12G** | `plottraces3.ipynb` | the AUC/peak correlation machinery, the early/late active-neuron binning, the decoder loop | Main + supplementary |
@@ -367,6 +368,47 @@ the current title is *"Cortical mechanisms of fast versus slow decision making"*
 *Forks 1, 8.*
 
 ---
+
+### Figure S2B does not run in the locked environment
+
+`assignZScoredST`, the first thing the S2B cell calls, raises
+`ValueError: Function did not transform` under pandas 2.3.3 / scipy 1.18:
+
+```python
+df.groupby(grpby_keys, as_index=False).filter(
+    lambda df: len(df) > 50).calcStimulusTime.transform(zscore)
+```
+
+`zscore` returns an ndarray, and `Series.transform` no longer accepts a
+function whose result it cannot align. This is the pandas split the project
+set out to fix, caught in a published figure's code path.
+
+There is a second problem underneath it. `.filter()` returns a **DataFrame**,
+not a groupby, so `.calcStimulusTime.transform(zscore)` z-scored the whole
+pooled frame. `grpby_keys` only ever drove the `> 50` trial cut-off — the
+z-score was never computed within subject, despite the parameter name.
+
+So repairing the cell means choosing what the normalisation should be, and
+that changes a published panel. Three candidates:
+
+| | z-score computed over | between-context difference | between-subject spread |
+|---|---|---|---|
+| what the code did | every row pooled | kept | kept |
+| per `Name` | each subject, both contexts together | kept | removed |
+| per `Name` × `session_type` | each subject within each context | **removed** | removed |
+
+The Methods say S2B is normalised "across both experiment types", which rules
+out the third — and the third would collapse the very difference the panel
+exists to show. The choice is between the first two. `stdispersion.py`
+implements the third for Figure S2C, so whichever is picked, S2B and S2C stay
+distinct analyses.
+
+The published `humans_mice_reaction_time_dist.svg` reports n=18 / 18 / 20
+subjects and 8,349 / 19,760 / 63,668 trials, which is the figure to reproduce.
+(`humans_mice_reaction_time_dist for All Trials.svg` beside it is an older run
+at n=22 humans and is not the published panel.)
+
+**This needs a decision before extraction.** Everything else in C3 is done.
 
 ## Regenerating figures: what will and will not match
 
