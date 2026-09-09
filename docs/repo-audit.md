@@ -368,6 +368,42 @@ the current title is *"Cortical mechanisms of fast versus slow decision making"*
 
 ---
 
+## Regenerating figures: what will and will not match
+
+Relevant to forks E and F, which will re-run notebooks and prune `results/`.
+A regenerated SVG **will not byte-match** the committed one. Two causes,
+established by rendering the same panel both ways:
+
+1. **The rcParams block is load-bearing.** Every notebook opens with
+
+   ```python
+   plt.rcParams['svg.fonttype'] = 'none'
+   plt.rcParams['font.family'] = 'sans-serif'
+   plt.rcParams['font.sans-serif'] = ['Arial']
+   ```
+
+   Any runner that does not replicate **all three** produces different files.
+   Dropping the third line silently substitutes DejaVu Sans for Arial —
+   the figure still renders, so this fails quietly. `svg.fonttype='none'`
+   is what keeps text editable rather than converted to paths.
+
+2. **matplotlib version.** The committed figures were written by 3.8.0
+   (recorded in each SVG's metadata); the locked environment has 3.11.0. With
+   the rcParams matched, 12 of 13 text nodes in Figure 1I-right are identical
+   and the 13th — a mathtext title — has the same characters in the same
+   order, but 3.11 splits them into per-character `<tspan>`s where 3.8 grouped
+   them into words. The style string also moved from the `font:` shorthand to
+   `font-size` + `font-family` longhand. Both are cosmetic, but per-character
+   tspans are more awkward to edit in Illustrator.
+
+**So compare extracted values, not markup.** Parse the SVG and compare
+`<text>` node contents, path geometry, or fill colours — that is how the
+Figure 2A, 2B and 1I-right extractions were verified. A naive
+`>([^<]+)<` regex is not enough: it straddles `<use>` elements and will report
+differences that are not there.
+
+---
+
 ## Notebook parameterisation (fork 7)
 
 Current state: every notebook defines a `global_save_figs` / `SAVE_FIGS` flag

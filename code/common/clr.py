@@ -22,6 +22,18 @@ class Difficulty:
     Med = "#009994"
     Hard = "#680094"
 
+class ExperimentContext:
+    """Palette for the three behavioural contexts compared in Figure S2.
+
+    The human "Accuracy" and "Max Outcome" (speed) instructions, and the
+    head-fixed mice. Defined in behavior.ipynb's preamble before it moved
+    here, so the published figures already use exactly these values.
+    """
+    Accuracy = "#6e286a"
+    MaxOutcome = "#1ba08e"
+    Mice = "#eb8b2d"
+
+
 class Duration:
     Short = "purple"  # ff8903"
     Mid = "#f609a9"
