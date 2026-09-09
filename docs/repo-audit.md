@@ -140,7 +140,7 @@ tests:
 | Panel | Notebook | Inline functions | Manuscript status |
 |---|---|---|---|
 | ~~**Figure 2A**~~ | — | **extracted** to `behavior/varexplained.py` (21 tests) | Main figure; four numbers quoted in Results |
-| **Figure 2B** | `behavior.ipynb` | `_getAvgTrialExtraTime`, `_getAvgPerf`, `_build_perf_curve`, `_compute_reward_curve`, `getMetrics`, `plotMetrics` | Main figure; eqs. 1–3 in Methods. **Three duplicated copies** in the notebook (≈1,800 lines) |
+| ~~**Figure 2B**~~ | — | **extracted** to `behavior/optimalsampling.py` (27 tests); the three duplicated copies collapsed to one | Main figure; eqs. 1–3 in Methods. Extraction found a published-figure bug — see below |
 | **Figure 1I-right** | `behavior.ipynb` | `plotSubjectsQuantileUpdate` | Main figure; *p* = 0.0046 |
 | **Figure S2B, S2M** | `behavior.ipynb` | `assignZScoredST`, `errorsDistribution`, `processSubject`, `_plotGroup`, `localSlowFasPsych` | Supplementary |
 | **Figure S3G** | `behavior.ipynb` | `_plotOverTime`, `loopDifficulties`, `loopWinStay`, `staySwitchCDF` | Supplementary; carries a documented 2-mouse exclusion rule |
@@ -148,6 +148,35 @@ tests:
 | **Figures 4G, 6B, 6C, 6E, S9A–B, S14A** | `2pAnalysis.ipynb` | `_fastSlowOverlap`, `extractTracesPreferences`, `_plotBrainRegionTuning`, … | Main + supplementary |
 | **Figures 4K, S10A–C, S11A-mid/right, S11B, S12G** | `plottraces3.ipynb` | the AUC/peak correlation machinery, the early/late active-neuron binning, the decoder loop | Main + supplementary |
 | **Figure 7D** | `model_to_behavior.ipynb` | `plotQ_R_Heatmap` | Main figure |
+
+### Defect found by extracting Figure 2B
+
+The published `results/behavior/optimal_sampling/all_subj_aligned.svg`
+(Figure 2B-right) draws **all 17 error bars with one animal's SD**. The
+population loop read `m["emp_sampling_time_sem"]` from a variable left over
+from an earlier loop, so every bar got the last animal's value rather than its
+own:
+
+```python
+for name, m in subj_metrics.items():      # m ends up bound to the last animal
+    ...
+for yi, (name, delta_emp, t_opt, p_emp) in enumerate(meta):
+    ax.errorbar(delta_emp, yi, xerr=m["emp_sampling_time_sem"], ...)
+```
+
+Measured off the published SVG: 17 bars, every one 130.0 px wide = ±0.621 s,
+which is exactly `vgatchr2-sk`'s SD. The real per-animal SDs span 0.347–0.924 s
+(2.7×), so the error bars are visibly wrong. Everything else in the panel is
+correct — all 17 Δ-positions reproduce to 0.00 s.
+
+`behavior/optimalsampling.py` uses each animal's own SD, pinned by
+`test_population_panel_uses_each_animals_own_sd`. **The published SVG needs
+regenerating**, and the figure in the manuscript with it. No quoted number
+changes: the legend cites no values from this panel.
+
+Two naming notes carried over: the field was called `..._sem` but always held
+`.std()`, and the manuscript legend correctly says SD — so only the variable
+name was wrong. It is `observed_sampling_time_sd` now.
 
 Inline-versus-module balance (top-level `def`s in code cells against `from .`
 imports, measured on the extracted code cells):

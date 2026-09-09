@@ -25,7 +25,7 @@ The eight workstreams as stated:
 | **G0** | Trustworthy baseline | **done** |
 | **A** | Unified `uv` | **done** — everything runs from the lockfile; guarded by `test_environment.py` |
 | **B** | Model trim + docs | **not started** — `Decay Q` still in the registry, `rlmodel/README.md` still says 3 s and uses the oldest figure numbers |
-| **C** | Behaviour tests | **C1 done** — Figure 2A extracted to `behavior/varexplained.py` + 21 tests (behaviour package 45 → 66). Reproduces the published bars, the 101.9% total and the 14.3–22.2 condition numbers exactly. C2–C5 remain; Figure 2B is still inline and triplicated |
+| **C** | Behaviour tests | **C1 + C2 done** — Figures 2A and 2B extracted to `behavior/varexplained.py` and `behavior/optimalsampling.py`, +48 tests (behaviour package 45 → 93). Both reproduce their published figures; C2 collapsed three duplicated copies into one and uncovered a published-figure bug (see the audit). C3–C5 remain |
 | **D** | 2-photon reorg | **D0 done** — the orphaned `twop/plot` modules are resolved and deleted. D1 (`plottraces3.ipynb`'s 6 `NameError` cells) and D2 (extraction) remain |
 | **E** | Runner / papermill | **started ahead of plan** — 4 notebooks carry a `parameters` cell; see the E section for what that does and does not yet cover |
 | **F** | Final cleanup | **not started** — `data/to_delete/` is still 563 MB |
@@ -223,12 +223,16 @@ to delete.
 
 Targets in priority order, highest-value first:
 
-- **C1** Figure 2A — variance explained. Currently `_glmRTFn`, `_simplifyDF`,
-  `loopSubjects`, `plotVarExplaind` inline in `behavior.ipynb`. Four numbers from
-  it are quoted in the Results text.
-- **C2** Figure 2B — optimal sampling. Inline, **triplicated** (~1,800 notebook
-  lines across three copies; only the "Mixed" section is live). Methods
-  eqs. 1–3. Extracting this deletes two copies at the same time.
+- ~~**C1** Figure 2A — variance explained.~~ **Done**: `behavior/varexplained.py`,
+  21 tests. Reproduces the four published bars, n=9, the 101.9% total and the
+  14.3–22.2 condition numbers exactly.
+- ~~**C2** Figure 2B — optimal sampling.~~ **Done**: `behavior/optimalsampling.py`,
+  27 tests. Three duplicated copies collapsed to one (notebook 13.25 → 9.26 MB);
+  all 17 published Δ-positions reproduce to 0.00 s. Dropped along the way: the
+  two dead copies, the non-manuscript `plotMetrics3D` (`3d_plot.svg`) and
+  `results/optimal_sampling_time.svg`, and a mid-notebook `%matplotlib widget`
+  switch that would have broken any headless runner. **Fixed a published-figure
+  bug** — see the audit.
 - **C3** Figure 1I-right, S3G, S2B, S2M — the remaining inline behaviour panels.
 - **C4** Delete `figcode/prevoutcomecurquantile_{bak,new}.py` (407 lines,
   superseded).
