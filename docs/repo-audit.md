@@ -228,8 +228,8 @@ notebook in the repository:
 | `twop/tuningliklihood.py` | 140 | — | — |
 | `opto/permute2regions.py` | 272 | alternative permutation test to the hierarchical bootstrap | `opto/bootstrap2regions.py` |
 | `pipeline/plottershelper.py` | 31 | — | — |
-| `figcode/prevoutcomecurquantile_bak.py` | 190 | earlier Figure 1I-left | `prevoutcomecurquantile.py` |
-| `figcode/prevoutcomecurquantile_new.py` | 217 | ditto | `prevoutcomecurquantile.py` |
+| ~~`figcode/prevoutcomecurquantile_bak.py`~~ | 190 | earlier Figure 1I-left | **deleted (C4)** |
+| ~~`figcode/prevoutcomecurquantile_new.py`~~ | 217 | ditto | **deleted (C4)** |
 | `twop/relogit/vignette.py` | 87 | upstream demo of the vendored package | — |
 
 That was **1,888 lines** of unreferenced code.
@@ -243,18 +243,24 @@ That was **1,888 lines** of unreferenced code.
 > notebook's inline functions demonstrably write the published SVGs. See
 > [`execution-plan.md`](execution-plan.md) for the full account.
 >
+> **Resolved 2026-09-09 (C4).** The two `prevoutcomecurquantile` copies were
+> **deleted**, 407 lines. Git history settles the lineage: all three files
+> arrived in one commit (`79c4575`), and only `prevoutcomecurquantile.py` was
+> touched afterwards (`28926cf`). The three share an identical function set,
+> the live one is the longest, and the differences are earlier phrasings of the
+> same logic rather than anything unique. `_bak` and `_new` had no importers;
+> the live module has four.
+>
 > The rest of the table — `trackactivity.py`, `tuningliklihood.py`,
-> `permute2regions.py`, `plottershelper.py`, the two
-> `prevoutcomecurquantile` copies and `relogit/vignette.py` — is untouched and
-> still open.
+> `permute2regions.py`, `plottershelper.py` and `relogit/vignette.py` — is
+> untouched and still open.
 
 **Decision needed before deleting the `twop/plot/stats*` family:** they look
 like a *better* factoring of what is currently inline. It may be cheaper to
 adopt them (and delete the inline copies) than to delete them. Comparing their
 output against the published SVGs is the first task of fork 5.
 
-`figcode/prevoutcomecurquantile_{bak,new}.py` and `twop/relogit/vignette.py` are
-unambiguous deletions.
+`twop/relogit/vignette.py` is an unambiguous deletion.
 
 *Forks 5, 6.*
 

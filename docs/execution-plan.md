@@ -25,7 +25,7 @@ The eight workstreams as stated:
 | **G0** | Trustworthy baseline | **done** |
 | **A** | Unified `uv` | **done** — everything runs from the lockfile; guarded by `test_environment.py` |
 | **B** | Model trim + docs | **not started** — `Decay Q` still in the registry, `rlmodel/README.md` still says 3 s and uses the oldest figure numbers |
-| **C** | Behaviour tests | **C1 + C2 done** — Figures 2A and 2B extracted to `behavior/varexplained.py` and `behavior/optimalsampling.py`, +48 tests (behaviour package 45 → 93). Both reproduce their published figures; C2 collapsed three duplicated copies into one and uncovered a published-figure bug (see the audit). C3–C5 remain |
+| **C** | Behaviour tests | **C1, C2, C4 done** — Figures 2A and 2B extracted to `behavior/varexplained.py` and `behavior/optimalsampling.py`, +47 tests (behaviour package 45 → 92); the two superseded `prevoutcomecurquantile` copies deleted. Both figures reproduce; C2 collapsed three duplicated copies into one and uncovered a published-figure bug (see the audit). **C3 and C5 remain** |
 | **D** | 2-photon reorg | **D0 done** — the orphaned `twop/plot` modules are resolved and deleted. D1 (`plottraces3.ipynb`'s 6 `NameError` cells) and D2 (extraction) remain |
 | **E** | Runner / papermill | **started ahead of plan** — 4 notebooks carry a `parameters` cell; see the E section for what that does and does not yet cover |
 | **F** | Final cleanup | **not started** — `data/to_delete/` is still 563 MB |
@@ -234,8 +234,9 @@ Targets in priority order, highest-value first:
   switch that would have broken any headless runner. **Fixed a published-figure
   bug** — see the audit.
 - **C3** Figure 1I-right, S3G, S2B, S2M — the remaining inline behaviour panels.
-- **C4** Delete `figcode/prevoutcomecurquantile_{bak,new}.py` (407 lines,
-  superseded).
+- ~~**C4** Delete `figcode/prevoutcomecurquantile_{bak,new}.py`.~~ **Done**:
+  407 lines. Git history confirmed the lineage (all three added together, only
+  the live one updated since) and neither copy had an importer.
 - **C5** First tests for `figcode/` (0 tests today) and `opto/` (0 tests today).
   The hierarchical bootstrap behind Figures 3D, 4C and S6G is the highest-value
   target — it is a resampling procedure with no regression test.
