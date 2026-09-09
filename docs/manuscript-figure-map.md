@@ -62,7 +62,7 @@ first — notebook headings use older figure numbers.
 
 | Panel | Content & reported numbers | Notebook | Backend | `results/` |
 |---|---|---|---|---|
-| **2A** | Variance explained per predictor (OLS log-likelihood, leave-one-out), n=9 mice: coherence **27.15% ± 6.87**, reward history **34.36% ± 7.94**, motor bias **21.02% ± 5.82**, win-stay **19.32% ± 5.46**. Contributions sum to 101.9%; design condition numbers 14.3–22.2 | `behavior.ipynb` "Fig. 2A" | **inline** `_glmRTFn`, `_simplifyDF`, `loopSubjects`, `plotVarExplaind` | `behavior/model_OLS_var_explained_w_filter.svg` |
+| **2A** | Variance explained per predictor (OLS log-likelihood, leave-one-out), n=9 mice: coherence **27.15% ± 6.87**, reward history **34.36% ± 7.94**, motor bias **21.02% ± 5.82**, win-stay **19.32% ± 5.46**. Contributions sum to 101.9%; design condition numbers 14.3–22.2 | `behavior.ipynb` "Fig. 2A" | `behavior/varexplained.py` | `behavior/model_OLS_var_explained_w_filter.svg` |
 | **2B** | Reward-rate optimum vs observed sampling time (example mouse + population aligned to each animal's optimum). Animals with <1,000 trials excluded | `behavior.ipynb` §"Collected as function of sampling time & accuracy" — three duplicated implementations; the "Mixed" section is the live one | **inline** `_getAvgTrialExtraTime`, `_getAvgPerf`, `_build_perf_curve`, `_compute_reward_curve`, `getMetrics`, `plotMetrics` | `behavior/optimal_sampling/`, `results/optimal_sampling_time.svg` |
 | **2C** | Schematic of the RL-DDM family | — | *not from this repo* | — |
 | **2D** | Schematic: Q-learning → starting point (z); R-learning → noise amplitude | — | *not from this repo* | — |

@@ -139,7 +139,7 @@ tests:
 
 | Panel | Notebook | Inline functions | Manuscript status |
 |---|---|---|---|
-| **Figure 2A** | `behavior.ipynb` | `_glmRTFn`, `_simplifyDF`, `loopSubjects`, `plotVarExplaind` | Main figure; four numbers quoted in Results |
+| ~~**Figure 2A**~~ | — | **extracted** to `behavior/varexplained.py` (21 tests) | Main figure; four numbers quoted in Results |
 | **Figure 2B** | `behavior.ipynb` | `_getAvgTrialExtraTime`, `_getAvgPerf`, `_build_perf_curve`, `_compute_reward_curve`, `getMetrics`, `plotMetrics` | Main figure; eqs. 1–3 in Methods. **Three duplicated copies** in the notebook (≈1,800 lines) |
 | **Figure 1I-right** | `behavior.ipynb` | `plotSubjectsQuantileUpdate` | Main figure; *p* = 0.0046 |
 | **Figure S2B, S2M** | `behavior.ipynb` | `assignZScoredST`, `errorsDistribution`, `processSubject`, `_plotGroup`, `localSlowFasPsych` | Supplementary |

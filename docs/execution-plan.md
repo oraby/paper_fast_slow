@@ -25,7 +25,7 @@ The eight workstreams as stated:
 | **G0** | Trustworthy baseline | **done** |
 | **A** | Unified `uv` | **done** — everything runs from the lockfile; guarded by `test_environment.py` |
 | **B** | Model trim + docs | **not started** — `Decay Q` still in the registry, `rlmodel/README.md` still says 3 s and uses the oldest figure numbers |
-| **C** | Behaviour tests | **barely started** — 45 tests (was 42). Figures 2A and 2B are still inline in `behavior.ipynb`; no `varexplained` / `optimalsampling` module exists |
+| **C** | Behaviour tests | **C1 done** — Figure 2A extracted to `behavior/varexplained.py` + 21 tests (behaviour package 45 → 66). Reproduces the published bars, the 101.9% total and the 14.3–22.2 condition numbers exactly. C2–C5 remain; Figure 2B is still inline and triplicated |
 | **D** | 2-photon reorg | **D0 done** — the orphaned `twop/plot` modules are resolved and deleted. D1 (`plottraces3.ipynb`'s 6 `NameError` cells) and D2 (extraction) remain |
 | **E** | Runner / papermill | **started ahead of plan** — 4 notebooks carry a `parameters` cell; see the E section for what that does and does not yet cover |
 | **F** | Final cleanup | **not started** — `data/to_delete/` is still 563 MB |
