@@ -16,6 +16,7 @@ against "does the paper still build?".
 | [`manuscript-methods-map.md`](manuscript-methods-map.md) | Methods section → code. Every analysis described in *Quantification and Statistical Analysis*, including all model equations as written in the paper, with the module that implements it. |
 | [`repo-audit.md`](repo-audit.md) | Findings from the mapping pass: dead code, orphaned backends, environment fragmentation, test gaps, stale documentation. This is the input for the cleanup work. |
 | [`data-portability.md`](data-portability.md) | Why most artifacts under `data/` load in only one interpreter, and the one-off migration that removes the dependency. Read before touching `data/`. |
+| [`manuscript-issues.md`](manuscript-issues.md) | Discrepancies found between the manuscript and the figures or code that produce it, each with how it was verified. Nothing here is changed in the `.docx`; this is the list to work from. |
 | [`execution-plan.md`](execution-plan.md) | Dependency analysis of the cleanup workstreams: what blocks what, which forks can run concurrently without colliding, and the six decisions that gate the work. |
 
 ## Conventions used in these documents

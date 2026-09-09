@@ -25,12 +25,12 @@ The eight workstreams as stated:
 | **G0** | Trustworthy baseline | **done** |
 | **A** | Unified `uv` | **done** — everything runs from the lockfile; guarded by `test_environment.py` |
 | **B** | Model trim + docs | **not started** — `Decay Q` still in the registry, `rlmodel/README.md` still says 3 s and uses the oldest figure numbers |
-| **C** | Behaviour tests | **C1, C2, C4 done; C3 3-of-4** — Figures 2A, 2B, 1I-right, S3G and S2M extracted (+87 tests, behaviour package 45 → 132); superseded `prevoutcomecurquantile` copies deleted. All reproduce their published values. **S2B is blocked on a normalisation decision** (its cell cannot run under the locked pandas). C5 remains |
+| **C** | Behaviour tests | **C1–C4 done** — Figures 2A, 2B, 1I-right, S3G, S2B and S2M all extracted (+102 tests, behaviour package 45 → 147); superseded `prevoutcomecurquantile` copies deleted. All reproduce their published values. **C5 remains** (first tests for `figcode/` and `opto/`) |
 | **D** | 2-photon reorg | **D0 done** — the orphaned `twop/plot` modules are resolved and deleted. D1 (`plottraces3.ipynb`'s 6 `NameError` cells) and D2 (extraction) remain |
 | **E** | Runner / papermill | **started ahead of plan** — 4 notebooks carry a `parameters` cell; see the E section for what that does and does not yet cover |
 | **F** | Final cleanup | **not started** — `data/to_delete/` is still 563 MB |
 
-Suite: **1129 passed, 1 skipped, 0 failed**.
+Suite: **1146 passed, 1 skipped, 0 failed**.
 
 ---
 
@@ -233,12 +233,12 @@ Targets in priority order, highest-value first:
   `results/optimal_sampling_time.svg`, and a mid-notebook `%matplotlib widget`
   switch that would have broken any headless runner. **Fixed a published-figure
   bug** — see the audit.
-- **C3** — **3 of 4 done.** Figure 1I-right and S3G extracted to
-  `behavior/stayswitchupdate.py` (25 tests, exclusion rule now derived rather
-  than hard-coded); Figure S2M to `behavior/fastslowperf.py` (15 tests, all
-  three published Holm p-values reproduced). **S2B is blocked on a decision** —
-  its cell does not run under the locked pandas, and repairing it means
-  choosing a normalisation that changes the panel. See the audit.
+- ~~**C3** Figure 1I-right, S3G, S2B, S2M.~~ **Done.** 1I-right and S3G to
+  `behavior/stayswitchupdate.py` (25 tests, exclusion rule now derived);
+  S2M to `behavior/fastslowperf.py` (15 tests, all three published Holm
+  p-values reproduced); S2B to `behavior/stdistribution.py` (15 tests) —
+  that cell did not run under the locked pandas, and its normalisation is
+  now per-subject across contexts, reproducing the published counts.
 - ~~**C4** Delete `figcode/prevoutcomecurquantile_{bak,new}.py`.~~ **Done**:
   407 lines. Git history confirmed the lineage (all three added together, only
   the live one updated since) and neither copy had an importer.

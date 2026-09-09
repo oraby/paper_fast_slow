@@ -143,7 +143,7 @@ tests:
 | ~~**Figure 2B**~~ | — | **extracted** to `behavior/optimalsampling.py` (27 tests); the three duplicated copies collapsed to one | Main figure; eqs. 1–3 in Methods. Extraction found a published-figure bug — see below |
 | ~~**Figure 1I-right**~~ | — | **extracted** to `behavior/stayswitchupdate.py` | Main figure; *p* = 0.0046 |
 | ~~**Figure S2M**~~ | — | **extracted** to `behavior/fastslowperf.py` | Supplementary |
-| **Figure S2B** | `behavior.ipynb` | `assignZScoredST`, `errorsDistribution`, `processSubject` | Supplementary; **the cell cannot run** — see below |
+| ~~**Figure S2B**~~ | — | **extracted** to `behavior/stdistribution.py`; the cell could not run before | Supplementary |
 | ~~**Figure S3G**~~ | — | **extracted** to `behavior/stayswitchupdate.py`, exclusion now derived | Supplementary |
 | **Figures S3J–M** | `Tracking.ipynb` | all of it — the notebook imports **no** repo module | Supplementary |
 | **Figures 4G, 6B, 6C, 6E, S9A–B, S14A** | `2pAnalysis.ipynb` | `_fastSlowOverlap`, `extractTracesPreferences`, `_plotBrainRegionTuning`, … | Main + supplementary |
@@ -369,7 +369,7 @@ the current title is *"Cortical mechanisms of fast versus slow decision making"*
 
 ---
 
-### Figure S2B does not run in the locked environment
+### Figure S2B did not run in the locked environment — resolved
 
 `assignZScoredST`, the first thing the S2B cell calls, raises
 `ValueError: Function did not transform` under pandas 2.3.3 / scipy 1.18:
@@ -408,7 +408,17 @@ subjects and 8,349 / 19,760 / 63,668 trials, which is the figure to reproduce.
 (`humans_mice_reaction_time_dist for All Trials.svg` beside it is an older run
 at n=22 humans and is not the published panel.)
 
-**This needs a decision before extraction.** Everything else in C3 is done.
+**Resolved 2026-09-10.** Per-`Name` was chosen: each subject is z-scored once
+across both contexts, then split. `behavior/stdistribution.py` implements it
+and reproduces the published subject and trial counts exactly (18 / 18 / 20
+subjects; 8,349 / 19,760 / 63,668 trials), with the between-context gap
+intact (accuracy +0.962 vs speed −0.348 mean z).
+
+One consequence had to be handled: mice have a single context, so the same
+rule is degenerate for them — every animal's mean z-score becomes exactly 0
+and the group collapses to sd = 0. They are pooled across animals instead,
+which keeps between-animal differences (sd = 0.265). `animals_per_subject`
+exposes both, and each is pinned by a test.
 
 ## Regenerating figures: what will and will not match
 

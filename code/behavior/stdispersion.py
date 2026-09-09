@@ -160,8 +160,14 @@ def pValLabel(p_val: float) -> str:
     return f"{_pValStar(p_val)} p={p_val:.4f}"
 
 
-def _annotateSignificance(ax, posthoc: pd.DataFrame, y_start: float,
-                          y_step: float, fontsize="small"):
+def annotateSignificance(ax, posthoc: pd.DataFrame, y_start: float,
+                         y_step: float, fontsize="small"):
+    '''Draw a significance bracket for every pair in a post-hoc matrix.
+
+    Walks the upper triangle only, stacking each bracket ``y_step`` above
+    the last, and returns the height reached so the caller can size its
+    y-limit. Shared with :mod:`behavior.stdistribution`.
+    '''
     max_y = y_start
     for i, (_, row) in enumerate(posthoc.iterrows()):
         j_start = i + 1  # skip the mirrored half of the matrix
@@ -291,7 +297,7 @@ def plotSTDispersion(df_users: pd.DataFrame,
 
     all_disp = np.concatenate([g["dispersion"].values for g in groups])
     y_step = (np.nanmax(all_disp) - np.nanmin(all_disp))*.18
-    max_y = _annotateSignificance(ax_disp, stats_res["posthoc"],
+    max_y = annotateSignificance(ax_disp, stats_res["posthoc"],
                                   y_start=np.nanmax(all_disp) + y_step*.4,
                                   y_step=y_step)
 
