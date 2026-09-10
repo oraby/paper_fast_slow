@@ -26,7 +26,7 @@ The eight workstreams as stated:
 | **A** | Unified `uv` | **done** — everything runs from the lockfile; guarded by `test_environment.py` |
 | **B** | Model trim + docs | **not started** — `Decay Q` still in the registry, `rlmodel/README.md` still says 3 s and uses the oldest figure numbers |
 | **C** | Behaviour tests | **done, C1–C7** — six panels extracted to `behavior/` (45 → 147 tests); `figcode/`, `opto/` and the new `tracking/` given their first tests (0 → 114, 0 → 50, 0 → 49). C6 found and fixed **two panels that could not be regenerated** (Figures 1D, S3E); C7 extracted `Tracking.ipynb` (Figures S3J–M), whose panels raised `NameError` outside the notebook. All verified against the committed figures |
-| **D** | 2-photon reorg | **D0, D1 done** — orphaned modules deleted; no notebook now loads an undefined name. **Two blockers surfaced** (see D1): `TwoPTraces.ipynb`'s Figure 4H sorting reference and `TwoPLoad.ipynb` both call code that has never existed in this repo. D2 (extraction) remains |
+| **D** | 2-photon reorg | **D0, D1 done** — orphaned modules deleted; **no notebook loads an undefined name**. Figure 4H's sorting reference is restored (a missed rename). `TwoPLoad.ipynb` remains a decision. D2 (extraction) remains |
 | **E** | Runner / papermill | **started ahead of plan** — 4 notebooks carry a `parameters` cell; see the E section for what that does and does not yet cover |
 | **F** | Final cleanup | **not started** — `data/to_delete/` is still 563 MB |
 
@@ -377,33 +377,55 @@ Scale: 11,750 lines of notebook code and 143 inline `def`s across
   working way" contains the live `plotActivitySum` call; "Continue with old
   code" contains the Figure 4K path. Only dependency and output analysis works.
 
-### Two blockers D1 surfaced — decisions needed
+### The two blockers D1 surfaced — one resolved, one narrowed
 
-Both are references to code that **has never existed in this repo** (checked
-across all `.py` in git history and every notebook, live or commented):
+Both were references to code absent from this repo. The author's earlier
+project (`OneDrive/caiman/`) supplied the answers — and they were different
+answers.
 
-1. **`TwoPTraces.ipynb` calls `loopCombinations`** (cells 19 and 22), which is
-   defined nowhere; only `loopCombinationsTraces` exists. The following cells
-   `assert success` / `assert success_quantiles`, so the section fails hard.
-   That section builds the **all-trials sorting reference for Figure 4H** —
-   the Methods say Fast/Slow heatmaps "were sorted in reference to all trials'
-   heatmap". So Figure 4H is not reproducible from this checkout as it stands.
+**1. `TwoPTraces.ipynb` / Figure 4H — resolved, and not by restoring anything.**
 
-2. **`TwoPLoad.ipynb` cannot run at all.** Beyond the imports (fixed), it reads
-   `pkl/df_all_by_epoch.pkl` and writes `../results/opto2P` — neither exists;
-   the data lives in `data/2p/`. Two names are still unbound: `shorth` (a
-   shortest-half estimator, cell 23) and `ref_accepted_traces` (assignment
-   commented out, cell 30). It also has no `SAVE_FIGS` / `fig_save_prefix`
-   cell, unlike every other notebook, contrary to `CLAUDE.md`.
+`loopCombinations` is defined nowhere here. It exists in the ancestor notebook
+`caiman/TwoP/again/plottraces3.ipynb`, and comparing the two shows it was
+*generalised* into `loopHeatmapCombinations` — which sits in the cell directly
+above the broken calls. `loopCombinationsTraces` was updated to the new name;
+these two call sites were missed.
 
-   `README.md` describes it as building the frames the other 2P notebooks
-   consume — but since it cannot run here, those frames in `data/2p/` came from
-   somewhere else. Cell 23 does implement a documented Method (the active-trial
-   threshold), so this is provenance worth keeping in *some* form.
+Calling the successor with its defaults reproduces the ancestor's hardcoded
+loops exactly:
 
-   Options: repair it against the real paths, reduce it to the parts that are
-   documented Methods, or drop it and say plainly in the README that the 2P
-   frames are supplied pre-built by the download archive.
+| ancestor (hardcoded) | successor (default) |
+|---|---|
+| `(None, None)` | `sgf_data_cols_comb_li=[(None, None)]` |
+| `[False]` | `combin_all_sess_li=[False]` |
+| `[(True, True)]` | `heatmap_sorting_options_li=[RESORT_TO_ALL]` |
+| `[Combinations.All]` | `combinations_li=[Combinations.All]` |
+| `[False, True]` | `heatmap_firing_range_options_li=[SELF_RNG, SHARED_RNG]` |
+
+The last row is the same pair iterated the other way, which changes the order
+figures are produced in, not their content. The one parameter lost in the
+generalisation, `only_single_sess`, is left at its default by both call sites.
+
+So the fix was a two-word rename, not resurrected code. **Caveat:** this
+restores the code path; it does not prove the figure reproduces, which needs
+the 2P data and a full run.
+
+**2. `TwoPLoad.ipynb` — still a decision, but better informed.**
+
+- `shorth` (cell 23) **is recoverable**: a 25-line shortest-half estimator in
+  `caiman/paper_fast_slow/code/TwoP.ipynb`.
+- `ref_accepted_traces` (cell 30) is **broken in the ancestor too** — the
+  assignment is commented out there as well, and used live in an `axhline`. Not
+  a porting loss; that cell has never run anywhere.
+- The paths are still wrong regardless: it reads `pkl/df_all_by_epoch.pkl` and
+  writes `../results/opto2P`, neither of which exists here. It also has no
+  `SAVE_FIGS` / `fig_save_prefix` cell, unlike every other notebook.
+
+Since it cannot run here, the frames in `data/2p/` came from the ancestor
+project, and the download archive is their real source. Cell 23 does implement
+a documented Method (the active-trial threshold), so the choice is between
+repairing it against real paths, reducing it to the documented parts, or
+dropping it and saying in the README that the 2P frames arrive pre-built.
 
 - **D2** Extract the inline panels: 4G, 4K, 6B, 6C, 6E, S9A–B, S10A–C,
   S11A-mid/right, S11B, S12G, S14A.
