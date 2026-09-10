@@ -421,6 +421,21 @@ the 2P data and a full run.
   writes `../results/opto2P`, neither of which exists here. It also has no
   `SAVE_FIGS` / `fig_save_prefix` cell, unlike every other notebook.
 
+**Lineage, from a full search of `OneDrive/caiman/`.** `TwoP/again/load.ipynb`
+→ `caiman/paper_fast_slow/code/TwoPLoad.ipynb` → this repo's `TwoPLoad.ipynb`.
+`shorth` and `_iqrPRCNT` originate in `TwoP/again/ROC_tests_new15_09_23_local.ipynb`
+(the "Coped from ROC_tests_new15_09" in cell 23's first line), with copies in
+both `TwoP.ipynb`s. `ref_accepted_traces` is commented out in **every**
+ancestor, `load.ipynb` included — it has never had a value anywhere. Other
+`loopCombinations` definitions (`behavior/evdaccum*.ipynb`,
+`evd_conditions_2p.ipynb`) are unrelated functions sharing the name.
+
+The same search re-checked a D1 deletion: `plotSgfActivitySum` is defined in
+`TwoP/again/plottraces3.ipynb` — but **commented out there too**, run with
+`only_sgf=False` and `save_figs=False`. It never produced the significant-only
+sum the Methods use for S12D-bottom / S12J-right; those come from
+`2pAnalysis.ipynb` (`TrajectoryTuningPlot`, `movementneurons.py`).
+
 Since it cannot run here, the frames in `data/2p/` came from the ancestor
 project, and the download archive is their real source. Cell 23 does implement
 a documented Method (the active-trial threshold), so the choice is between
