@@ -25,8 +25,8 @@ The eight workstreams as stated:
 | **G0** | Trustworthy baseline | **done** |
 | **A** | Unified `uv` | **done** — everything runs from the lockfile; guarded by `test_environment.py` |
 | **B** | Model trim + docs | **not started** — `Decay Q` still in the registry, `rlmodel/README.md` still says 3 s and uses the oldest figure numbers |
-| **C** | Behaviour tests | **done** — C1–C4 extracted Figures 2A, 2B, 1I-right, S3G, S2B and S2M (behaviour package 45 → 147 tests), all reproducing their published values; C5 gave `figcode/` and `opto/` their first tests (0 → 64 and 0 → 50). Suite 1266 passed / 1 skipped / 0 failed, and now free of `FutureWarning` |
-| **D** | 2-photon reorg | **D0 done** — the orphaned `twop/plot` modules are resolved and deleted. D1 (`plottraces3.ipynb`'s 6 `NameError` cells) and D2 (extraction) remain |
+| **C** | Behaviour tests | **C1–C5 done** — Figures 2A, 2B, 1I-right, S3G, S2B and S2M extracted (behaviour package 45 → 147 tests), and `figcode/`/`opto/` given their first tests (0 → 64 and 0 → 50). Suite 1266 passed / 1 skipped / 0 failed, now free of `FutureWarning`. **C6 in progress** (`stbydifficulty`, `stheatmap` — scoping found Figure 1D broken under matplotlib 3.11). **C7** (extract `Tracking.ipynb`) needs a scope decision |
+| **D** | 2-photon reorg | **D0, D1 done** — orphaned modules deleted; no notebook now loads an undefined name. **Two blockers surfaced** (see D1): `TwoPTraces.ipynb`'s Figure 4H sorting reference and `TwoPLoad.ipynb` both call code that has never existed in this repo. D2 (extraction) remains |
 | **E** | Runner / papermill | **started ahead of plan** — 4 notebooks carry a `parameters` cell; see the E section for what that does and does not yet cover |
 | **F** | Final cleanup | **not started** — `data/to_delete/` is still 563 MB |
 
@@ -262,10 +262,40 @@ Targets in priority order, highest-value first:
   Benjamini–Hochberg helper and the two different hierarchical-bootstrap
   estimators, are in [`repo-audit.md`](repo-audit.md).
 
-  **Not covered, and the obvious follow-on:** `figcode/stheatmap.py` (676
-  lines, Figure S3E) and `figcode/stbydifficulty.py` (502 lines, Figures 1D,
-  1G, S2E–F, S3A) still have no tests, and several `groupby(...).apply` sites
-  in `opto/optoprocessor.py` and `optoreactiontime.py` still warn.
+  **Not covered:** see C6 below, plus several `groupby(...).apply` sites in
+  `opto/optoprocessor.py` and `optoreactiontime.py` that still warn.
+
+- **C6** Tests for the two remaining untested `figcode/` figure producers —
+  `stbydifficulty.py` (502 lines; **Figures 1D, 1G**, S2E–F, S3A) and
+  `stheatmap.py` (676 lines; Figure S3E, with the Figure S3F statistics).
+  These are the largest untested figure producers left, and two of the panels
+  are main-figure.
+
+  **Found while scoping this: Figure 1D cannot currently be regenerated.**
+  `stbydifficulty.py:303` calls `matplotlib.cm.get_cmap`, which was removed in
+  matplotlib 3.9; the environment has 3.11, so the call raises
+  `AttributeError`. It sits on the `stDistOnly` → `_handleDifficultyDf` path
+  with `CDF=False, as_kde=False`, which is exactly how Figure 1D is drawn.
+  Same class of breakage as Figure S2B in C3 — an inline/legacy API that the
+  locked environment no longer provides, invisible because nothing exercises
+  it. It is the only such site in `figcode/`, `opto/` and `behavior/`.
+
+  Worth pinning beyond the obvious: the fast/typical/slow band edges are
+  **per-animal tertiles averaged across animals**, not tertiles of the pooled
+  trials, and Figure 1G's slope/θ aggregates per animal for the cohort panel
+  but per session for a single animal. Both are easy to "simplify" wrongly.
+
+- **C7** *(decision needed, not yet scheduled)* Extract `Tracking.ipynb`
+  (**Figures S3J–M**). Verified: 24 code cells, 1,070 lines, and it imports
+  **no repo module at all** — 13 imports, every one stdlib or third-party. It
+  is the last fully-inline notebook that no other fork owns: `2pAnalysis.ipynb`
+  and `plottraces3.ipynb` belong to D, Figure 7D to B, and E touches only this
+  notebook's parameters cell.
+
+  Roughly C1 + C2 combined in size, for one supplementary figure. Leaving it
+  inline is defensible if the goal is a clean push rather than uniform
+  structure — so this is a scope call to make explicitly rather than a task to
+  start by default.
 
 **Why C should precede D even though it does not block it:** C is the same
 refactor (inline → module → test) at roughly one-quarter of D's scale, on a
@@ -316,10 +346,55 @@ Scale: 11,750 lines of notebook code and 143 inline `def`s across
   layer to wire up, so the inline panels have to be moved out and tested as
   they go — the pattern workstream C establishes.
 
-- **D1** Fix the five non-runnable cells in `plottraces3.ipynb`
-  (`plotSgfActivitySum`, `_iqrPRCNT`, `max_firing_all_df`, `svm_normed_df` never
-  defined; `res_corr_raw` order-dependent). **This is a hard prerequisite for E**
-  — no runner can execute a notebook that raises `NameError`.
+- **D1 — done 2026-09-10, and it found more than expected.**
+
+  A static pass over every notebook (bind every assignment / import / def /
+  for-target / comprehension / parameter, then look for Names loaded but never
+  bound) is the check; it now reports **zero** undefined names in
+  `plottraces3.ipynb`, `2pAnalysis.ipynb`, `behavior.ipynb`, `opto.ipynb`,
+  `widefield.ipynb`, `Tracking.ipynb` and `2pSeqWithinDeviation.ipynb`.
+
+  Fixed: five dead cells deleted from `plottraces3.ipynb` (each checked against
+  the figure map and `results/` first), one partly-dead cell trimmed on the
+  S12G path, a commented-out `import seaborn as sns` restored in
+  `2pAnalysis.ipynb`, and 14 imports in `TwoPLoad.ipynb` repointed from a
+  sibling project's layout to this repo's.
+
+  One flagged cell was *wrongly* flagged: the cell building `res_corr_df` is
+  sound in order and load-bearing for Figure 4K right and S10D.
+
+  **Heading names in these notebooks do not indicate what is live.** "Old
+  working way" contains the live `plotActivitySum` call; "Continue with old
+  code" contains the Figure 4K path. Only dependency and output analysis works.
+
+### Two blockers D1 surfaced — decisions needed
+
+Both are references to code that **has never existed in this repo** (checked
+across all `.py` in git history and every notebook, live or commented):
+
+1. **`TwoPTraces.ipynb` calls `loopCombinations`** (cells 19 and 22), which is
+   defined nowhere; only `loopCombinationsTraces` exists. The following cells
+   `assert success` / `assert success_quantiles`, so the section fails hard.
+   That section builds the **all-trials sorting reference for Figure 4H** —
+   the Methods say Fast/Slow heatmaps "were sorted in reference to all trials'
+   heatmap". So Figure 4H is not reproducible from this checkout as it stands.
+
+2. **`TwoPLoad.ipynb` cannot run at all.** Beyond the imports (fixed), it reads
+   `pkl/df_all_by_epoch.pkl` and writes `../results/opto2P` — neither exists;
+   the data lives in `data/2p/`. Two names are still unbound: `shorth` (a
+   shortest-half estimator, cell 23) and `ref_accepted_traces` (assignment
+   commented out, cell 30). It also has no `SAVE_FIGS` / `fig_save_prefix`
+   cell, unlike every other notebook, contrary to `CLAUDE.md`.
+
+   `README.md` describes it as building the frames the other 2P notebooks
+   consume — but since it cannot run here, those frames in `data/2p/` came from
+   somewhere else. Cell 23 does implement a documented Method (the active-trial
+   threshold), so this is provenance worth keeping in *some* form.
+
+   Options: repair it against the real paths, reduce it to the parts that are
+   documented Methods, or drop it and say plainly in the README that the 2P
+   frames are supplied pre-built by the download archive.
+
 - **D2** Extract the inline panels: 4G, 4K, 6B, 6C, 6E, S9A–B, S10A–C,
   S11A-mid/right, S11B, S12G, S14A.
 - **D3** Consolidate trace loading across the three notebooks, on top of G0's
