@@ -57,10 +57,14 @@ default extension is a real question, not only a test question.
 
 *Fork 3.*
 
-**Current suite: 1318 passed, 1 skipped, 0 failed** (~84 s), across
-`rlmodel` 655, `util` 212, `behavior` 147, `figcode` 114, `twop` 100,
-`opto` 50, `widefield` 29, `common` 10, `pipeline` 2. It also passes with
-`FutureWarning` and `DeprecationWarning` promoted to errors.
+**Current suite: 1371 passed, 1 skipped, 0 failed** (~82 s), across
+`rlmodel` 655, `util` 216, `behavior` 147, `figcode` 114, `twop` 100,
+`opto` 50, `tracking` 49, `widefield` 29, `common` 10, `pipeline` 2. It also
+passes with `FutureWarning` and `DeprecationWarning` promoted to errors.
+
+(`util` grows with the repo: `test_environment.py::test_module_imports`
+discovers every module and asserts it resolves from the lockfile, so a new
+package adds cases there automatically.)
 
 ---
 
@@ -150,7 +154,7 @@ tests:
 | ~~**Figure S2M**~~ | — | **extracted** to `behavior/fastslowperf.py` | Supplementary |
 | ~~**Figure S2B**~~ | — | **extracted** to `behavior/stdistribution.py`; the cell could not run before | Supplementary |
 | ~~**Figure S3G**~~ | — | **extracted** to `behavior/stayswitchupdate.py`, exclusion now derived | Supplementary |
-| **Figures S3J–M** | `Tracking.ipynb` | all of it — the notebook imports **no** repo module | Supplementary |
+| ~~**Figures S3J–M**~~ | — | **extracted** to `tracking/centroids.py` and `tracking/strategy.py` (49 tests). The notebook's figure cells went 302 → 25 lines; the preprocessing and video tooling stay put, see below | Supplementary |
 | **Figures 4G, 6B, 6C, 6E, S9A–B, S14A** | `2pAnalysis.ipynb` | `_fastSlowOverlap`, `extractTracesPreferences`, `_plotBrainRegionTuning`, … | Main + supplementary |
 | **Figures 4K, S10A–C, S11A-mid/right, S11B, S12G** | `plottraces3.ipynb` | the AUC/peak correlation machinery, the early/late active-neuron binning, the decoder loop | Main + supplementary |
 | **Figure 7D** | `model_to_behavior.ipynb` | `plotQ_R_Heatmap` | Main figure |
@@ -576,6 +580,52 @@ One deprecation was fixed and verified inert: `stheatmap.py:91` built
 pandas will stop upcasting silently. Creating it as `object` up front gives
 the identical column, and Figure S3E stays text-identical to the published
 SVG.
+
+---
+
+## `Tracking.ipynb` — extracted, with what stayed behind
+
+C7. The notebook produced Figures S3J–M from 1,070 lines that imported **no
+repo module at all**. The four panels are now in `code/tracking/`, verified
+three ways before anything was changed:
+
+- bar geometry identical to the notebook's own function on all 76,311 tracked
+  frames, for both the plain and preferred-side variants;
+- all three centroid SVGs and the strategy SVG **text-identical** to the
+  committed ones;
+- Figure S3M's Holm-corrected p-values reproduce exactly — MLA-73 0.073,
+  MLA-74 0.722, MLA-75 0.105, MLA-76 0.722, giving the published **0/4**.
+
+**The panels could not run outside the notebook.** Both figure functions read
+`save_prefix` as a *free variable* from the notebook's globals, so calling
+either from anywhere else raised `NameError` the moment `save_fig=True`. It is
+now a parameter, and saving without one is refused rather than guessed.
+
+Two things worth flagging beyond the extraction:
+
+- **Two of Figure S3M's four raw p-values are below 0.05** (0.018 and 0.035);
+  only the Holm correction lifts them above it. The claim "no mouse shows a
+  posture difference between strategies" therefore rests on the correction,
+  not on the raw tests. Pinned by a test so nobody quietly drops it.
+- **Figure S3K may be mis-described.** The map had it as "relative to choice
+  direction", but the published call passes `choice_normed=False` and the file
+  carries no `_choice_normed` suffix — it is the un-normalised histogram. The
+  `choice_normed` path exists and is now tested, but no published panel uses
+  it. Worth checking against the caption.
+
+### Still in the notebook
+
+Deliberately left, because neither is a manuscript figure and both are larger
+than the panels themselves:
+
+| Cells | Lines | What |
+|---|---|---|
+| 13–26 | ~370 | The preprocessing chain: behaviour/video time sync, rotation to the head-fixation reference, and missing-limb interpolation. Ends at `df_track_centroid`, which is what the extracted panels consume |
+| 23–24, 27–28 | ~295 | Video and AVI writing — annotated overlays for inspection, not used by any figure |
+
+The preprocessing is the natural follow-on: it is what makes the panels
+reproducible from raw SLEAP output rather than from a notebook that has to be
+run top to bottom. The video tooling is a keep/delete decision for fork F.
 
 ---
 

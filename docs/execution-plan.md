@@ -25,12 +25,12 @@ The eight workstreams as stated:
 | **G0** | Trustworthy baseline | **done** |
 | **A** | Unified `uv` | **done** — everything runs from the lockfile; guarded by `test_environment.py` |
 | **B** | Model trim + docs | **not started** — `Decay Q` still in the registry, `rlmodel/README.md` still says 3 s and uses the oldest figure numbers |
-| **C** | Behaviour tests | **C1–C6 done** — six panels extracted to `behavior/` (45 → 147 tests); `figcode/` and `opto/` given their first tests (0 → 114 and 0 → 50). C6 found and fixed **two panels that could not be regenerated at all** (Figures 1D and S3E), both verified against the committed figures. **C7** (extract `Tracking.ipynb`) needs a scope decision |
+| **C** | Behaviour tests | **done, C1–C7** — six panels extracted to `behavior/` (45 → 147 tests); `figcode/`, `opto/` and the new `tracking/` given their first tests (0 → 114, 0 → 50, 0 → 49). C6 found and fixed **two panels that could not be regenerated** (Figures 1D, S3E); C7 extracted `Tracking.ipynb` (Figures S3J–M), whose panels raised `NameError` outside the notebook. All verified against the committed figures |
 | **D** | 2-photon reorg | **D0, D1 done** — orphaned modules deleted; no notebook now loads an undefined name. **Two blockers surfaced** (see D1): `TwoPTraces.ipynb`'s Figure 4H sorting reference and `TwoPLoad.ipynb` both call code that has never existed in this repo. D2 (extraction) remains |
 | **E** | Runner / papermill | **started ahead of plan** — 4 notebooks carry a `parameters` cell; see the E section for what that does and does not yet cover |
 | **F** | Final cleanup | **not started** — `data/to_delete/` is still 563 MB |
 
-Suite: **1318 passed, 1 skipped, 0 failed**, and green with
+Suite: **1371 passed, 1 skipped, 0 failed**, and green with
 `FutureWarning`/`DeprecationWarning` promoted to errors.
 
 ---
@@ -286,17 +286,26 @@ Targets in priority order, highest-value first:
   session for a single animal, and the reported slope is **negated** because x
   runs Hard→Easy. All three are easy to "simplify" wrongly.
 
-- **C7** *(decision needed, not yet scheduled)* Extract `Tracking.ipynb`
-  (**Figures S3J–M**). Verified: 24 code cells, 1,070 lines, and it imports
-  **no repo module at all** — 13 imports, every one stdlib or third-party. It
-  is the last fully-inline notebook that no other fork owns: `2pAnalysis.ipynb`
-  and `plottraces3.ipynb` belong to D, Figure 7D to B, and E touches only this
-  notebook's parameters cell.
+- ~~**C7** Extract `Tracking.ipynb` (**Figures S3J–M**).~~ **Done.** The four
+  panels are in `code/tracking/` — `centroids.py` (S3J–L) and `strategy.py`
+  (S3M) — with 49 tests. The notebook's figure cells went **302 → 25 lines**.
 
-  Roughly C1 + C2 combined in size, for one supplementary figure. Leaving it
-  inline is defensible if the goal is a clean push rather than uniform
-  structure — so this is a scope call to make explicitly rather than a task to
-  start by default.
+  Both figure functions read `save_prefix` as a **free variable** from the
+  notebook's globals, so either raised `NameError` the moment it was called
+  with `save_fig=True` from anywhere else. That is the same class of latent
+  breakage C6 found, and it is why "it looks maintained" is not evidence.
+
+  Verified three ways before anything changed: bar geometry identical to the
+  notebook's own function on all 76,311 tracked frames; all four SVGs
+  text-identical to the committed ones; and Figure S3M's Holm-corrected
+  p-values reproducing exactly (0.073 / 0.722 / 0.105 / 0.722 → the published
+  **0/4 significant**).
+
+  **Not extracted, deliberately:** the ~370-line preprocessing chain (time
+  sync → rotation → interpolation, ending at `df_track_centroid`) and ~295
+  lines of video/AVI tooling that no figure uses. The preprocessing is the
+  natural follow-on; the video tooling is a keep/delete call for fork F. See
+  [`repo-audit.md`](repo-audit.md).
 
 **Why C should precede D even though it does not block it:** C is the same
 refactor (inline → module → test) at roughly one-quarter of D's scale, on a

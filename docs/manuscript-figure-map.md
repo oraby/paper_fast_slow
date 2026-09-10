@@ -199,10 +199,10 @@ first — notebook headings use older figure numbers.
 | S3G | Win/lose update vs z-scored sampling time, n=9 mice. Bins of 800 trials, Gaussian σ=1 bin. Two mice excluded (18.62% and 13.26% of trials below z=−1 vs a group mean of 3.28%) | `behavior.ipynb` "Ext. Fig. 3g" | **inline** `_plotOverTime`, `loopDifficulties`, `loopWinStay`, `staySwitchCDF` |
 | S3H | Win/lose update by current difficulty, computed per mouse then averaged, n=9 | `behavior.ipynb` "Ext. Fig. 3h" | `figcode/stayswitch.py::staySwitchUpdate` |
 | S3I | Choice bias, fast vs slow. Paired *t*, **p = 0.016**, n=20 | `behavior.ipynb` "Ext. Fig. 3i" | `behavior/bias.py::plotBias` |
-| S3J | Per-trial centroid rotation-angle distance travelled, by strategy | `Tracking.ipynb` "Extended Fig. 4b-c" | **inline** (SLEAP post-processing) |
-| S3K | Polar histogram of mean rotation angle relative to choice direction, 5° bins | `Tracking.ipynb` "Extended Fig. 4d" | **inline** |
-| S3L | Same, relative to each animal's preferred side | `Tracking.ipynb` "Extended Fig. 4e" | **inline** |
-| S3M | Per-animal Kruskal-Wallis on rotation distance across strategies. **0/4 mice significant** | `Tracking.ipynb` | **inline** |
+| S3J | Per-trial centroid rotation-angle distance travelled, by strategy | `Tracking.ipynb` "Extended Fig. 4b-c" | `tracking/centroids.py::plotCentroids` (+ tests) | `tracking/distance_All Tracked Subjects.svg` |
+| S3K | Polar histogram of mean rotation angle, 5° bins. **Not** normalised to choice direction — the published call passes `choice_normed=False` and the file carries no `_choice_normed` suffix. Check against the caption | `Tracking.ipynb` "Extended Fig. 4d" | `tracking/centroids.py::plotCentroids` (+ tests) | `tracking/centroid_rotation_All Tracked Subjects.svg` |
+| S3L | Same, relative to each animal's preferred side | `Tracking.ipynb` "Extended Fig. 4e" | `tracking/centroids.py::plotCentroids(preferred_side_normed=True)` (+ tests) | `tracking/centroid_rotation_preferred_All Tracked Subjects.svg` |
+| S3M | Per-animal Kruskal-Wallis on rotation distance across strategies, Holm-corrected across the 4 mice. **0/4 significant** (raw 0.018 / 0.361 / 0.035 / 0.497 → Holm 0.073 / 0.722 / 0.105 / 0.722 — two of four are raw-significant, so the correction is load-bearing) | `Tracking.ipynb` | `tracking/strategy.py::plotStrategyComparison` (+ tests) | `tracking/strategy_dist_sgf.svg` |
 
 `results/behavior/StaySwitch/`, `behavior/bias/abs_all_bias.svg`, `results/tracking/`.
 
