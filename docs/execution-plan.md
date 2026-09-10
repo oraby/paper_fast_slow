@@ -25,12 +25,13 @@ The eight workstreams as stated:
 | **G0** | Trustworthy baseline | **done** |
 | **A** | Unified `uv` | **done** — everything runs from the lockfile; guarded by `test_environment.py` |
 | **B** | Model trim + docs | **not started** — `Decay Q` still in the registry, `rlmodel/README.md` still says 3 s and uses the oldest figure numbers |
-| **C** | Behaviour tests | **C1–C5 done** — Figures 2A, 2B, 1I-right, S3G, S2B and S2M extracted (behaviour package 45 → 147 tests), and `figcode/`/`opto/` given their first tests (0 → 64 and 0 → 50). Suite 1266 passed / 1 skipped / 0 failed, now free of `FutureWarning`. **C6 in progress** (`stbydifficulty`, `stheatmap` — scoping found Figure 1D broken under matplotlib 3.11). **C7** (extract `Tracking.ipynb`) needs a scope decision |
+| **C** | Behaviour tests | **C1–C6 done** — six panels extracted to `behavior/` (45 → 147 tests); `figcode/` and `opto/` given their first tests (0 → 114 and 0 → 50). C6 found and fixed **two panels that could not be regenerated at all** (Figures 1D and S3E), both verified against the committed figures. **C7** (extract `Tracking.ipynb`) needs a scope decision |
 | **D** | 2-photon reorg | **D0, D1 done** — orphaned modules deleted; no notebook now loads an undefined name. **Two blockers surfaced** (see D1): `TwoPTraces.ipynb`'s Figure 4H sorting reference and `TwoPLoad.ipynb` both call code that has never existed in this repo. D2 (extraction) remains |
 | **E** | Runner / papermill | **started ahead of plan** — 4 notebooks carry a `parameters` cell; see the E section for what that does and does not yet cover |
 | **F** | Final cleanup | **not started** — `data/to_delete/` is still 563 MB |
 
-Suite: **1146 passed, 1 skipped, 0 failed**.
+Suite: **1318 passed, 1 skipped, 0 failed**, and green with
+`FutureWarning`/`DeprecationWarning` promoted to errors.
 
 ---
 
@@ -265,25 +266,25 @@ Targets in priority order, highest-value first:
   **Not covered:** see C6 below, plus several `groupby(...).apply` sites in
   `opto/optoprocessor.py` and `optoreactiontime.py` that still warn.
 
-- **C6** Tests for the two remaining untested `figcode/` figure producers —
-  `stbydifficulty.py` (502 lines; **Figures 1D, 1G**, S2E–F, S3A) and
-  `stheatmap.py` (676 lines; Figure S3E, with the Figure S3F statistics).
-  These are the largest untested figure producers left, and two of the panels
-  are main-figure.
+- ~~**C6** Tests for the two remaining untested `figcode/` figure producers.~~
+  **Done.** 50 tests — `test_stbydifficulty.py` (28; **Figures 1D, 1G**,
+  S2E–F, S3A) and `test_stheatmap.py` (22; Figure S3E and the S3F
+  statistics). `figcode/` is now 114 tests across 6 files.
 
-  **Found while scoping this: Figure 1D cannot currently be regenerated.**
-  `stbydifficulty.py:303` calls `matplotlib.cm.get_cmap`, which was removed in
-  matplotlib 3.9; the environment has 3.11, so the call raises
-  `AttributeError`. It sits on the `stDistOnly` → `_handleDifficultyDf` path
-  with `CDF=False, as_kde=False`, which is exactly how Figure 1D is drawn.
-  Same class of breakage as Figure S2B in C3 — an inline/legacy API that the
-  locked environment no longer provides, invisible because nothing exercises
-  it. It is the only such site in `figcode/`, `opto/` and `behavior/`.
+  **Two published panels could not be regenerated at all**, and both are now
+  fixed and verified against the committed figures — Figure 1D on
+  `matplotlib.cm.get_cmap` (removed in 3.9) and Figure S3E on pandas ≥ 2
+  returning a 1-tuple from `groupby(["one_col"])`. Same shape as the Figure
+  S2B breakage in C3: a legacy API on a path nothing exercised. Full account,
+  including three further `stheatmap` defects pinned but deliberately not
+  fixed (a `mode` option that cannot run, a sort key that ignores its
+  argument, a stray debug print), in [`repo-audit.md`](repo-audit.md).
 
-  Worth pinning beyond the obvious: the fast/typical/slow band edges are
-  **per-animal tertiles averaged across animals**, not tertiles of the pooled
-  trials, and Figure 1G's slope/θ aggregates per animal for the cohort panel
-  but per session for a single animal. Both are easy to "simplify" wrongly.
+  Pinned beyond the obvious: the fast/typical/slow band edges are **per-animal
+  tertiles averaged across animals**, not tertiles of the pooled trials;
+  Figure 1G's slope/θ aggregates per animal for the cohort panel but per
+  session for a single animal, and the reported slope is **negated** because x
+  runs Hard→Easy. All three are easy to "simplify" wrongly.
 
 - **C7** *(decision needed, not yet scheduled)* Extract `Tracking.ipynb`
   (**Figures S3J–M**). Verified: 24 code cells, 1,070 lines, and it imports

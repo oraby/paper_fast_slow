@@ -44,6 +44,17 @@ def stHeatmap(df : pd.DataFrame,
                                            save_prefix=save_prefix)
         plt.show()
 
+def _asTuple(group_key):
+    """Normalise a groupby key to a tuple.
+
+    ``df.groupby(["one_col"])`` yields a 1-tuple in pandas >= 2 and yielded the
+    bare value before. Both grouping keys here are single-element tuples in the
+    shipped configuration, so the callers index them positionally and rely on
+    this.
+    """
+    return group_key if isinstance(group_key, tuple) else (group_key,)
+
+
 def _gropuDataByPriorAndCurrentSubject(df : pd.DataFrame,
                             is_many_subjects : bool,
                             mean_or_median : Literal["mean", "median", "mode"],
@@ -76,7 +87,10 @@ def _gropuDataByPriorAndCurrentSubject(df : pd.DataFrame,
     # df["Strategy"] = np.nan
     # df.loc[df.Stay == True, "Strategy"] = "Stay"
     # df.loc[df.Stay == False, "Strategy"] = "Switch"
-    df["PrevTrial"] = np.nan
+    # Object dtype up front: starting from a float NaN column and assigning
+    # strings into it is deprecated (pandas will raise on the silent upcast).
+    # The resulting column is the same object column either way.
+    df["PrevTrial"] = pd.Series(np.nan, index=df.index, dtype=object)
     df.loc[df.PrevChoiceCorrect == True, "PrevTrial"] = "Rewarded"
     df.loc[df.PrevChoiceCorrect == False, "PrevTrial"] = "Not-Rewarded"
     df["CurDifficulty"] = df.DVstr
@@ -135,22 +149,29 @@ def _stHeatmap(df, is_many_subjects, prev_trial, cur_trial, mean_or_median,
         num_subjects_str = ""
 
     for sub_index, sub_df in  df.groupby(list(prev_trial)):
+        # pandas >= 2 hands back a 1-tuple when grouping by a single-element
+        # list, where it used to hand back the bare value. Both `prev_trial`
+        # and `cur_trial` are single-element tuples unless PREV_DIFFICULTY is
+        # on, so normalise the key rather than depending on the pandas
+        # version. Without this the panel raises
+        # "Length of values (1) does not match length of index (3)".
+        sub_index = _asTuple(sub_index)
         sub_df = sub_df.copy()
         indx_groups = sub_df.groupby(list(cur_trial), as_index=False)
         if is_many_subjects:
-            print("sub_index:", indx_groups, type(indx_groups))
             # It's a group of subjects)
             avg_dict = {k:[] for k in cur_trial}
             avg_dict["calcStimulusTime"] = []
             avg_dict["calcStimulusTimeSEM"] = []
             for grp_name, grp_st in indx_groups:
+                grp_name = _asTuple(grp_name)
                 vals = grp_st.groupby("Name").calcStimulusTime
                 # avg_dict[grp_name] = pd.Series(vals, name=grp_name)
                 avg = vals.mean() if mean_or_median == "mean" else vals.median()
                 avg_dict["calcStimulusTime"].extend(avg)
                 avg_dict["calcStimulusTimeSEM"].extend(vals.sem())
-                for k in cur_trial:
-                    avg_dict[k].extend([grp_name]*len(vals))
+                for position, k in enumerate(cur_trial):
+                    avg_dict[k].extend([grp_name[position]]*len(vals))
             indx_groups_st = pd.DataFrame(avg_dict).set_index(list(cur_trial))
             indx_groups_st = indx_groups_st.reset_index()
             # display(indx_groups_st.head())
@@ -198,7 +219,7 @@ def _stHeatmap(df, is_many_subjects, prev_trial, cur_trial, mean_or_median,
             idx_groups_avgs["PrevTrial"] = was_rewarded
             idx_groups_avgs["PrevDifficulty"] = prev_diff
         else:
-            idx_groups_avgs["PrevTrial"] = sub_index
+            idx_groups_avgs["PrevTrial"] = sub_index[0]
         df_li.append(idx_groups_avgs)
 
     df_summary =  pd.concat(df_li)
@@ -234,7 +255,11 @@ def _stHeatmap(df, is_many_subjects, prev_trial, cur_trial, mean_or_median,
                                                    level=1)
 
     def sortDiffols(diff):
-        print("cols diff:", diff)
+        # NB: the argument is ignored -- this returns the fixed permutation
+        # [0, 2, 1], so it only works when the column index is exactly the
+        # three difficulty levels. A `df_query` that leaves fewer raises in
+        # pandas. See docs/repo-audit.md; not changed here because the column
+        # order it produces is the published one.
         cur_order = ["Stay-Easy", "Stay-Hard", "Stay-Med",
                      #"Switch-Easy", "Switch-Hard", #"Switch-Med"
                     ]

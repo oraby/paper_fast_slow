@@ -53,13 +53,14 @@ default extension is a real question, not only a test question.
 | `widefield` | 1 file | |
 | `pipeline` | 1 file — **not collected**: `pipeline/tests` is missing from `testpaths` in `pyproject.toml`. |
 | ~~`opto`~~ | ~~**0**~~ → 2 files, 50 tests | ~~Hierarchical bootstrap (Figures 3D, 4C, S6G) is untested.~~ Done in C5. |
-| ~~`figcode`~~ | ~~**0**~~ → 4 files, 64 tests | ~~Psychometrics, stay/switch, sampling-time heatmaps are untested.~~ Partly done in C5; `stheatmap` and `stbydifficulty` still have none. |
+| ~~`figcode`~~ | ~~**0**~~ → 6 files, 114 tests | ~~Psychometrics, stay/switch, sampling-time heatmaps are untested.~~ Done in C5 and C6. |
 
 *Fork 3.*
 
-**Current suite: 1266 passed, 1 skipped, 0 failed** (~68 s), across
-`rlmodel` 655, `util` 210, `behavior` 147, `twop` 100, `figcode` 64,
-`opto` 50, `widefield` 29, `common` 10, `pipeline` 2.
+**Current suite: 1318 passed, 1 skipped, 0 failed** (~84 s), across
+`rlmodel` 655, `util` 212, `behavior` 147, `figcode` 114, `twop` 100,
+`opto` 50, `widefield` 29, `common` 10, `pipeline` 2. It also passes with
+`FutureWarning` and `DeprecationWarning` promoted to errors.
 
 ---
 
@@ -520,6 +521,61 @@ decision.
 `figcode/prevoutcomecurquantile.py:31` calls `plt.show()` from library code,
 which warns under a non-interactive backend and is the one warning the suite
 still emits. Relevant to fork 7 (automated notebook execution).
+
+---
+
+## Two published panels could not be regenerated at all
+
+Found by writing C6's tests for the last two untested `figcode/` modules. Both
+are the same shape as the Figure S2B breakage in C3: a legacy API that the
+locked environment no longer provides, sitting on a path nothing exercised, so
+nothing reported it. Both were confirmed on the real 63,702-trial frame, not
+only on fixtures.
+
+| Panel | Module | Why it raised |
+|---|---|---|
+| **Figure 1D** | `stbydifficulty.py:303` | `matplotlib.cm.get_cmap`, **removed in matplotlib 3.9**; the environment has 3.11, so the histogram path raised `AttributeError`. It is the only removed-matplotlib-API call in `figcode/`, `opto/` or `behavior/` |
+| **Figure S3E** | `stheatmap.py:201` | `df.groupby(["one_col"])` yields a **1-tuple** key in pandas ≥ 2 where it used to yield the bare value, so `idx_groups_avgs["PrevTrial"] = sub_index` raised `ValueError: Length of values (1) does not match length of index (3)` |
+
+Both are fixed and verified against the committed figures:
+
+- Figure 1D: the replacement `colormaps["autumn"].resampled(1024)` gives an
+  identical 1024-entry LUT (checked for every index), and the regenerated
+  panel reproduces the published trial counts exactly — Easy 23,803, Med
+  21,798, Hard 18,101, summing to the 63,702 the manuscript reports.
+  Corroborating the colormap choice: 141 of the 143 distinct fills in the
+  published `Mice_All Mice.svg` lie exactly on the `autumn` ramp (R=255, B=0);
+  the other two are the white background and the grey band lines.
+- Figure S3E: the regenerated `prior_cur_All Mice All Subjects_mean.svg` is
+  **text-identical** to the published one.
+
+### Three more defects in `stheatmap.py`, pinned but not fixed
+
+Each would change output or invent behaviour, so each is a decision rather
+than a repair:
+
+- **`mean_or_median="mode"` cannot run.** The mode branch passes a whole
+  sub-frame — difficulty labels included — to `np.histogram`, which then sorts
+  strings against floats (`TypeError`). No caller uses it; `behavior.ipynb`
+  passes `"mean"` in all three calls. Fixing it means guessing the intended
+  binning. **Recommend deleting the option.**
+- **`sortDiffols` ignores its argument.** It returns the fixed permutation
+  `[0, 2, 1]` whatever the column index, and its hardcoded `"Stay-Easy"`
+  labels are leftovers from a Strategy split that is commented out. pandas
+  requires one position per index entry, so the panel only survives a column
+  index that is exactly the three difficulty levels — any `df_query` that
+  drops one raises. Every published call passes all three. The permutation
+  *is* the published column order, so making the sort label-driven is a
+  deliberate change.
+- **A stray `print("sub_index:", ...)`** printed a groupby object under a
+  misleading label on every cohort call; removed, along with the debug print
+  inside `sortDiffols`.
+
+One deprecation was fixed and verified inert: `stheatmap.py:91` built
+`PrevTrial` as a float NaN column and then assigned strings into it, which
+pandas will stop upcasting silently. Creating it as `object` up front gives
+the identical column, and Figure S3E stays text-identical to the published
+SVG.
 
 ---
 

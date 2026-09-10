@@ -1,5 +1,5 @@
 from .util import normalizeSTAcrossSubjects
-import matplotlib.cm as mplcm
+from matplotlib import colormaps
 from matplotlib.gridspec import GridSpec
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
@@ -300,7 +300,12 @@ def _handleDifficultyDf(dv, dv_df, ax, clr, CDF, many_animals=False,
             # bins = np.arange(-2, 3.1, 0.04)
             bins = np.arange(min_bin, max_bin, 0.04)
             assigned_rt_bin_idxs = np.digitize(dv_df[col], bins, right=True)
-            color_map = mplcm.get_cmap("autumn", 1024)
+            # Was matplotlib.cm.get_cmap("autumn", 1024), removed in
+            # matplotlib 3.9 -- this call raised AttributeError under the
+            # locked 3.11, so Figure 1D could not be regenerated at all.
+            # `.resampled(1024)` is the documented replacement and gives the
+            # identical 1024-entry LUT; see figcode/tests/test_stbydifficulty.py.
+            color_map = colormaps["autumn"].resampled(1024)
 
             for rt_bin_idx in np.arange(len(bins)):
                 cur_rt_idxs_mask = assigned_rt_bin_idxs == rt_bin_idx
