@@ -662,6 +662,18 @@ than the panels themselves:
 | 13–26 | ~370 | The preprocessing chain: behaviour/video time sync, rotation to the head-fixation reference, and missing-limb interpolation. Ends at `df_track_centroid`, which is what the extracted panels consume |
 | 23–24, 27–28 | ~295 | Video and AVI writing — annotated overlays for inspection, not used by any figure |
 
+**The preprocessing will break silently under pandas 3.** The first
+interpolation stage fills gaps with `trial_df[col].interpolate(inplace=True)`,
+an in-place call on a column pulled out of a frame. Under pandas 2.3 that
+writes through; under copy-on-write, the pandas 3 default, it does not, and
+the frame keeps its gaps with no error. Verified with a three-row probe both
+ways. The later geometric reconstruction would then fill more limbs than it
+does today, so the centroids would shift quietly.
+
+The text describing these panels also disagrees with the code in four places
+(S3J, S3K, S3L, S3M), one of which reverses a stated conclusion; see
+`docs/manuscript-issues.md` #9-#13.
+
 The preprocessing is the natural follow-on: it is what makes the panels
 reproducible from raw SLEAP output rather than from a notebook that has to be
 run top to bottom. The video tooling is a keep/delete decision for fork F.
