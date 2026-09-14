@@ -26,7 +26,7 @@ The eight workstreams as stated:
 | **A** | Unified `uv` | **done** — everything runs from the lockfile; guarded by `test_environment.py` |
 | **B** | Model trim + docs | **not started** — `Decay Q` still in the registry, `rlmodel/README.md` still says 3 s and uses the oldest figure numbers |
 | **C** | Behaviour tests | **Done, C1–C8.** Every extracted panel reproduces its committed figure and is tested; `figcode/`, `opto/` and `tracking/` went 0 → 112, 51 and 124 tests. C8 extracted `Tracking.ipynb`'s preprocessing (identical output on all 76,311 frames) and fixed two silent breakages: pandas 3 copy-on-write and a machine-time-zone dependence. S3J–M legend/Methods text is drafted (`methods_model_revision.md` Blocks 10–12); S3K is regenerated choice-normalised next revision; interpolation wording (#13) is open |
-| **D** | 2-photon reorg | **D0, D1 done** — orphaned modules deleted; **no notebook loads an undefined name**. Figure 4H's sorting reference is restored (a missed rename); `TwoPLoad.ipynb` re-anchored to `code/`, though its 1.2 GB raw input is not shipped. D2 (extraction) remains |
+| **D** | 2-photon reorg | **D0, D1 done** — orphaned modules deleted; **no notebook loads an undefined name**. Figure 4H's sorting reference is restored (a missed rename); `TwoPLoad.ipynb` re-anchored to `code/`, its raw input trimmed to 657 MB and made portable. D2 (extraction) remains |
 | **E** | Runner / papermill | **started ahead of plan** — 4 notebooks carry a `parameters` cell; see the E section for what that does and does not yet cover |
 | **F** | Final cleanup | **not started** — `data/to_delete/` is still 563 MB |
 
@@ -454,11 +454,8 @@ Re-anchored to `code/`, where every other notebook lives:
   `data/2p/df_all_by_epoch_df_f_filtered.pkl` — a migrated file in the download
   archive — which its plain `pickle.dump` would have made unportable again,
   silently;
-- the raw input read with `legacyLoad` and rebuilt through the portable form.
-  It still names `caiman`, `Int64Index` and scipy's private `mat_struct`.
-  Rebuilding drops the stubbed `States` column (TwoPLoad makes no live
-  reference to it), exactly as the migration did, so derived frames pass
-  `savePortable`;
+- the raw input shipped as a trimmed, portable `data/2p/df_all_by_epoch.pkl`
+  and read with a plain `pd.read_pickle` (see below);
 - `shorth` moved to `twop/shorth.py`, with a 500-case equivalence test against
   the ancestor's verbatim code.
 
@@ -473,10 +470,31 @@ line is gone; if the plot is re-enabled it still colours accepted traces green.
 Cell 30 is the Figure 6B y-axis computation: feedback responses normalised by
 the neuron's sampling-epoch statistics and judged against the same threshold.
 
-**Remaining:** the raw input `df_all_by_epoch.pkl` (1.17 GB, in
-`caiman/TwoP/again/pkl/`) is in neither `data/2p/` nor `2p_data.zip`, so
-TwoPLoad cannot run end-to-end from a clone. Shipping it means migrating it and
-adding it to the archive — a data decision, not a code one.
+**The raw input, trimmed (2026-09-14).** The original
+`caiman/TwoP/again/pkl/df_all_by_epoch.pkl` (1.17 GB, 33 sessions, 249 columns)
+names `caiman`, `Int64Index` and scipy's private `mat_struct`, so a plain
+`pickle.load` fails. `data/2p/df_all_by_epoch.pkl` (657 MB, git-ignored, ships
+in `2p_data.zip`) keeps the 23 M2/ALM L2/3 sessions — exactly those in
+`df_all_by_epoch_df_f_filtered.pkl` — and that file's 30 columns, all 22,483
+rows. It names only `builtins`, `datetime`, `numpy` and `pandas`, and loads with
+no repo module imported.
+
+The trim was checked by running TwoPLoad's own cells 12, 23, 42, 44, 54 and 55
+on both files: identical accepted neurons (1,446), identical rows and columns,
+identical traces in every one of the 2,892 arrays. The other sessions and
+columns change nothing — cell 23 already restricts to M2/ALM L2/3, and the one
+dropped column the pipeline names, `anlys_path`, is read by `CalcBaseline` only
+with `track_is_active=True`, which cell 54 does not pass.
+
+Two findings that are *not* about the trim:
+
+- today's environment reproduces the 2024 dF/F to float32 rounding only: 116
+  of 2,892 arrays differ, by at most 3e-6 on values around 10 (correlation 1.0);
+- the shipped `df_all_by_epoch_df_f_filtered.pkl` has 15 rows fewer than
+  TwoPLoad writes (22,468 vs 22,483; traces otherwise identical): 14 trailing
+  `Wait Trial Start` rows with no outcome, plus all four epochs of
+  `GP4_80_S2_L51_D250_M2m` trial 159. Some step after TwoPLoad dropped them,
+  so re-running cell 56 would not reproduce the shipped file exactly.
 
 **Lineage, from a full search of `OneDrive/caiman/`.** `TwoP/again/load.ipynb`
 → `caiman/paper_fast_slow/code/TwoPLoad.ipynb` → this repo's `TwoPLoad.ipynb`.

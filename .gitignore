@@ -32,6 +32,7 @@ data/RLModel/model_full/
 # 2p_data.zip via code/data_downloader.ipynb instead.
 data/2p/data_runs_Feedback_fixed.pkl
 data/2p/data_runs_Unnormalized.pkl
+data/2p/df_all_by_epoch.pkl
 data/2p/df_all_by_epoch_df_f_filtered.pkl
 data/2p/df_all_by_trial_normalized.pkl
 data/2p/df_all_by_trial_normalized_concat_sampling_across_sessions_aligned_feedback_0.5s_norm_limited_end.pkl

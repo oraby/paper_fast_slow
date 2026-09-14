@@ -92,8 +92,10 @@ column, and the notebooks were already discarding it through an inline stub), an
 `scipy.io.matlab._mio5_params.mat_struct` (a private path scipy has renamed
 once already).
 
-**All 270 open with a plain `pd.read_pickle`**, on any machine, under any
-checkout name. The RL-model fits and `data_runs_*.pkl` used to embed
+**All 271 open with a plain `pd.read_pickle`**, on any machine, under any
+checkout name. (270 rewritten on 2026-08-31, plus TwoPLoad's trimmed raw input
+`data/2p/df_all_by_epoch.pkl`, added 2026-09-14 and written portable from the
+start, so it has no `data_bak/` counterpart.) The RL-model fits and `data_runs_*.pkl` used to embed
 repo-defined objects; they now store the model functions by their registry name
 and `MLEModelConfig` / `RunData` as plain dicts.
 
