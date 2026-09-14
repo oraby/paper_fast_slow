@@ -645,12 +645,11 @@ Two things worth flagging beyond the extraction:
   `choice_normed=False` render with correlation 1.000000 and a constant area
   ratio (0.9964, spread 0.0000, a uniform layout scale between matplotlib 3.8
   and 3.11), against r = 0.94 with inconsistent ratios for `True`.
-  Choice normalisation would also *not* make the histogram point one way: 46%
-  of trial means are positive after it, against 37% un-normalised, because
-  animals turn toward both choices. The version where every animal points the
-  same way is the **preferred-side** normalisation, Figure S3L, with 80% of
-  trial means positive. If the manuscript's S3K panel points one way, it was
-  drawn from the S3L file rather than from a choice-normalised one.
+  Confirmed as un-normalised by the author; **the next revision regenerates it
+  with `choice_normed=True`** so that it matches the legend and Methods, which
+  already say "normalized to the choice direction". See manuscript issue #10
+  for the notebook change that needs (S3J has to keep its own un-normalised
+  call).
 
 ### Still in the notebook
 
@@ -670,9 +669,13 @@ the frame keeps its gaps with no error. Verified with a three-row probe both
 ways. The later geometric reconstruction would then fill more limbs than it
 does today, so the centroids would shift quietly.
 
-The text describing these panels also disagrees with the code in four places
-(S3J, S3K, S3L, S3M), one of which reverses a stated conclusion; see
-`docs/manuscript-issues.md` #9-#13.
+The manuscript text for these panels disagreed with the code in four places.
+Three are decided in favour of the code — S3J uses the within-trial range, S3L
+flips per session, S3M tests distance from the usual posture — and replacement
+legend and Methods text is in `code/rlmodel/methods_model_revision.md`
+Blocks 10–12. S3K is decided the other way: the figure is regenerated
+choice-normalised next revision. The interpolation wording (#13) is still open.
+See `docs/manuscript-issues.md` #9–#13.
 
 The preprocessing is the natural follow-on: it is what makes the panels
 reproducible from raw SLEAP output rather than from a notebook that has to be

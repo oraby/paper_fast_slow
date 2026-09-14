@@ -10,7 +10,10 @@ the manuscript — it records what changed and against which source file, so the
 can be justified to co-authors and reviewers.
 
 Blocks 1–8 sit inside *Model* (PDF lines 1256–1318). Block 9 is a new subsection at
-the end of *Two-Photon Data Analysis*.
+the end of *Two-Photon Data Analysis*. Blocks 10–12 are outside the model: the *Tracking*
+subsection (PDF lines 1406–1419) and panels J–M of the Figure S3 legend (PDF lines
+2118–2126). The line numbers are identical in `Nashaat et al._Neuron_Revision.pdf` and
+both `_accept_revision.pdf` exports.
 
 ---
 
@@ -408,6 +411,94 @@ Code: `model/neural_correlate.py:80-90` (variables), `:240-256` (re-evaluation),
 `:1030-1054` (sign-flip permutation), `:983-992` (Holm).
 Session counts verified against
 `results/RLModel/neural_correlate/…Chi²=0.5…/factor_bars/summary_fastslowDV_by_region.csv`.
+
+---
+
+## BLOCK 10 — REPLACE PDF lines 1406–1413, from "For each trial, during the sampling epoch" to "…polar histograms for each strategy." (*Tracking*, Figures S3J–L)
+
+For each trial, during the sampling epoch (nose-poke fixation; behavioural
+definition described elsewhere), we discarded the lowest and highest 10% of that
+trial's centroid rotation angles to remove occasional tracking glitches, and took the
+rotation-angle range, the difference between the largest and smallest remaining angle
+(degrees), as a measure of how much the posture changed within the trial. Per-trial
+ranges were binned in 5° bins, expressed as a fraction of each session's trials,
+averaged across sessions, and plotted for each behavioural strategy (fast, typical,
+slow; Figure S3J). Because the posture changed little within a trial, we summarised
+each trial by a single value, its mean centroid rotation angle, and expressed it either
+relative to the choice direction (Figure S3K) or relative to the preferred side of each
+session (Figure S3L): sessions in which the body was rotated predominantly to one side
+were mirrored so that the preferred side was common to all sessions. Mean angles were
+binned in 5° bins to generate polar histograms for each strategy.
+
+--- rationale (do not paste) ---
+- S3J: the code measures the within-trial range, `abs(max − min)`, not the cumulative
+  frame-to-frame change the current text describes. Range is the intended metric:
+  frame-to-frame differences add up tracking jitter as well as movement, so a
+  cumulative sum grows with trial length even for a still animal. The 10% trim and
+  the per-session normalisation are what the published panel does and were not
+  stated. Code: `tracking/centroids.py::trimTrialOutliers`,
+  `::distanceTravelledHistogram`; notebook call `outliers_ratio=0.1`.
+- S3J → K/L: J is what justifies using one value per trial in K, L and M. The new
+  sentence makes that dependency explicit.
+- S3K: the sentence is kept as written. **The committed S3K is not normalised to the
+  choice direction** (`choice_normed=False`); the next revision regenerates it with
+  `choice_normed=True`, which makes this sentence and the legend correct as they stand.
+  Code: `tracking/centroids.py::normaliseToChoice`.
+- S3L: "each animal's preferred side" → "each session". The code flips each session
+  independently (a session with more negative than positive frames is mirrored), and
+  per session is the intended rule. Code: `tracking/centroids.py::normaliseToPreferredSide`.
+
+---
+
+## BLOCK 11 — REPLACE PDF lines 1414–1419 (*Tracking*, Figure S3M)
+
+To test whether behavioural strategy was related to posture, we measured, for each
+trial, how far the posture departed from the animal's usual posture (Figure S3M). The
+usual posture was the most frequent (modal) mean trial angle of each animal across all
+of its sessions, after binning mean angles to the nearest 5°, and each trial was scored
+by the absolute difference between its mean centroid rotation angle and that modal
+angle. For each animal and strategy, we first assessed normality of the per-trial
+distributions using the Shapiro–Wilk test and found all distributions to deviate
+significantly from normality (P < 0.05). We therefore compared the three strategies
+within each animal using a non-parametric Kruskal–Wallis test, corrected for multiple
+comparisons across animals with the Holm–Bonferroni method; no significant differences
+were detected in any animal (0 of 4 mice).
+
+--- rationale (do not paste) ---
+The current text says the test compares "rotation-angle distance travelled per
+trial". The published panel, its y-axis ("Distance from mode Rotation Angle (deg)")
+and its 0/4 result come from the distance-from-usual-posture score instead, which is
+the intended analysis. The two are not interchangeable: on the same frames a
+distance-travelled test gives 4/4 animals significant, as distance travelled grows with
+trial length (slow trials have a median of 44 video frames against 18 for fast).
+The Holm correction was applied but not stated; it matters here, since raw per-animal
+p-values are 0.018 / 0.361 / 0.035 / 0.497 and Holm-corrected 0.073 / 0.722 / 0.105 /
+0.722. Animals needed at least 10 trials in each strategy; all four qualified.
+Code: `tracking/strategy.py` (`trialMeanAngles`, `distanceFromMode`,
+`animalQuantileGroups`, `compareStrategies`); notebook call `outliers_ratio=0`.
+
+---
+
+## BLOCK 12 — REPLACE PDF lines 2118–2126, from "(J) Distribution of centroid rotation" to "…across strategies." (Figure S3 legend)
+
+(J) Distribution of the within-trial range of the centroid rotation angle across
+behavioural strategies (fast, red; typical, orange; slow, yellow). Mice exhibited
+minimal movement during sampling, and distributions overlapped extensively. (K) Polar
+distribution of the mean centroid rotation angle per trial, normalized to the choice
+direction. (L) Polar distribution of the mean centroid rotation angle per trial,
+normalized to each session's preferred side. (M) Animal-wise comparison of each
+trial's distance from the animal's usual posture (absolute difference between the
+trial's mean centroid rotation angle and the animal's modal angle) across strategies
+(Kruskal–Wallis, Holm–Bonferroni across animals). No significant differences were
+observed, confirming that posture during sampling does not differ across strategies.
+
+--- rationale (do not paste) ---
+Same three corrections as Blocks 10–11, applied to the legend: J is a within-trial
+range; L is per session; M is distance from the usual posture, and its conclusion is
+about posture rather than movement (movement is J's claim). K is unchanged pending the
+`choice_normed=True` regeneration. The Results sentence at PDF line 155 ("posture or
+movement during sampling … (Figure S3J-M)") already matches this split and needs no
+change.
 
 ---
 

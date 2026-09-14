@@ -22,10 +22,10 @@ taken on trust.
 | 6 | Fig. 1I-right | Plot legend trial counts differ from the caption's | Cosmetic |
 | 7 | Methods, S3G | "group mean of 3.28%" is the retained-animal mean | Ambiguous wording |
 | 8 | Methods, Fig. 2A | The 101.9% sum is weaker evidence than claimed | Over-claim |
-| 9 | Fig. S3M legend + Methods | Describes a test on distance travelled; the figure tests distance from each animal's modal posture. The conclusion depends on which | **Text and figure disagree; conclusion reverses** |
-| 10 | Fig. S3K legend + Methods | "Normalized to the choice direction"; the figure is un-normalised | Caption and Methods wrong |
-| 11 | Methods, Fig. S3J | Distance travelled defined as cumulative frame-to-frame change; the figure uses the within-trial range | Methods and figure disagree |
-| 12 | Fig. S3L legend | "Each animal's preferred side"; the code flips each *session*, which differs for 1 of 12 | Minor |
+| 9 | Fig. S3M legend + Methods | Describes a test on distance travelled; the figure tests distance from the usual posture, which is intended | **Text wrong** — replacement drafted |
+| 10 | Fig. S3K legend + Methods | "Normalized to the choice direction"; the committed figure is un-normalised | **Figure to regenerate** choice-normed next revision; text stays |
+| 11 | Methods, Fig. S3J | Distance travelled defined as cumulative frame-to-frame change; the figure uses the within-trial range, which is intended | **Text wrong** — replacement drafted |
+| 12 | Fig. S3L legend + Methods | "Each animal's preferred side"; per session is intended and is what the code does | **Text wrong** — replacement drafted |
 | 13 | Methods, tracking | Interpolation described as linear over surrounding frames only; a second, geometric step is not mentioned | Under-described |
 
 ---
@@ -168,92 +168,96 @@ Both regimes are pinned in `behavior/tests/test_varexplained.py`.
 
 ---
 
-## 9. Figure S3M: the text and the figure test different quantities
+## 9. Figure S3M: the text describes the wrong quantity
 
-**Severity: the stated conclusion depends on which one is meant.**
+**Decided: the figure is right; the legend and Methods change.**
+Replacement text: `code/rlmodel/methods_model_revision.md`, Blocks 11 and 12.
 
-The Methods say: "we compared the distributions of rotation-angle distance
-travelled per trial across strategies for each animal (Figure S3M)", and the
-legend: "(M) Animal-wise comparison of rotation-angle distance travelled per
-trial (Kruskal-Wallis)". The Results cite S3J-M for "little to no
-correlation" between posture or movement and sampling time.
+The Methods (PDF lines 1414–1419) say the test compares "rotation-angle distance
+travelled per trial across strategies", and the legend (PDF lines 2123–2126)
+"Animal-wise comparison of rotation-angle distance travelled per trial … confirming
+that movement during sampling does not differ across strategies".
 
-The figure does something else. For each trial it takes the **mean** rotation
-angle, finds each animal's **modal** angle (5 degree bins), and tests
-|trial mean - mode| across the three strategies. That is a posture measure, not
-a distance-travelled one; the y-axis is labelled "Distance from mode Rotation
-Angle (deg)".
+The figure tests **posture**, not movement: each trial's mean rotation angle is
+scored by its absolute distance from the animal's usual posture — its modal mean
+angle across all sessions, in 5° bins — and the three strategies are compared per
+animal. The y-axis ("Distance from mode Rotation Angle (deg)") is correct. J and M
+are deliberately different measurements: J shows posture changes little within a
+trial, which is what makes a single per-trial value a valid proxy in K, L and M.
 
-**Verification**, per-animal Kruskal-Wallis with Holm across the four mice, on
-the same 76,311 tracked frames:
+**Verification.** Per-animal Kruskal–Wallis with Holm across the four mice:
 
 | Quantity tested | MLA-73 | MLA-74 | MLA-75 | MLA-76 | Significant |
 |---|---|---|---|---|---|
-| distance from modal angle (**the figure**) | 0.073 | 0.722 | 0.105 | 0.722 | **0/4** |
+| distance from usual posture (**the figure, intended**) | 0.073 | 0.722 | 0.105 | 0.722 | **0/4** |
 | distance travelled, as within-trial range | 0.024 | 0.028 | 0.0009 | 0.036 | 4/4 |
-| distance travelled, as cumulative change (**the Methods' definition**) | <0.0001 | <0.0001 | <0.0001 | <0.0001 | 4/4 |
+| distance travelled, as cumulative change | <0.0001 | <0.0001 | <0.0001 | <0.0001 | 4/4 |
 
-(Holm-corrected p. Every group failed Shapiro-Wilk in all three versions, so
-the Kruskal-Wallis gate is satisfied throughout.)
-
-**Why the figure's quantity is the defensible one.** Distance travelled
-scales with trial length, and the strategies *are* trial length: slow trials
-have a median of 44 video frames against 18 for fast ones. Cumulative distance
-correlates with frame count (Spearman rho = 0.48), and per frame the animals
-actually move *less* on slow trials (median 0.62 against 0.94 degrees). So a
-distance-travelled test mostly rediscovers that slow trials are longer. The
-posture measure is a trial mean and does not grow with duration.
-
-The likely reading is that the analysis was changed to remove that confound and
-the text was not updated, but that is an inference. **Decide which is intended:**
-if the figure, the Methods and legend sentences for S3M need rewording; if the
-text, the figure and its "0/4" change.
+So the current wording would describe a test that gives the opposite result.
+Distance travelled grows with trial length — slow trials have a median of 44 video
+frames against 18 for fast — so it is not a posture measure. The replacement text
+also states the Holm correction, which was applied but not mentioned (raw
+0.018 / 0.361 / 0.035 / 0.497).
 
 ---
 
 ## 10. Figure S3K: "normalized to the choice direction"
 
-The legend reads "(K) Polar distribution of the mean centroid rotation angle per
-trial, normalized to the choice direction", and the Methods "relative to the
-choice direction (Figure S3K)".
+**Decided: the text stays; the figure is regenerated with `choice_normed=True` in the
+next revision.**
 
-**Verification.** The committed panel is un-normalised: the notebook call
-passes `choice_normed=False`, the saved file has no `_choice_normed` suffix and
-no "(Normed to Choice Direction)" in its title, and all 84 bars match a
-`choice_normed=False` render (r = 1.000000, constant area ratio) but not a
-`True` one (r = 0.94). Confirmed by the author as intended. The legend and the
-Methods sentence are what need changing.
+The legend (PDF lines 2121–2122) and Methods (PDF lines 1410–1412) describe S3K as
+normalised to the choice direction. The committed panel is not: the notebook call
+passes `choice_normed=False`, the saved file has no `_choice_normed` suffix, and all
+84 bars match a `False` render (r = 1.000000) but not a `True` one (r = 0.94).
+
+**To do in the next revision:** in `Tracking.ipynb`, the S3J/S3K cell
+(heading "Extended Fig. 4b-c") calls `plotCentroids(..., choice_normed=False, ...)`.
+Pass `choice_normed=True` for S3K. That call also draws S3J, and the travel panel is
+skipped whenever a normalisation is on, so S3J needs its own call with
+`choice_normed=False` (or keep the existing call for J and add one for K). The file
+will be saved as `centroid_rotation_choice_normed_All Tracked Subjects.svg`.
+Nothing in the text changes.
 
 ---
 
 ## 11. Figure S3J: distance travelled is defined differently
 
-The Methods define "the rotation-angle distance travelled as the cumulative
-absolute frame-to-frame change in centroid rotation angle". The code uses the
-within-trial **range**, `abs(max - min)`.
+**Decided: the range is the intended metric; the Methods change.**
+Replacement text: `code/rlmodel/methods_model_revision.md`, Blocks 10 and 12.
 
-**Verification.** On the published (10%-trimmed) frames the two differ by a
-median factor of 2.2 per trial; median range is 5.4 / 5.9 / 5.4 degrees for
-fast / typical / slow, against 9.2 / 11.7 / 15.5 for the cumulative version.
-The cumulative one rises with strategy for the trial-length reason in #9;
-the range does not. Either the Methods sentence or the panel should change,
-and the choice should match whatever is decided for #9.
+The Methods (PDF lines 1406–1410) define "the rotation-angle distance travelled as
+the cumulative absolute frame-to-frame change in centroid rotation angle". The code
+uses the within-trial **range**, `abs(max − min)`, after discarding each trial's
+lowest and highest 10% of angles.
+
+Range is the better metric because tracking is not perfect: frame-to-frame
+differences accumulate tracking jitter along with real movement, so a cumulative sum
+grows with the number of frames even for a still animal. (On these data the
+cumulative version is a median 2.2× the range and rises with strategy — 9.2 / 11.7 /
+15.5° for fast / typical / slow, against 5.4 / 5.9 / 5.4° for the range — which is
+what you would expect from longer trials collecting more jitter, not from more
+movement.) The replacement also states the 10% trim and the per-session
+normalisation, which the published panel uses.
 
 ---
 
 ## 12. Figure S3L: "each animal's preferred side"
 
-The legend says the angles are "normalized to each animal's preferred side".
-The code flips each **session** that leans left, not each animal.
+**Decided: per session is intended; the legend and Methods change.**
+Replacement text: `code/rlmodel/methods_model_revision.md`, Blocks 10 and 12.
 
-**Verification.** For 11 of the 12 sessions the two rules agree. The exception
-is MLA-76 on 2025-10-24 (day 3), which is balanced on its own and is left
-unflipped per session, while the animal as a whole leans left and would be
-flipped. Small effect on the panel; either say "session" or flip per animal.
+The legend (PDF lines 2122–2123) and Methods (PDF line 1412) say "each animal's
+preferred side". The code mirrors each **session** whose frames lean predominantly to
+one side, independently of the animal's other sessions, and that is the intended
+rule. For reference, a per-animal rule would treat one of the 12 sessions differently
+(MLA-76, day 3, which is balanced on its own).
 
 ---
 
 ## 13. Tracking Methods: interpolation is under-described
+
+**Open — not yet decided.** Not covered by Blocks 10–12.
 
 The Methods say "Occasional missing SLEAP key points were linearly
 interpolated from surrounding frames". The code does that, but only across gaps
