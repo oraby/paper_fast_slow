@@ -26,7 +26,7 @@ The eight workstreams as stated:
 | **A** | Unified `uv` | **done** — everything runs from the lockfile; guarded by `test_environment.py` |
 | **B** | Model trim + docs | **not started** — `Decay Q` still in the registry, `rlmodel/README.md` still says 3 s and uses the oldest figure numbers |
 | **C** | Behaviour tests | **done, C1–C7** — six panels extracted to `behavior/` (45 → 147 tests); `figcode/`, `opto/` and the new `tracking/` given their first tests (0 → 112, 0 → 51, 0 → 48). C6 found and fixed **two panels that could not be regenerated** (Figures 1D, S3E); C7 extracted `Tracking.ipynb` (Figures S3J–M), whose panels raised `NameError` outside the notebook. All verified against the committed figures |
-| **D** | 2-photon reorg | **D0, D1 done** — orphaned modules deleted; **no notebook loads an undefined name**. Figure 4H's sorting reference is restored (a missed rename). `TwoPLoad.ipynb` remains a decision. D2 (extraction) remains |
+| **D** | 2-photon reorg | **D0, D1 done** — orphaned modules deleted; **no notebook loads an undefined name**. Figure 4H's sorting reference is restored (a missed rename); `TwoPLoad.ipynb` re-anchored to `code/`, though its 1.2 GB raw input is not shipped. D2 (extraction) remains |
 | **E** | Runner / papermill | **started ahead of plan** — 4 notebooks carry a `parameters` cell; see the E section for what that does and does not yet cover |
 | **F** | Final cleanup | **not started** — `data/to_delete/` is still 563 MB |
 
@@ -423,16 +423,51 @@ So the fix was a two-word rename, not resurrected code. **Caveat:** this
 restores the code path; it does not prove the figure reproduces, which needs
 the 2P data and a full run.
 
-**2. `TwoPLoad.ipynb` — still a decision, but better informed.**
+**2. `TwoPLoad.ipynb` — repaired; one input is not shipped.**
 
-- `shorth` (cell 23) **is recoverable**: a 25-line shortest-half estimator in
-  `caiman/paper_fast_slow/code/TwoP.ipynb`.
-- `ref_accepted_traces` (cell 30) is **broken in the ancestor too** — the
-  assignment is commented out there as well, and used live in an `axhline`. Not
-  a porting loss; that cell has never run anywhere.
-- The paths are still wrong regardless: it reads `pkl/df_all_by_epoch.pkl` and
-  writes `../results/opto2P`, neither of which exists here. It also has no
-  `SAVE_FIGS` / `fig_save_prefix` cell, unlike every other notebook.
+It was never broken, only moved. Every relative path assumed its original home,
+`OneDrive/caiman/TwoP/again/`, and there `pkl/` holds exactly the frames
+`data/2p/` later received — `df_all_by_epoch_df_f_filtered.pkl`,
+`traces_cut_feedback_filtered_full_df.pkl`, `normed_sampling_by_quantiles2.pkl`,
+`svm_df.pkl` and more — several of them written by TwoPLoad itself. So
+`code/README.md` is right that it builds frames the other 2P notebooks consume.
+An earlier version of this section read the broken paths as evidence of the
+opposite; that was wrong.
+
+Re-anchored to `code/`, where every other notebook lives:
+
+- bootstrap `root_parent_level` 2 → 1;
+- `../results/opto2P` → `../results/2P`, and `fig_save_prefix` — used by cells
+  23 and 42, defined nowhere — set to the same;
+- `pkl/X` → `../data/2p/X`, one read and four writes;
+- **every write through `savePortable`.** Three are switched off in the
+  notebook, but cell 56 is not, and it overwrites
+  `data/2p/df_all_by_epoch_df_f_filtered.pkl` — a migrated file in the download
+  archive — which its plain `pickle.dump` would have made unportable again,
+  silently;
+- the raw input read with `legacyLoad` and rebuilt through the portable form.
+  It still names `caiman`, `Int64Index` and scipy's private `mat_struct`.
+  Rebuilding drops the stubbed `States` column (TwoPLoad makes no live
+  reference to it), exactly as the migration did, so derived frames pass
+  `savePortable`;
+- `shorth` moved to `twop/shorth.py`, with a 500-case equivalence test against
+  the ancestor's verbatim code.
+
+**`ref_accepted_traces` was not missing data or a neuron subset.** The
+acceptance test changed from peak amplitude —
+`np.max(trace) >= ref_accepted_traces`, threshold
+`np.median(ref_trace.max_vals)` — to the std criterion the Methods describe,
+`trace.std() >= ref_threshold_std`. The old threshold and the old test were
+both commented out; only a reference line in a debug plot kept the old name,
+inside `if False and (...)` in cells 30 and 33, so it could never execute. That
+line is gone; if the plot is re-enabled it still colours accepted traces green.
+Cell 30 is the Figure 6B y-axis computation: feedback responses normalised by
+the neuron's sampling-epoch statistics and judged against the same threshold.
+
+**Remaining:** the raw input `df_all_by_epoch.pkl` (1.17 GB, in
+`caiman/TwoP/again/pkl/`) is in neither `data/2p/` nor `2p_data.zip`, so
+TwoPLoad cannot run end-to-end from a clone. Shipping it means migrating it and
+adding it to the archive — a data decision, not a code one.
 
 **Lineage, from a full search of `OneDrive/caiman/`.** `TwoP/again/load.ipynb`
 → `caiman/paper_fast_slow/code/TwoPLoad.ipynb` → this repo's `TwoPLoad.ipynb`.
@@ -448,12 +483,6 @@ The same search re-checked a D1 deletion: `plotSgfActivitySum` is defined in
 `only_sgf=False` and `save_figs=False`. It never produced the significant-only
 sum the Methods use for S12D-bottom / S12J-right; those come from
 `2pAnalysis.ipynb` (`TrajectoryTuningPlot`, `movementneurons.py`).
-
-Since it cannot run here, the frames in `data/2p/` came from the ancestor
-project, and the download archive is their real source. Cell 23 does implement
-a documented Method (the active-trial threshold), so the choice is between
-repairing it against real paths, reducing it to the documented parts, or
-dropping it and saying in the README that the 2P frames arrive pre-built.
 
 - **D2** Extract the inline panels: 4G, 4K, 6B, 6C, 6E, S9A–B, S10A–C,
   S11A-mid/right, S11B, S12G, S14A.

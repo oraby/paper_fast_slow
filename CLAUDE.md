@@ -86,8 +86,9 @@ uv run python -c "import pandas as pd; print(pd.read_pickle(r'data_bak/<same/pat
 
 What the rewrite removed: `pandas.core.indexes.numeric.Int64Index` (deleted in
 pandas 2.0), conda-built `string` extension arrays (unreadable by the PyPI
-build), the `caiman.…States` column (a package that exists nowhere; its values
-were already being discarded by an inline stub), and
+build), the `caiman.…States` column (`caiman` is the author's earlier
+`OneDrive/caiman` project, not importable from this repo; nothing here reads the
+column, and the notebooks were already discarding it through an inline stub), and
 `scipy.io.matlab._mio5_params.mat_struct` (a private path scipy has renamed
 once already).
 

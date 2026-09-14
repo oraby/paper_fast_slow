@@ -13,9 +13,10 @@ so most of them cannot be read in the ``uv`` environment:
   on ``NDArrayBacked.__setstate__``'s state tuple).
 * ``paper_fast_slow.code.twop.genrundata.RunData`` -- a repo-local namedtuple,
   so the pickle only loads when the repo is importable under exactly that name.
-* ``caiman.behavior.convert.matreader.states.{States,StartEnd}`` -- a package
-  that exists in no environment here; the notebooks already stub it out with a
-  throwaway class, i.e. the values were never usable.
+* ``caiman.behavior.convert.matreader.states.{States,StartEnd}`` -- from the
+  author's earlier ``OneDrive/caiman`` project, which no environment of this
+  repo can import; the notebooks already stub it out with a throwaway class, and
+  nothing here reads the values.
 
 A *portable payload* sidesteps all four. Frames are decomposed into plain
 ``numpy`` arrays plus builtins, so the resulting pickle names no class outside
@@ -472,7 +473,7 @@ def fromPortable(payload):
 
 
 class _PfsStub:
-    """Placeholder for a class that exists in no environment.
+    """Placeholder for a class this repo cannot import.
 
     Values of these types were already being discarded by the notebooks' inline
     stubs, so nothing downstream reads them; ``toPortable`` drops the columns
