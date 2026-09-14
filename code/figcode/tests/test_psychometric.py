@@ -113,10 +113,10 @@ def test_coherences_beyond_the_last_edge_are_dropped():
 def test_an_empty_coherence_bin_is_kept_not_dropped():
     '''Pinned because pandas 3 flips the ``observed`` default.
 
-    ``_fitPsych`` walks every bin and takes a mean, so an empty one
-    contributes NaN to the fit rather than being skipped. Dropping empty bins
-    would change published fits, so the old behaviour is stated explicitly in
-    the module instead of being inherited from a pandas default.
+    Keeping empty bins is harmless: ``_fitPsych`` appends NaN for them, and
+    ``psychofit.mle_fit_psycho`` drops non-finite proportions before fitting.
+    The fit is the same either way; the explicit ``observed=False`` only keeps
+    today's iteration unchanged.
     '''
     df = pd.DataFrame({"DV": [.5, .9]})       # nothing below 0.32
     groups = _getGroups(df, combine_sides=True, is_human_subject=False)

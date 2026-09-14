@@ -165,52 +165,6 @@ def _sign_change_p_two_sided(observed_value: float, draws: np.ndarray) -> float:
     p_one = np.mean(np.sign(draws[valid]) == -obs_sign)
     return float(min(1.0, 2.0 * p_one))
 
-def _bh_fdr(pvals: pd.Series) -> pd.Series:
-    """
-    Benjamini–Hochberg (BH) FDR on a Series. NaNs preserved; index preserved.
-    """
-    s = pvals.copy()
-    mask = s.notna()
-    m = int(mask.sum())
-    if m == 0:
-        return s
-    ordered = s[mask].sort_values()
-    ranks = pd.Series(np.arange(1, m + 1, dtype=float), index=ordered.index)
-    adj = (ordered * m / ranks).cummin().clip(upper=1.0)
-    s.loc[adj.index] = adj.values
-    return s
-
-def _holm_step_down(pvals: pd.Series) -> pd.Series:
-    """
-    Holm–Bonferroni step-down adjusted p-values.
-    Input:  Series with p-values (may contain NaNs), indexed by test keys.
-    Output: Series of same shape with Holm-adjusted p-values (NaNs preserved).
-    """
-    s = pvals.copy()
-    mask = s.notna()
-    if not mask.any():
-        return s
-
-    order = s[mask].sort_values().index  # ascending by raw p
-    m = len(order)
-
-    adjusted = pd.Series(index=order, dtype=float)
-    running_max = 0.0
-    for i, k in enumerate(order, start=1):
-        raw = float(s.loc[k])
-        factor = m - i + 1
-        adj = min(1.0, factor * raw)
-        running_max = max(running_max, adj)   # enforce monotonicity
-        adjusted.loc[k] = running_max
-
-    s.loc[order] = adjusted.values
-    return s
-
-def _hl_diff_unpaired(x, y):
-    if x.size==0 or y.size==0: return np.nan
-    diffs = x[:,None] - y[None,:]
-    return float(np.median(diffs))
-
 def _session_effects(region_df: pd.DataFrame,
                      calcPerfFn: Callable[[float, float], float]) -> pd.Series:
     """
@@ -281,7 +235,8 @@ def bootstrapSignTestApproach2(trials_df: pd.DataFrame,
                                ) -> Tuple[Dict[tuple, float], pd.DataFrame]:
     """
     Approach-2: Hierarchical bootstrap (subjects -> sessions -> trials)
-    with sign-change p-values and BH/FDR correction across all tests.
+    with sign-change p-values and Holm correction: within each phase for
+    the two within-region tests, and across phases for the cross-region Δ.
 
     Parameters
     ----------
@@ -305,7 +260,6 @@ def bootstrapSignTestApproach2(trials_df: pd.DataFrame,
     observed_entries : DataFrame
         Subject×region×phase effects computed from raw trials (no resampling).
     """
-    trials_df = trials_df[trials_df.ChoiceCorrect.notna()].copy()
     trials_df = trials_df[trials_df.ChoiceCorrect.notna()].copy()
     trials_df['OptoEnabled'] = trials_df['OptoEnabled'].astype(int)
     rng = np.random.default_rng(seed)
@@ -382,10 +336,6 @@ def bootstrapSignTestApproach2(trials_df: pd.DataFrame,
         # keep only keys that exist
         p_series = pd.Series({k: results[k] for k in pair_keys if k in results}, dtype=float)
         if not p_series.empty:
-            # p_holm = _holm_step_down(p_series)
-            # for k in pair_keys:
-            #     if k in p_holm.index:
-            #         results[(k[0], k[1], 'p_holm_within_phase')] = float(p_holm.loc[k])
             rej, p_holm_within, _, _ = multitest.multipletests(p_series.values,
                                                                method='holm',
                                                                alpha=ALPHA)
@@ -398,10 +348,6 @@ def bootstrapSignTestApproach2(trials_df: pd.DataFrame,
     cross_keys = [('Early', 'crossregion', 'p'), ('Late', 'crossregion', 'p')]
     p_series_cross = pd.Series({k: results[k] for k in cross_keys if k in results}, dtype=float)
     if not p_series_cross.empty:
-        # p_holm_cross = _holm_step_down(p_series_cross)
-        # for k in cross_keys:
-        #     if k in p_holm_cross.index:
-        #         results[(k[0], 'crossregion', 'p_holm_across_phases')] = float(p_holm_cross.loc[k])
         rej, p_holm_cross, _, _ = multitest.multipletests(p_series_cross.values,
                                                           method='holm',
                                                           alpha=ALPHA)

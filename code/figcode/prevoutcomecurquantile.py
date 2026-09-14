@@ -28,7 +28,6 @@ def prevOutcomeCurQuantile(df, col_prev_choice_correct="PrevChoiceCorrect",
     if save_fig:
         fig.savefig(f"{save_prefix}/prev_choice_by_quantile.svg",
                     dpi=300, bbox_inches='tight')
-    plt.show()
 
 _Q_GRP_BY_COLS = ["Name"]
 def quantilePrevOutcomeCur(q_df, col_prev_choice_correct):

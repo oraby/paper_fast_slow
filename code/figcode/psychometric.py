@@ -188,9 +188,11 @@ def _getGroups(df, combine_sides, is_human_subject):
         cut_col = df.DV.abs()
     # print("dv_bins:", dv_bins)
     # observed=False is the current behaviour, stated explicitly because
-    # pandas 3 flips the default: a coherence bin with no trials is kept, and
-    # `_fitPsych` then feeds its NaN mean to the fit. Dropping empty bins
-    # instead would change published fits, so it is not done here.
+    # pandas 3 flips the default. An empty coherence bin is kept and
+    # `_fitPsych` appends NaN for its DV and proportion correct, but it never
+    # reaches the likelihood: `psychofit.mle_fit_psycho` drops non-finite
+    # proportions (`np.isfinite(data[2, :])`) before fitting, and matplotlib
+    # skips NaN points. So keeping or dropping empty bins gives the same fit.
     return df.groupby(pd.cut(cut_col, bins=dv_bins), observed=False)
 
 def getGroupsDVstr(df, combine_sides):

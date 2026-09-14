@@ -15,13 +15,6 @@ confuse:
   20%-trimmed means of session effects;
 - p-values come from the sign-change rule, Holm-corrected within phase for
   the within-region tests and across phases for the cross-region ones.
-
-Two dead helpers are pinned deliberately. ``_holm_step_down`` is an exact
-duplicate of the ``statsmodels`` call the module actually uses, and
-``_bh_fdr`` is a *wrong* Benjamini-Hochberg (it takes a forward cumulative
-minimum where the step-up procedure needs a backward one, making adjusted
-p-values too small). Neither is called; both are recorded in
-``docs/repo-audit.md`` for removal, and the tests state why.
 '''
 from __future__ import annotations
 
@@ -30,12 +23,11 @@ import warnings
 import numpy as np
 import pandas as pd
 import pytest
-from statsmodels.stats import multitest
 
 from ..bootstrap2regions import (_aggregate_cross_region_effects,
-                                 _aggregate_group_effects, _bh_fdr,
+                                 _aggregate_group_effects,
                                  _bootstrap_iteration_subject_entries,
-                                 _effect_from_trials_block, _holm_step_down,
+                                 _effect_from_trials_block,
                                  _sign_change_p_two_sided,
                                  _subject_entries_once,
                                  bootstrapSignTestApproach2)
@@ -288,39 +280,6 @@ def test_nan_in_gives_nan_out_and_nan_draws_are_ignored():
     assert np.isnan(_sign_change_p_two_sided(np.nan, np.array([1., 2.])))
     assert np.isnan(_sign_change_p_two_sided(1., np.array([np.nan, np.nan])))
     assert _sign_change_p_two_sided(5., np.array([np.nan, 1., 1.])) == 0.
-
-
-# --------------------------------------------------------------------------
-# The two unused correction helpers (see docs/repo-audit.md)
-# --------------------------------------------------------------------------
-
-def test_holm_step_down_duplicates_the_statsmodels_call_that_is_used():
-    '''Evidence for deleting it: same answers, and nothing calls it.'''
-    pvals = pd.Series({"a": .01, "b": .04, "c": .03, "d": .2})
-    expected = multitest.multipletests(pvals.values, method="holm")[1]
-    np.testing.assert_allclose(_holm_step_down(pvals).values, expected)
-
-
-def test_holm_step_down_preserves_nans_and_is_monotonic():
-    adjusted = _holm_step_down(pd.Series({"a": .01, "b": np.nan, "c": .03}))
-    assert np.isnan(adjusted["b"])
-    assert adjusted["a"] <= adjusted["c"]
-    assert _holm_step_down(pd.Series({"a": np.nan})).isna().all()
-
-
-def test_bh_fdr_is_wrong_and_reports_p_values_that_are_too_small():
-    '''Pinned as a defect, not as behaviour to rely on.
-
-    Benjamini-Hochberg steps *up* from the largest p-value, so the running
-    minimum must be taken in descending order. ``_bh_fdr`` uses ``cummin`` on
-    the ascending sort, which drags every adjusted p down to the smallest one.
-    Nothing calls it; it should be removed rather than fixed.
-    '''
-    pvals = pd.Series({"a": .01, "b": .04, "c": .03})
-    correct = multitest.multipletests(pvals.values, method="fdr_bh")[1]
-    np.testing.assert_allclose(correct, [.03, .04, .04])
-    np.testing.assert_allclose(_bh_fdr(pvals).values, [.03, .03, .03])
-    assert (_bh_fdr(pvals).values <= correct).all()
 
 
 # --------------------------------------------------------------------------

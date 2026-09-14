@@ -14,10 +14,10 @@ The point of the nesting is that trials within an animal are not independent.
 regression tests for that: they fail if the nesting is ever flattened away,
 which would silently shrink every confidence interval in the panel.
 
-Two properties are pinned as *current behaviour* rather than as guarantees:
-the function draws from the global ``numpy.random`` state (there is no seed
-argument), and it leaves empty-arm handling to the statistic. Both are noted
-in ``docs/repo-audit.md``.
+By default the draws come from the global ``numpy.random`` state, as they
+always have; nothing seeds it before Figure 3D is computed. ``rng`` makes a
+run reproducible without changing that default. Empty-arm handling is left to
+the statistic, and that is pinned as current behaviour.
 '''
 from __future__ import annotations
 
@@ -258,13 +258,8 @@ def test_the_distribution_is_centred_on_the_observed_effect():
 # Current behaviour worth knowing about (see docs/repo-audit.md)
 # --------------------------------------------------------------------------
 
-def test_reproducibility_comes_only_from_the_global_numpy_seed():
-    '''There is no ``seed``/``rng`` argument: the global state is the control.
-
-    Pinned so that moving to a local ``np.random.Generator`` -- which would
-    make published numbers reproducible without seeding the world -- is a
-    deliberate change rather than an accident.
-    '''
+def test_by_default_the_global_numpy_state_drives_the_draws():
+    """Unchanged behaviour: seeding the global state reproduces a run."""
     spec = dataset(cohort(4, .9, .6))
     np.random.seed(7)
     first = bootstrapPerf(**spec, num_iterations=20, calcPerfFn=perfDrop)
@@ -273,6 +268,44 @@ def test_reproducibility_comes_only_from_the_global_numpy_seed():
     unseeded = bootstrapPerf(**spec, num_iterations=20, calcPerfFn=perfDrop)
     np.testing.assert_allclose(first, repeat)
     assert not np.allclose(first, unseeded)
+
+
+def test_an_integer_rng_reproduces_a_run_regardless_of_global_state():
+    spec = dataset(cohort(4, .9, .6))
+    np.random.seed(1)
+    first = bootstrapPerf(**spec, num_iterations=20, calcPerfFn=perfDrop, rng=3)
+    np.random.seed(99)
+    repeat = bootstrapPerf(**spec, num_iterations=20, calcPerfFn=perfDrop, rng=3)
+    np.testing.assert_allclose(first, repeat)
+
+
+def test_an_integer_rng_matches_seeding_the_global_state_with_it():
+    """Same legacy stream, so a run done with ``np.random.seed(s)`` can be
+    reproduced by passing ``rng=s`` instead."""
+    spec = dataset(cohort(4, .9, .6))
+    np.random.seed(11)
+    global_seeded = bootstrapPerf(**spec, num_iterations=20, calcPerfFn=perfDrop)
+    explicit = bootstrapPerf(**spec, num_iterations=20, calcPerfFn=perfDrop,
+                             rng=11)
+    np.testing.assert_allclose(global_seeded, explicit)
+
+
+def test_an_explicit_rng_leaves_the_global_state_untouched():
+    spec = dataset(cohort(4, .9, .6))
+    np.random.seed(5)
+    expected_next = np.random.random()
+    np.random.seed(5)
+    bootstrapPerf(**spec, num_iterations=5, calcPerfFn=perfDrop, rng=0)
+    assert np.random.random() == expected_next
+
+
+def test_a_generator_is_accepted_as_the_rng():
+    spec = dataset(cohort(4, .9, .6))
+    first = bootstrapPerf(**spec, num_iterations=20, calcPerfFn=perfDrop,
+                          rng=np.random.default_rng(2))
+    repeat = bootstrapPerf(**spec, num_iterations=20, calcPerfFn=perfDrop,
+                           rng=np.random.default_rng(2))
+    np.testing.assert_allclose(first, repeat)
 
 
 def test_an_empty_arm_is_left_for_the_statistic_to_handle():

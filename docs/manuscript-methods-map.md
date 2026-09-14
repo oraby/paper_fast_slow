@@ -509,8 +509,11 @@ means of session-level effects — with Holm applied within phase for the
 within-region tests and across phases for the cross-region ones.
 
 Reproducibility differs too: `bootstrapSignTestApproach2` takes `seed`
-(default 42); `bootstrapPerf` draws from the global `numpy.random` state and
-takes no seed argument. See `docs/repo-audit.md`.
+(default 42); `bootstrapPerf` draws from the global `numpy.random` state by
+default, and nothing seeds that state before Figure 3D is computed, so the
+published p-value is not reproducible bit-for-bit. It takes an optional `rng`
+(an `int` replays the same legacy stream as `np.random.seed`). See
+`docs/repo-audit.md`.
 
 **Mid-inhibition summary (Figure S13).** Sampling times are z-scored against
 each animal's *control* distribution, then a median per condition. RM-ANOVA on

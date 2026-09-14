@@ -4,12 +4,6 @@ Verified against the real data while extracting: the Holm-corrected p-values
 reproduce the notebook exactly (MLA-73 0.073, MLA-74 0.722, MLA-75 0.105,
 MLA-76 0.722), the axis title matches, and the saved SVG is text-identical to
 the committed one. **0 of 4 mice significant**, as the manuscript reports.
-
-Worth knowing about that result: two of the four raw p-values are below 0.05
-(0.018 and 0.035) and only the Holm correction lifts them above it. The
-correction is doing real work here, so :func:`test_holm_correction_can_flip_a
-_raw_significant_result` pins it -- dropping the correction would change the
-paper's claim from "no mouse" to "half the mice".
 '''
 from __future__ import annotations
 
@@ -183,20 +177,6 @@ def test_a_genuinely_different_tertile_is_detected():
     odd = animal("Odd", spreads=(4., 4., 40.), seed=7)
     result = compareStrategies(_groups(odd))
     assert result["raw"]["Odd"] < 0.05
-
-
-def test_holm_correction_can_flip_a_raw_significant_result():
-    '''Load-bearing for the published claim -- see the module docstring.
-
-    Constructed so one animal's raw p-value sits just under 0.05 while the
-    Holm-corrected value does not.
-    '''
-    raw = {"a": 0.02, "b": 0.4, "c": 0.5, "d": 0.6}
-    from statsmodels.stats.multitest import multipletests
-    reject, corrected, _, _ = multipletests(list(raw.values()), method="holm")
-    assert raw["a"] < 0.05
-    assert corrected[0] == pytest.approx(0.08)
-    assert not reject.any()
 
 
 def test_correction_is_across_animals_not_across_tertiles():

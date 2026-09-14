@@ -11,7 +11,7 @@ from statsmodels.formula.api import ols
 from typing import Literal
 
 def stHeatmap(df : pd.DataFrame,
-              mean_or_median : Literal["mean", "median", "mode"],
+              mean_or_median : Literal["mean", "median"],
               dscrp : str, df_query="",
               plot_combined_subjects=True,
               plot_single_subjects=True,
@@ -44,6 +44,18 @@ def stHeatmap(df : pd.DataFrame,
                                            save_prefix=save_prefix)
         plt.show()
 
+#: Heatmap row order: previous trial rewarded first.
+PREV_TRIAL_ORDER = ("Rewarded", "Not-Rewarded")
+#: Heatmap column order: easiest current trial first.
+CUR_DIFFICULTY_ORDER = ("Easy", "Med", "Hard")
+
+
+def _inOrder(labels, order):
+    """The labels of ``order`` that are present in ``labels``, in that order."""
+    present = set(labels)
+    return [label for label in order if label in present]
+
+
 def _asTuple(group_key):
     """Normalise a groupby key to a tuple.
 
@@ -57,10 +69,10 @@ def _asTuple(group_key):
 
 def _gropuDataByPriorAndCurrentSubject(df : pd.DataFrame,
                             is_many_subjects : bool,
-                            mean_or_median : Literal["mean", "median", "mode"],
+                            mean_or_median : Literal["mean", "median"],
                             dscrp : str, df_query="", append_sec_str=True,
                             save_fig=False, save_prefix=""):
-    assert mean_or_median in ["mean", "median", "mode"]
+    assert mean_or_median in ["mean", "median"]
     if save_fig:
         assert len(save_prefix), (
                           "save_prefix must be specified when save_fig is True")
@@ -102,16 +114,10 @@ def _gropuDataByPriorAndCurrentSubject(df : pd.DataFrame,
         prev_trial =  tuple(list(prev_trial) + ["PrevDifficulty"])
     cur_trial = "CurDifficulty", #"Strategy",
 
-    # Create as normalized histograms
-    # 'bins' variable is only needed if we are using mode. Since stimulus-time
-    # is continuous, we need to bin to find the mode
-    bins = _stHist(df, dscrp + (" - " + df_query if len(df_query) else ""),
-                   save_prefix=save_prefix,
-                   save_fig=save_fig and mean_or_median == "median")
     # Create the heatmap
     fig1 = _stHeatmap(df.copy(), is_many_subjects=is_many_subjects,
                       prev_trial=prev_trial, cur_trial=cur_trial,
-                      mean_or_median=mean_or_median, bins=bins, dscrp=dscrp,
+                      mean_or_median=mean_or_median, dscrp=dscrp,
                       df_query=df_query, append_sec_str=append_sec_str,
                       PREV_DIFFICULTY=PREV_DIFFICULTY)
     if save_fig:
@@ -138,7 +144,7 @@ def _gropuDataByPriorAndCurrentSubject(df : pd.DataFrame,
         plt.show()
 
 def _stHeatmap(df, is_many_subjects, prev_trial, cur_trial, mean_or_median,
-               bins, dscrp, df_query, append_sec_str, PREV_DIFFICULTY):
+               dscrp, df_query, append_sec_str, PREV_DIFFICULTY):
     df_li = []
     num_trials = len(df)
     num_sessions = len(df[["Name", "Date", "SessionNum"]].drop_duplicates())
@@ -192,26 +198,12 @@ def _stHeatmap(df, is_many_subjects, prev_trial, cur_trial, mean_or_median,
         if mean_or_median == "mean":
             idx_groups_avgs = indx_groups_st.mean()
             # print("**idx_groups_avgs:", idx_groups_avgs)
-        elif mean_or_median == "median":
+        else:
             if not is_many_subjects:
                 idx_groups_avgs = indx_groups_st.median()
             else:
                 # We already calculated the median per subject above
                 idx_groups_avgs = indx_groups_st.mean()
-        else:
-            assert mean_or_median == "mode"
-            grps_bins = [np.histogram(grp_st, bins=bins)[0]
-                         for grp_name, grp_st in indx_groups_st]
-            grps_max_bin_idx = [np.argmax(grp_st_counts)
-                                for grp_st_counts in grps_bins]
-            grps_mode = [(bins[grp_max_bin_idx] + bins[grp_max_bin_idx+1])/2
-                          for grp_max_bin_idx in grps_max_bin_idx]
-
-            remade_df = {cur_trial:[], 0:[]}
-            for (grp_name, _), grp_mode in zip(indx_groups_st, grps_mode):
-                remade_df[cur_trial].append(grp_name)
-                remade_df[0].append(grp_mode)
-            idx_groups_avgs = pd.DataFrame(remade_df)
         if PREV_DIFFICULTY:
             was_rewarded = sub_index[0]
             prev_diff = sub_index[1]
@@ -234,50 +226,19 @@ def _stHeatmap(df, is_many_subjects, prev_trial, cur_trial, mean_or_median,
         df_summary_sem = df_summary_sem.drop(columns="calcStimulusTime")
         # display(df_summary_sem)
 
-    def sortDiff(diff):
-        print("diff:", diff)
-        cur_order = [
-            "Not-Rewarded-Easy", "Not-Rewarded-Hard", #"Not-Rewarded-Med",
-            "Rewarded-Easy", "Rewarded-Hard", #"Rewarded-Med"
-            ]
-        new_order = [
-            "Rewarded-Hard", "Rewarded-Easy",  #"Rewarded-Med",
-            "Not-Rewarded-Easy", "Not-Rewarded-Hard", #"Not-Rewarded-Med",
-            ]
-        if not PREV_DIFFICULTY:
-            cur_order = cur_order[::2] # Remove every second element
-            new_order = [el for el in new_order if el in cur_order]
-        new_sort = [new_order.index(key) for key in cur_order]
-        return new_sort
-    df_summary = df_summary.sort_index(axis='index', key=sortDiff, level=1)
-    if is_many_subjects:
-        df_summary_sem = df_summary_sem.sort_index(axis='index', key=sortDiff,
-                                                   level=1)
-
-    def sortDiffols(diff):
-        # NB: the argument is ignored -- this returns the fixed permutation
-        # [0, 2, 1], so it only works when the column index is exactly the
-        # three difficulty levels. A `df_query` that leaves fewer raises in
-        # pandas. See docs/repo-audit.md; not changed here because the column
-        # order it produces is the published one.
-        cur_order = ["Stay-Easy", "Stay-Hard", "Stay-Med",
-                     #"Switch-Easy", "Switch-Hard", #"Switch-Med"
-                    ]
-        new_order = ["Stay-Easy", #"Switch-Easy",
-                     "Stay-Med", #"Switch-Med",
-                     "Stay-Hard", #"Switch-Hard",
-                    ]
-        new_sort = [new_order.index(key) for key in cur_order]
-        return new_sort
-    # df = df.sort_index(axis='columns', key=sortDiffols, level=2)
-    df_summary = df_summary.sort_index(axis='columns', key=sortDiffols, level=1)
-    # df = df.sort_index(axis='columns', ascending=[True, True])
+    # Fixed, published order. These used to be `sort_index(key=...)` callbacks
+    # that ignored the index they were handed and returned a hardcoded
+    # permutation of the alphabetical pivot order, which only worked while the
+    # index held exactly the expected labels. Selecting by label gives the same
+    # order and also survives a `df_query` that leaves out a level.
     df_summary = df_summary.droplevel(level=0, axis="columns")
-    # display(df_summary)
+    df_summary = df_summary.loc[_inOrder(df_summary.index, PREV_TRIAL_ORDER),
+                                _inOrder(df_summary.columns,
+                                         CUR_DIFFICULTY_ORDER)]
     if is_many_subjects:
-        df_summary_sem = df_summary_sem.sort_index(axis='columns',
-                                                   key=sortDiffols, level=1)
         df_summary_sem = df_summary_sem.droplevel(level=0, axis="columns")
+        df_summary_sem = df_summary_sem.loc[df_summary.index,
+                                            df_summary.columns]
     min_val, max_val = df_summary.values.min(), df_summary.values.max()
 
     print("df.min():", min_val)
@@ -331,48 +292,6 @@ def _stHeatmap(df, is_many_subjects, prev_trial, cur_trial, mean_or_median,
     return fig
 
 
-
-def _stHist(df, title, save_fig, save_prefix=None):
-    if save_fig:
-        assert save_prefix is not None, "no save path specified"
-    prev_rewarded_st = df[df.PrevTrial == "Rewarded"].calcStimulusTime
-    prev_not_rewarded_st = df[df.PrevTrial == "Not-Rewarded"].calcStimulusTime
-    STEP_SIZE = 0.1
-    # Check if we are z-scored by checking for -ve values
-    is_zscored = any(prev_rewarded_st < 0)
-    bins = np.arange(-2 if is_zscored else 0.3,
-                     (5 if is_zscored else 3) + STEP_SIZE, STEP_SIZE)
-    PLOT_HIST = False
-    if not PLOT_HIST:
-        return bins
-
-    hist_bins_counts = [np.histogram(data, bins=bins)[0] for data in
-                        [prev_rewarded_st, prev_not_rewarded_st]]
-    # Normalize sum to 1
-    hist_bins_counts = [counts / counts.sum() for counts in hist_bins_counts]
-    prev_rewaded_bin_counts = hist_bins_counts[0]
-    prev_not_rewaded_bin_counts = hist_bins_counts[1]
-    # Plot
-    fig, ax = plt.subplots(figsize=(10, 6))
-    ax.plot(bins[:-1], prev_rewaded_bin_counts, label="Prev. Rewarded",
-            color="g",)
-           #width=STEP_SIZE)
-    ax.plot(bins[:-1], prev_not_rewaded_bin_counts, label="Prev. Not-Rewarded",
-            color='r',)
-    ax.legend(loc="upper right")
-    ax.set_xlabel("Stimulus Time")
-    # ax.set_ylim(0, 0.25)
-    ax.set_ylabel("Normalized Count")
-    ax.set_title(title)
-    [ax.spines[_dir].set_visible(False) for _dir in ["top", "right"]]
-    if save_fig:
-        save_fp = f"{save_prefix}/st_hist_prev_outcome_{title}.svg"
-        save_fp = save_fp.replace('=', '_')
-        save_fp = Path(save_fp)
-        save_fp.parent.mkdir(exist_ok=True)
-        fig.savefig(save_fp, dpi=300, bbox_inches='tight')
-    plt.show()
-    return bins
 
 def _violinPlot(df, ax):
     num_subjects = len(df.Name.unique())

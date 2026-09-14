@@ -25,3 +25,17 @@ data/RLModel/model_full/
 # Upload archive built from the untracked data/2p files, fetched by
 # code/data_downloader.ipynb. Rebuildable; never commit it.
 2p_data.zip
+
+# data/2p files too large for the repo (130 MB - 1.2 GB each), listed one by
+# one: smaller data/2p files (<= ~62 MB) are tracked, so this is decided per
+# file by size rather than by ignoring the directory. They ship in
+# 2p_data.zip via code/data_downloader.ipynb instead.
+data/2p/data_runs_Feedback_fixed.pkl
+data/2p/data_runs_Unnormalized.pkl
+data/2p/df_all_by_epoch_df_f_filtered.pkl
+data/2p/df_all_by_trial_normalized.pkl
+data/2p/df_all_by_trial_normalized_concat_sampling_across_sessions_aligned_feedback_0.5s_norm_limited_end.pkl
+data/2p/normed_sampling_by_quantiles2.pkl
+data/2p/rt_corr_shuffled.pkl
+data/2p/svm_df.pkl
+data/2p/traces_cut_feedback_filtered_full_df.pkl

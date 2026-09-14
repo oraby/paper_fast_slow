@@ -25,12 +25,12 @@ The eight workstreams as stated:
 | **G0** | Trustworthy baseline | **done** |
 | **A** | Unified `uv` | **done** — everything runs from the lockfile; guarded by `test_environment.py` |
 | **B** | Model trim + docs | **not started** — `Decay Q` still in the registry, `rlmodel/README.md` still says 3 s and uses the oldest figure numbers |
-| **C** | Behaviour tests | **done, C1–C7** — six panels extracted to `behavior/` (45 → 147 tests); `figcode/`, `opto/` and the new `tracking/` given their first tests (0 → 114, 0 → 50, 0 → 49). C6 found and fixed **two panels that could not be regenerated** (Figures 1D, S3E); C7 extracted `Tracking.ipynb` (Figures S3J–M), whose panels raised `NameError` outside the notebook. All verified against the committed figures |
+| **C** | Behaviour tests | **done, C1–C7** — six panels extracted to `behavior/` (45 → 147 tests); `figcode/`, `opto/` and the new `tracking/` given their first tests (0 → 112, 0 → 51, 0 → 48). C6 found and fixed **two panels that could not be regenerated** (Figures 1D, S3E); C7 extracted `Tracking.ipynb` (Figures S3J–M), whose panels raised `NameError` outside the notebook. All verified against the committed figures |
 | **D** | 2-photon reorg | **D0, D1 done** — orphaned modules deleted; **no notebook loads an undefined name**. Figure 4H's sorting reference is restored (a missed rename). `TwoPLoad.ipynb` remains a decision. D2 (extraction) remains |
 | **E** | Runner / papermill | **started ahead of plan** — 4 notebooks carry a `parameters` cell; see the E section for what that does and does not yet cover |
 | **F** | Final cleanup | **not started** — `data/to_delete/` is still 563 MB |
 
-Suite: **1371 passed, 1 skipped, 0 failed**, and green with
+Suite: **1369 passed, 1 skipped, 0 failed**, and green with
 `FutureWarning`/`DeprecationWarning` promoted to errors.
 
 ---
@@ -305,6 +305,19 @@ Targets in priority order, highest-value first:
   sync → rotation → interpolation, ending at `df_track_centroid`) and ~295
   lines of video/AVI tooling that no figure uses. The preprocessing is the
   natural follow-on; the video tooling is a keep/delete call for fork F. See
+  [`repo-audit.md`](repo-audit.md).
+
+- **C follow-up: defect decisions (2026-09-14).** Resolved as decided:
+  `_bh_fdr`, `_holm_step_down` and `_hl_diff_unpaired` deleted; `stheatmap`'s
+  unusable `"mode"` option (and `_stHist`, which existed only for it) deleted;
+  both fixed-permutation sort callbacks replaced by label-ordered constants,
+  with Figure S3E still text-identical; `bootstrapPerf` gained an optional
+  `rng` whose default keeps today's behaviour (there is no implicit seed to
+  adopt); `plt.show()` moved out of `prevoutcomecurquantile` to its call site;
+  the nine oversized `data/2p` files added to `.gitignore` by name; the empty
+  `psychofit-FR03` tree removed. Left and documented: empty coherence bins
+  (they turn out not to affect any fit) and the 0.025 / 0.05 star thresholds
+  (no reported star depends on the choice). Details in
   [`repo-audit.md`](repo-audit.md).
 
 **Why C should precede D even though it does not block it:** C is the same

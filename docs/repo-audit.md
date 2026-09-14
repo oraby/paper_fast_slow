@@ -52,14 +52,14 @@ default extension is a real question, not only a test question.
 | `common` | 1 file | |
 | `widefield` | 1 file | |
 | `pipeline` | 1 file — **not collected**: `pipeline/tests` is missing from `testpaths` in `pyproject.toml`. |
-| ~~`opto`~~ | ~~**0**~~ → 2 files, 50 tests | ~~Hierarchical bootstrap (Figures 3D, 4C, S6G) is untested.~~ Done in C5. |
-| ~~`figcode`~~ | ~~**0**~~ → 6 files, 114 tests | ~~Psychometrics, stay/switch, sampling-time heatmaps are untested.~~ Done in C5 and C6. |
+| ~~`opto`~~ | ~~**0**~~ → 2 files, 51 tests | ~~Hierarchical bootstrap (Figures 3D, 4C, S6G) is untested.~~ Done in C5. |
+| ~~`figcode`~~ | ~~**0**~~ → 6 files, 112 tests | ~~Psychometrics, stay/switch, sampling-time heatmaps are untested.~~ Done in C5 and C6. |
 
 *Fork 3.*
 
-**Current suite: 1371 passed, 1 skipped, 0 failed** (~82 s), across
-`rlmodel` 655, `util` 216, `behavior` 147, `figcode` 114, `twop` 100,
-`opto` 50, `tracking` 49, `widefield` 29, `common` 10, `pipeline` 2. It also
+**Current suite: 1369 passed, 1 skipped, 0 failed** (~84 s), across
+`rlmodel` 655, `util` 216, `behavior` 147, `figcode` 112, `twop` 100,
+`opto` 51, `tracking` 48, `widefield` 29, `common` 10, `pipeline` 2. It also
 passes with `FutureWarning` and `DeprecationWarning` promoted to errors.
 
 (`util` grows with the repo: `test_environment.py::test_module_imports`
@@ -154,7 +154,7 @@ tests:
 | ~~**Figure S2M**~~ | — | **extracted** to `behavior/fastslowperf.py` | Supplementary |
 | ~~**Figure S2B**~~ | — | **extracted** to `behavior/stdistribution.py`; the cell could not run before | Supplementary |
 | ~~**Figure S3G**~~ | — | **extracted** to `behavior/stayswitchupdate.py`, exclusion now derived | Supplementary |
-| ~~**Figures S3J–M**~~ | — | **extracted** to `tracking/centroids.py` and `tracking/strategy.py` (49 tests). The notebook's figure cells went 302 → 25 lines; the preprocessing and video tooling stay put, see below | Supplementary |
+| ~~**Figures S3J–M**~~ | — | **extracted** to `tracking/centroids.py` and `tracking/strategy.py` (48 tests). The notebook's figure cells went 302 → 25 lines; the preprocessing and video tooling stay put, see below | Supplementary |
 | **Figures 4G, 6B, 6C, 6E, S9A–B, S14A** | `2pAnalysis.ipynb` | `_fastSlowOverlap`, `extractTracesPreferences`, `_plotBrainRegionTuning`, … | Main + supplementary |
 | **Figures 4K, S10A–C, S11A-mid/right, S11B, S12G** | `plottraces3.ipynb` | the AUC/peak correlation machinery, the early/late active-neuron binning, the decoder loop | Main + supplementary |
 | **Figure 7D** | `model_to_behavior.ipynb` | `plotQ_R_Heatmap` | Main figure |
@@ -440,14 +440,15 @@ against saved output before and after.
 | Where | What | Verdict |
 |---|---|---|
 | `bootstrapping.py` `__main__` block | Broken three ways: `_generateMockData` raises `ValueError: 'a' and 'p' must have same size`; it calls `bootstrapPerf(mock_data, num_iterations, …)`, which supplies 2 of the 5 required arguments; and its `_calcPerf` indexes `[:, 1]` while the real caller passes 1-D arrays | **Removed** — the tests are the runnable example now |
-| `bootstrap2regions._holm_step_down` | Exact duplicate of the `statsmodels.multipletests(method='holm')` call the module actually uses. Pinned as equivalent by `test_holm_step_down_duplicates_the_statsmodels_call_that_is_used` | Safe to delete |
-| `bootstrap2regions._bh_fdr` | **Incorrect.** Benjamini–Hochberg steps *up* from the largest p-value, so the running minimum must run in descending order; this takes `cummin` on the ascending sort, dragging every adjusted p down to the smallest. On `{.01, .04, .03}` it returns `.03/.03/.03` where BH gives `.03/.04/.04` — anti-conservative. Nothing calls it | **Delete, do not fix** |
-| `bootstrap2regions._hl_diff_unpaired` | Unreferenced Hodges–Lehmann helper | Safe to delete |
-| `bootstrap2regions` line 1 of `bootstrapSignTestApproach2` | `trials_df = trials_df[trials_df.ChoiceCorrect.notna()].copy()` appears twice in a row | Harmless, drop one |
+| `bootstrap2regions._holm_step_down` | Exact duplicate of the `statsmodels.multipletests(method='holm')` call the module actually uses (checked equivalent before removal) | **Removed** |
+| `bootstrap2regions._bh_fdr` | **Incorrect.** Benjamini–Hochberg steps *up* from the largest p-value, so the running minimum must run in descending order; this takes `cummin` on the ascending sort, dragging every adjusted p down to the smallest. On `{.01, .04, .03}` it returns `.03/.03/.03` where BH gives `.03/.04/.04` — anti-conservative. Nothing calls it | **Removed** |
+| `bootstrap2regions._hl_diff_unpaired` | Unreferenced Hodges–Lehmann helper | **Removed** |
+| `bootstrap2regions` line 1 of `bootstrapSignTestApproach2` | `trials_df = trials_df[trials_df.ChoiceCorrect.notna()].copy()` appears twice in a row | **Removed** the duplicate |
 
-The `bootstrapSignTestApproach2` docstring says results are "BH/FDR
+The `bootstrapSignTestApproach2` docstring said results were "BH/FDR
 corrected"; the code applies **Holm**, which is what the Methods and the
-figure legends say. The docstring is the stale part.
+figure legends say. The docstring now says Holm, and the commented-out calls
+into the removed helpers went with them.
 
 ### Two hazards, pinned rather than fixed
 
@@ -466,9 +467,29 @@ figure legends say. The docstring is the stale part.
 ### Two inconsistencies between modules
 
 - **Different significance thresholds for the same figure set.**
-  `figcode/prevoutcomecurquantile.py` stars at *p* < 0.05, while
-  `behavior/fastslowperf.py` uses 0.025 (carried over deliberately when
-  Figure S2M was extracted). Worth one decision rather than two conventions.
+  `behavior/fastslowperf.py` (Figure S2M) gives one star at *p* < 0.025;
+  every other star-drawing module uses 0.05. **Left as is, deliberately.**
+  Which published panels each convention draws, and whether switching would
+  move a star:
+
+  | Threshold | Panel | Reported *p* | Star under 0.05 vs 0.025 |
+  |---|---|---|---|
+  | 0.025 | S2M (`fastslowperf`) | 0.165, 0.006, <0.001 (Holm) | same: ns, \*\*, \*\*\* |
+  | 0.05 | 1I-left (`prevoutcomecurquantile`) | 0.007 | same: \*\* |
+  | 0.05 | S3I (`bias`) | 0.016 | same: \* |
+  | 0.05 | 3F (`widefield/mfclfcquantiles`) | <0.0001, <0.0001, 0.1245 | same |
+  | 0.05 | S3B post-hoc brackets (`rewardrate`, Dunn/Holm) | pairwise values not reported | **unverified** |
+
+  So no reported star depends on the choice, except possibly the S3B post-hoc
+  brackets, whose pairwise p-values the manuscript does not list.
+
+  **0.025 is not a two-tailed correction here.** Every one of these p-values
+  comes from a two-sided test (the `ttest_rel` default, Holm on two-sided p,
+  two-sided Dunn), which already covers both tails, so the comparison is
+  against alpha = 0.05. 0.025 is the per-tail critical level: right for a
+  *one-sided* p-value when a two-tailed decision is wanted. Applied to a
+  two-sided p it halves alpha a second time, giving a two-tailed test at
+  0.025 rather than 0.05.
 - **Two different hierarchical-bootstrap estimators.**
   `bootstrapping.bootstrapPerf` (Figure 3D) resamples subject → session →
   trial and then **pools every resampled trial** before applying the
@@ -481,12 +502,16 @@ figure legends say. The docstring is the stale part.
 
 ### Reproducibility
 
-`bootstrapPerf` draws from the **global** `numpy.random` state — it takes no
-`seed` or `rng` argument, so Figure 3D's p-value is not reproducible without
-seeding the interpreter. `bootstrapSignTestApproach2` does take `seed`
-(default 42) and is reproducible. Pinned as current behaviour by
-`test_reproducibility_comes_only_from_the_global_numpy_seed`, so moving
-`bootstrapPerf` to a local `Generator` is a deliberate change.
+`bootstrapPerf` draws from the **global** `numpy.random` state, and nothing
+in the repo seeds that state before Figure 3D is computed (no
+`np.random.seed` or generator in `opto/` or `opto.ipynb`). So the published
+Figure 3D p-value is **not reproducible bit-for-bit**, and there is no
+implicit seed to adopt as a default. `bootstrapPerf` now takes an optional
+`rng`: `None` (the default) keeps exactly today's behaviour; an `int` uses the
+same legacy stream as `np.random.seed(int)`, so a globally-seeded run can be
+replayed; a `RandomState` or `Generator` is used as given. The caller in
+`optoprocessor` is unchanged. `bootstrapSignTestApproach2` already took `seed`
+(default 42) and is reproducible.
 
 Separately, `psychofit.mle_fit_psycho` draws its random restarts from the same
 global state (`psychofit.py:114`), so a psychometric fit shifts slightly from
@@ -503,12 +528,16 @@ grouping columns` or the `observed=False` deprecation. The suite now runs with
 |---|---|---|
 | `figcode/util.py` `normalizeSTAcrossSubjects` | Rewritten as `groupby(...)[cols].transform(...)`. `include_groups=False` was *not* usable: the callback returns the whole sub-frame, so excluding `Name` would have dropped it from the result | Re-ran on the real 63,702-trial frame (20 animals): the transformed column is **bit-identical**, as are the index and `Name` |
 | `opto/bootstrap2regions.py` `_aggregate_cross_region_effects` | Two identical blocks factored into `_session_effects` with `include_groups=False`; the callback reads only `OptoEnabled`/`ChoiceCorrect` | Seeded run of `bootstrapSignTestApproach2` on two cohorts: all 36 result keys and 16 observed entries **byte-identical** |
-| `figcode/psychometric.py` `_getGroups` | `observed=False` stated explicitly rather than inherited. Switching to `True` would drop empty coherence bins and **change published fits**, so it was not done | Behaviour unchanged by construction; pinned by `test_an_empty_coherence_bin_is_kept_not_dropped` |
+| `figcode/psychometric.py` `_getGroups` | `observed=False` stated explicitly rather than inherited (pandas 3 flips the default). Switching would drop empty coherence bins, which turns out not to change any fit (see below) | Behaviour unchanged by construction; pinned by `test_an_empty_coherence_bin_is_kept_not_dropped` |
 | `figcode/stayswitch.py` `_calcGroupUpdate` | Per-animal `groupby(...).apply(_calcUpdate)` replaced by an explicit loop — `_calcUpdate` both reads and returns `Name`, so it cannot be excluded | Same values, same order (groupby sorts by key either way); 16 tests pinned the numbers first |
 
-An empty coherence bin still feeds `NaN` into `_psychFitBasic` via
-`_fitPsych`, which walks every bin and takes a mean. That is a latent issue,
-not a fixed one — dropping empty bins is the fix, and it changes fits.
+**Empty coherence bins do not affect the fit — an earlier version of this
+note said they did, and was wrong.** `_fitPsych` does append `NaN` for an
+empty bin's DV and proportion correct, but `psychofit.mle_fit_psycho` keeps
+only finite proportions (`ii = np.isfinite(data[2, :])`) before evaluating the
+likelihood, and matplotlib skips `NaN` points. Checked directly: fitting the
+same data with and without an empty bin spliced in gives bit-identical
+parameters. Not a defect; documented in `_getGroups` and left alone.
 
 ### Still untested in these packages
 
@@ -522,9 +551,12 @@ them still warn under pandas 2.3 and will need the same treatment.
 is not used by any manuscript figure — left untested pending the delete/keep
 decision.
 
-`figcode/prevoutcomecurquantile.py:31` calls `plt.show()` from library code,
-which warns under a non-interactive backend and is the one warning the suite
-still emits. Relevant to fork 7 (automated notebook execution).
+~~`figcode/prevoutcomecurquantile.py:31` called `plt.show()` from library
+code.~~ Moved to its one call site in `behavior.ipynb`, so the library draws
+and the notebook decides when to display. `stbydifficulty`, `stheatmap` and
+`psychometric` still call `plt.show()` inside per-subject loops; moving those
+out would hold every per-animal figure until the cell ends, so they are a
+separate decision for fork 7.
 
 ---
 
@@ -553,27 +585,28 @@ Both are fixed and verified against the committed figures:
 - Figure S3E: the regenerated `prior_cur_All Mice All Subjects_mean.svg` is
   **text-identical** to the published one.
 
-### Three more defects in `stheatmap.py`, pinned but not fixed
+### Three more defects in `stheatmap.py` — resolved
 
-Each would change output or invent behaviour, so each is a decision rather
-than a repair:
-
-- **`mean_or_median="mode"` cannot run.** The mode branch passes a whole
-  sub-frame — difficulty labels included — to `np.histogram`, which then sorts
-  strings against floats (`TypeError`). No caller uses it; `behavior.ipynb`
-  passes `"mean"` in all three calls. Fixing it means guessing the intended
-  binning. **Recommend deleting the option.**
-- **`sortDiffols` ignores its argument.** It returns the fixed permutation
-  `[0, 2, 1]` whatever the column index, and its hardcoded `"Stay-Easy"`
-  labels are leftovers from a Strategy split that is commented out. pandas
-  requires one position per index entry, so the panel only survives a column
-  index that is exactly the three difficulty levels — any `df_query` that
-  drops one raises. Every published call passes all three. The permutation
-  *is* the published column order, so making the sort label-driven is a
-  deliberate change.
+- **`mean_or_median="mode"` could not run** (it handed a whole sub-frame,
+  difficulty labels included, to `np.histogram`), and no caller used it.
+  **Removed**, along with `_stHist`: its plotting was switched off
+  (`PLOT_HIST = False`) and its only live output was the bin edges the mode
+  branch needed. `"mode"` is now refused like any other unknown statistic.
+- **Both sort callbacks ignored their argument.** `sortDiffols` (columns)
+  returned a fixed `[0, 2, 1]` and `sortDiff` (rows) a fixed `[1, 0]` — both
+  hardcoded permutations of the alphabetical pivot order, which is why a
+  `df_query` that dropped a level raised. **Replaced** by two module constants,
+  `CUR_DIFFICULTY_ORDER = ("Easy", "Med", "Hard")` and
+  `PREV_TRIAL_ORDER = ("Rewarded", "Not-Rewarded")`, selected by label. Same
+  published order: the cohort heatmap, the violin panel and two per-animal
+  heatmaps (GP4-24, RDK_WT1) all regenerate text-identical to the committed
+  SVGs. A query that drops a level now keeps the rest in order instead of
+  raising. The `PREV_DIFFICULTY = True` branch never had a working row sort
+  (its labels did not match the index) and still does not; it is dead
+  configuration.
 - **A stray `print("sub_index:", ...)`** printed a groupby object under a
-  misleading label on every cohort call; removed, along with the debug print
-  inside `sortDiffols`.
+  misleading label on every cohort call; removed, along with the debug prints
+  inside both sort callbacks.
 
 One deprecation was fixed and verified inert: `stheatmap.py:91` built
 `PrevTrial` as a float NaN column and then assigned strings into it, which
@@ -603,15 +636,21 @@ now a parameter, and saving without one is refused rather than guessed.
 
 Two things worth flagging beyond the extraction:
 
-- **Two of Figure S3M's four raw p-values are below 0.05** (0.018 and 0.035);
-  only the Holm correction lifts them above it. The claim "no mouse shows a
-  posture difference between strategies" therefore rests on the correction,
-  not on the raw tests. Pinned by a test so nobody quietly drops it.
-- **Figure S3K may be mis-described.** The map had it as "relative to choice
-  direction", but the published call passes `choice_normed=False` and the file
-  carries no `_choice_normed` suffix — it is the un-normalised histogram. The
-  `choice_normed` path exists and is now tested, but no published panel uses
-  it. Worth checking against the caption.
+- **Figure S3M's per-animal p-values** are 0.018, 0.361, 0.035 and 0.497
+  raw; Holm across the four mice gives 0.073, 0.722, 0.105 and 0.722.
+- **The committed Figure S3K is the un-normalised histogram
+  (`choice_normed=False`).** Checked three ways: the notebook call passes
+  `False`; the saved file has no `_choice_normed` suffix and its title has no
+  "(Normed to Choice Direction)"; and all 84 bar polygons match a
+  `choice_normed=False` render with correlation 1.000000 and a constant area
+  ratio (0.9964, spread 0.0000, a uniform layout scale between matplotlib 3.8
+  and 3.11), against r = 0.94 with inconsistent ratios for `True`.
+  Choice normalisation would also *not* make the histogram point one way: 46%
+  of trial means are positive after it, against 37% un-normalised, because
+  animals turn toward both choices. The version where every animal points the
+  same way is the **preferred-side** normalisation, Figure S3L, with 80% of
+  trial means positive. If the manuscript's S3K panel points one way, it was
+  drawn from the S3L file rather than from a choice-normalised one.
 
 ### Still in the notebook
 
@@ -718,12 +757,12 @@ which will break under a runner invoked from the repo root.
   upstream's to run; `testpaths` deliberately excludes it. Worth stating in the
   README either way, since a fresh clone without `--recurse-submodules` breaks
   every psychometric panel.
-- **`figcode/psychofit-FR03/`** is an empty leftover directory. Git cannot
-  track it, so it is invisible to `git status` and will not appear in a fresh
-  clone — but it is on disk here and should be removed locally.
-- **The nine untracked `data/2p/*.pkl` (3.7 GB) are not in `.gitignore`**, even
-  though the derived `2p_data.zip` is. They show up in every `git status` as
-  untracked, one `git add .` away from being committed.
+- ~~**`figcode/psychofit-FR03/`**~~ was an untracked tree of empty
+  directories (no files); **removed**.
+- ~~**The nine untracked `data/2p/*.pkl` (3.7 GB) were not in
+  `.gitignore`**~~; **added, each by name**. They are 130 MB to 1.2 GB apiece,
+  while every tracked `data/2p` file is at most 62 MB, so the directory is
+  decided file by file by size rather than ignored wholesale.
 - **`twop/relogit/`** is a second vendored package, with its own
   `requirements.txt` that nothing reads.
 - **`conftest.py`** carries a Windows conda DLL workaround derived from

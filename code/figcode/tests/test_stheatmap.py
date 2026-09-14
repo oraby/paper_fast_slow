@@ -14,9 +14,8 @@ Two things are pinned because they decide what the panel means:
 
 - the cohort heatmap averages **one value per animal**, so an animal with more
   trials does not pull a cell;
-- ``_stHist`` chooses its bin range by sniffing for negative values, which is
-  how it tells z-scored input from raw seconds. That is implicit and worth a
-  test.
+- rows and columns come out in a **fixed** order -- rewarded previous trial
+  first, then easy / medium / hard -- whatever subset of levels is present.
 '''
 from __future__ import annotations
 
@@ -27,7 +26,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from ..stheatmap import _stHist, _violinPlot, stHeatmap
+from ..stheatmap import (CUR_DIFFICULTY_ORDER, PREV_TRIAL_ORDER,
+                         _violinPlot, stHeatmap)
 
 DIFFICULTIES = ("Easy", "Med", "Hard")
 REWARDED, NOT_REWARDED = "Rewarded", "Not-Rewarded"
@@ -85,15 +85,9 @@ def test_the_cohort_heatmap_runs_for_the_statistics_the_paper_uses(statistic):
     plt.close("all")
 
 
-def test_the_mode_statistic_is_accepted_but_does_not_work():
-    '''A third option that no caller uses and that cannot run.
-
-    The mode branch feeds a whole sub-frame -- difficulty labels included --
-    to ``np.histogram``, which then tries to sort strings against floats.
-    Pinned as broken rather than fixed: nothing calls it, and guessing the
-    intended binning would invent behaviour. See ``docs/repo-audit.md``.
-    '''
-    with pytest.raises(TypeError, match="not supported between instances"):
+def test_mode_is_no_longer_an_option():
+    """It never ran, and no caller used it, so it was removed."""
+    with pytest.raises(AssertionError):
         stHeatmap(cohort(), mean_or_median="mode", dscrp="Mice",
                   plot_combined_subjects=True, plot_single_subjects=False)
     plt.close("all")
@@ -137,19 +131,36 @@ def test_a_query_that_keeps_all_three_difficulties_works():
     plt.close("all")
 
 
-def test_a_query_that_drops_a_difficulty_level_breaks_the_column_sort():
-    '''``sortDiffols`` ignores its argument and returns a fixed ``[0, 2, 1]``.
+def _heatmapAxis():
+    for number in plt.get_fignums():
+        for ax in plt.figure(number).axes:
+            if ax.get_xlabel() == "Current Trial":
+                return ax
+    raise AssertionError("no heatmap axis drawn")
 
-    pandas requires a sort key to return one position per index entry, so the
-    panel only survives a column index that is exactly the three difficulty
-    levels. Every published call passes all three. Pinned rather than fixed:
-    the permutation is what produces the published column order, and making
-    the sort label-driven is a deliberate change, not a repair.
-    '''
-    with pytest.raises(ValueError):
-        stHeatmap(cohort(), mean_or_median="median", dscrp="Mice",
-                  df_query="DVstr == 'Easy'", plot_combined_subjects=True,
-                  plot_single_subjects=False)
+
+def _ticks(labels):
+    return [label.get_text() for label in labels]
+
+
+def test_the_heatmap_uses_the_published_row_and_column_order():
+    """Rewarded first; easy, medium, hard -- not pandas' alphabetical order."""
+    plt.close("all")
+    stHeatmap(cohort(), mean_or_median="mean", dscrp="Mice",
+              plot_combined_subjects=True, plot_single_subjects=False)
+    ax = _heatmapAxis()
+    assert _ticks(ax.get_xticklabels()) == list(CUR_DIFFICULTY_ORDER)
+    assert _ticks(ax.get_yticklabels()) == list(PREV_TRIAL_ORDER)
+    plt.close("all")
+
+
+def test_a_query_that_drops_a_difficulty_level_keeps_the_rest_in_order():
+    """The old sort callbacks raised here; label selection does not."""
+    plt.close("all")
+    stHeatmap(cohort(), mean_or_median="median", dscrp="Mice",
+              df_query="DVstr != 'Med'", plot_combined_subjects=True,
+              plot_single_subjects=False)
+    assert _ticks(_heatmapAxis().get_xticklabels()) == ["Easy", "Hard"]
     plt.close("all")
 
 
@@ -166,34 +177,6 @@ def test_trials_missing_a_required_outcome_are_dropped(column):
     stHeatmap(df, mean_or_median="median", dscrp="Mice",
               plot_combined_subjects=True, plot_single_subjects=False)
     plt.close("all")
-
-
-# --------------------------------------------------------------------------
-# Histogram bin range
-# --------------------------------------------------------------------------
-
-def _binsFor(times):
-    frame = pd.DataFrame({"PrevTrial": REWARDED, "calcStimulusTime": times})
-    return _stHist(frame, title="t", save_fig=False)
-
-
-def test_raw_seconds_get_a_positive_bin_range():
-    bins = _binsFor([0.5, 1.0, 2.0])
-    assert bins[0] == pytest.approx(0.3)
-    assert bins[-1] == pytest.approx(3.0)
-
-
-def test_a_negative_value_is_read_as_z_scored_and_widens_the_range():
-    '''The only signal the function has that the column was normalised.'''
-    bins = _binsFor([-1.5, 0.0, 1.2])
-    assert bins[0] == pytest.approx(-2.0)
-    assert bins[-1] == pytest.approx(5.0)
-
-
-def test_the_bin_step_is_a_tenth_either_way():
-    for times in ([0.5, 1.0], [-1.0, 1.0]):
-        bins = _binsFor(times)
-        np.testing.assert_allclose(np.diff(bins), 0.1)
 
 
 # --------------------------------------------------------------------------
