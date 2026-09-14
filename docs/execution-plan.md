@@ -25,12 +25,12 @@ The eight workstreams as stated:
 | **G0** | Trustworthy baseline | **done** |
 | **A** | Unified `uv` | **done** — everything runs from the lockfile; guarded by `test_environment.py` |
 | **B** | Model trim + docs | **not started** — `Decay Q` still in the registry, `rlmodel/README.md` still says 3 s and uses the oldest figure numbers |
-| **C** | Behaviour tests | **Code done, C1–C7.** Every extracted panel reproduces its committed figure and is tested; `figcode/`, `opto/` and `tracking/` went 0 → 112, 51 and 48 tests. The S3J–M text disagreements are decided, with replacement legend/Methods text drafted (`methods_model_revision.md` Blocks 10–12); S3K is regenerated choice-normalised next revision. **Proposed C8:** extract `Tracking.ipynb`'s preprocessing, which pandas 3 would break silently |
+| **C** | Behaviour tests | **Done, C1–C8.** Every extracted panel reproduces its committed figure and is tested; `figcode/`, `opto/` and `tracking/` went 0 → 112, 51 and 124 tests. C8 extracted `Tracking.ipynb`'s preprocessing (identical output on all 76,311 frames) and fixed two silent breakages: pandas 3 copy-on-write and a machine-time-zone dependence. S3J–M legend/Methods text is drafted (`methods_model_revision.md` Blocks 10–12); S3K is regenerated choice-normalised next revision; interpolation wording (#13) is open |
 | **D** | 2-photon reorg | **D0, D1 done** — orphaned modules deleted; **no notebook loads an undefined name**. Figure 4H's sorting reference is restored (a missed rename); `TwoPLoad.ipynb` re-anchored to `code/`, though its 1.2 GB raw input is not shipped. D2 (extraction) remains |
 | **E** | Runner / papermill | **started ahead of plan** — 4 notebooks carry a `parameters` cell; see the E section for what that does and does not yet cover |
 | **F** | Final cleanup | **not started** — `data/to_delete/` is still 563 MB |
 
-Suite: **1369 passed, 1 skipped, 0 failed**, and green with
+Suite: **1466 passed, 1 skipped, 0 failed**, and green with
 `FutureWarning`/`DeprecationWarning` promoted to errors.
 
 ---
@@ -319,6 +319,15 @@ Targets in priority order, highest-value first:
   (they turn out not to affect any fit) and the 0.025 / 0.05 star thresholds
   (no reported star depends on the choice). Details in
   [`repo-audit.md`](repo-audit.md).
+
+- ~~**C8** Extract `Tracking.ipynb`'s preprocessing.~~ **Done.** `tracking/sync.py`,
+  `rotate.py`, `interpolate.py` and `preprocess.py::buildCentroidFrame`, with 76
+  tests; the notebook's preprocessing cells went 437 → 4 lines. Identical to the
+  notebook at every stage on all 76,311 frames, with copy-on-write on and off. Fixed
+  on the way: the gap filling that pandas 3 would have silently disabled (6,189 of
+  11,212 frames changed in a two-session test of the old code) and the dependence
+  on the machine's time zone (64 frames matched on a UTC machine, none on US
+  Eastern). Only the video/AVI writers remain in the notebook, for fork F.
 
 **Why C should precede D even though it does not block it:** C is the same
 refactor (inline → module → test) at roughly one-quarter of D's scale, on a

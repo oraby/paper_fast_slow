@@ -57,9 +57,9 @@ default extension is a real question, not only a test question.
 
 *Fork 3.*
 
-**Current suite: 1369 passed, 1 skipped, 0 failed** (~84 s), across
-`rlmodel` 655, `util` 216, `behavior` 147, `figcode` 112, `twop` 100,
-`opto` 51, `tracking` 48, `widefield` 29, `common` 10, `pipeline` 2. It also
+**Current suite: 1466 passed, 1 skipped, 0 failed** (~85 s), across
+`rlmodel` 655, `util` 227, `behavior` 147, `tracking` 124, `figcode` 112,
+`twop` 110, `opto` 51, `widefield` 29, `common` 10, `pipeline` 2. It also
 passes with `FutureWarning` and `DeprecationWarning` promoted to errors.
 
 (`util` grows with the repo: `test_environment.py::test_module_imports`
@@ -651,23 +651,47 @@ Two things worth flagging beyond the extraction:
   for the notebook change that needs (S3J has to keep its own un-normalised
   call).
 
-### Still in the notebook
+### The preprocessing — extracted in C8
 
-Deliberately left, because neither is a manuscript figure and both are larger
-than the panels themselves:
+The chain that turns the raw SLEAP export into `df_track_centroid` is now
+`code/tracking/sync.py`, `rotate.py` and `interpolate.py`, driven by
+`preprocess.py::buildCentroidFrame` (76 tests). The notebook's preprocessing
+cells went **437 → 4 lines**. Every stage was compared with the notebook's own
+frames — parsed timestamps (93,651 rows), matched frames (76,311), rotated
+frames (88 columns) and the final centroid frame (91 columns) — and is
+**identical**: values, dtypes, index and column order. The rewired notebook
+runs end to end and reproduces that frame.
+
+Two latent breakages were fixed on the way, both verified inert on this machine:
+
+- **pandas 3 would have silently changed the published angles.** Gap filling
+  used `trial_df[col].interpolate(inplace=True)`, an in-place call on a column
+  pulled out of a frame. Under copy-on-write — the pandas 3 default — that no
+  longer writes back. Running the *original* cell on two real sessions with
+  copy-on-write on changed the angle of **6,189 of 11,212 frames**, and the
+  limb reconstruction jumped from 1,098 to 4,494 frames; without it, zero
+  frames differed. The new code assigns explicitly and is identical with
+  copy-on-write on or off, on all 76,311 frames.
+- **The pipeline only worked in Central European time.** Video filenames are
+  local wall-clock times with no zone, and the notebook parsed them with
+  `time.mktime`, which uses the zone of whatever machine runs it. Read as UTC,
+  **64** of the 76,311 frames still match a trial; read as US Eastern time,
+  **none** do — with no error either way. The zone is now explicit
+  (`sync.VIDEO_CLOCK_TZ = "Europe/Berlin"`, calibrated together with the
+  4 h 2.2 s clock offset); on this machine the timestamps are bit-identical.
+
+Also recorded rather than changed: the centroid coordinates are cast to
+`int32` before averaging, truncating each keypoint toward zero (a leftover from
+pixel drawing code), and that is what the published panels used. The
+notebook's diagnostic `quick_test` mode of the frame matcher was dropped, since
+nothing called it. The interpolation reaches further than the Methods say; see
+`docs/manuscript-issues.md` #13.
+
+### Still in the notebook
 
 | Cells | Lines | What |
 |---|---|---|
-| 13–26 | ~370 | The preprocessing chain: behaviour/video time sync, rotation to the head-fixation reference, and missing-limb interpolation. Ends at `df_track_centroid`, which is what the extracted panels consume |
-| 23–24, 27–28 | ~295 | Video and AVI writing — annotated overlays for inspection, not used by any figure |
-
-**The preprocessing will break silently under pandas 3.** The first
-interpolation stage fills gaps with `trial_df[col].interpolate(inplace=True)`,
-an in-place call on a column pulled out of a frame. Under pandas 2.3 that
-writes through; under copy-on-write, the pandas 3 default, it does not, and
-the frame keeps its gaps with no error. Verified with a three-row probe both
-ways. The later geometric reconstruction would then fill more limbs than it
-does today, so the centroids would shift quietly.
+| 15, 17 | ~295 | Video and AVI writing — annotated overlays for inspection, not used by any figure. A keep/delete decision for fork F |
 
 The manuscript text for these panels disagreed with the code in four places.
 Three are decided in favour of the code — S3J uses the within-trial range, S3L
@@ -676,10 +700,6 @@ legend and Methods text is in `code/rlmodel/methods_model_revision.md`
 Blocks 10–12. S3K is decided the other way: the figure is regenerated
 choice-normalised next revision. The interpolation wording (#13) is still open.
 See `docs/manuscript-issues.md` #9–#13.
-
-The preprocessing is the natural follow-on: it is what makes the panels
-reproducible from raw SLEAP output rather than from a notebook that has to be
-run top to bottom. The video tooling is a keep/delete decision for fork F.
 
 ---
 

@@ -260,10 +260,27 @@ rule. For reference, a per-animal rule would treat one of the 12 sessions differ
 **Open — not yet decided.** Not covered by Blocks 10–12.
 
 The Methods say "Occasional missing SLEAP key points were linearly
-interpolated from surrounding frames". The code does that, but only across gaps
-of up to three frames within a trial; any limb still missing is then
-**reconstructed geometrically** from the opposite limb using that session's
-average inter-limb offset. The second step is not mentioned.
+interpolated from surrounding frames". What the code does, measured on all
+76,311 frames:
+
+- **16.7% of limb keypoints** (50,843) were missing before interpolation, so
+  "occasional" undersells it.
+- **Stage 1, in time:** each coordinate is interpolated linearly across its
+  trial. Gaps of *any* length are filled — an earlier version of this note said
+  "up to three frames", which was wrong: the code repeats a one-frame fill
+  until nothing changes. Gaps at the start or end of a trial take the nearest
+  valid value rather than being interpolated. 35,827 keypoints were filled
+  this way.
+- **Stage 2, from the other limbs:** a keypoint missing in *every* frame of its
+  trial is rebuilt from the limbs present, using that session's average
+  inter-limb offset. **14,438 keypoints, in 18.2% of frames**, came from this
+  step, and it is not mentioned.
+- 578 keypoints stayed missing (a lone hind limb has nothing to rebuild from);
+  every frame still had a centroid.
+
+Also unstated: tail detections scoring below 0.25, or lying nearer the head than
+both hind limbs, are discarded first; and the centroid coordinates are
+truncated to whole pixels before averaging.
 
 ---
 
