@@ -1,4 +1,5 @@
 
+import os
 from ...pipeline import pipeline
 from ...common.definitions import BrainRegion
 import matplotlib.pyplot as plt
@@ -230,6 +231,7 @@ def plotActivitySum(df, y_lim, append_at : Literal["before", "after"],
             assert fig_save_prefix is not None
             assert save_label is not None
             fp = f"{fig_save_prefix}/activity_sum/{save_label}_{br_str}.svg"
+            os.makedirs(os.path.dirname(fp), exist_ok=True)
             print("Saving to:", fp)
             plt.savefig(fp)
         plt.show()

@@ -26,7 +26,7 @@ The eight workstreams as stated:
 | **A** | Unified `uv` | **done** — everything runs from the lockfile; guarded by `test_environment.py` |
 | **B** | Model trim + docs | **not started** — `Decay Q` still in the registry, `rlmodel/README.md` still says 3 s and uses the oldest figure numbers |
 | **C** | Behaviour tests | **Done, C1–C8.** Every extracted panel reproduces its committed figure and is tested; `figcode/`, `opto/` and `tracking/` went 0 → 112, 51 and 124 tests. C8 extracted `Tracking.ipynb`'s preprocessing (identical output on all 76,311 frames) and fixed two silent breakages: pandas 3 copy-on-write and a machine-time-zone dependence. S3J–M legend/Methods text is drafted (`methods_model_revision.md` Blocks 10–12); S3K is regenerated choice-normalised next revision; interpolation wording (#13) is open |
-| **D** | 2-photon reorg | **D0, D1 done** — orphaned modules deleted; **no notebook loads an undefined name**. Figure 4H's sorting reference is restored (a missed rename); `TwoPLoad.ipynb` re-anchored to `code/`, its raw input trimmed to 657 MB and made portable. D2 (extraction) remains |
+| **D** | 2-photon reorg | **D0, D1, D1b done** — every 2P notebook was run top to bottom behind a write guard: `2pAnalysis`, `TwoPTraces`, `plottraces3` and `2pSeqWithinDeviation` now run clean; `TwoPLoad` fails only behind two open decisions (the ancestor's `neuronal_stats`, and an unimplemented alignment option). Its raw input is trimmed to 657 MB and portable. D2 (extraction) remains |
 | **E** | Runner / papermill | **started ahead of plan** — 4 notebooks carry a `parameters` cell; see the E section for what that does and does not yet cover |
 | **F** | Final cleanup | **not started** — `data/to_delete/` is still 563 MB |
 
@@ -447,10 +447,10 @@ Re-anchored to `code/`, where every other notebook lives:
 
 - bootstrap `root_parent_level` 2 → 1;
 - `../results/opto2P` → `../results/2P`, and `fig_save_prefix` — used by cells
-  23 and 42, defined nowhere — set to the same;
+  20 and 41, defined nowhere — set to the same;
 - `pkl/X` → `../data/2p/X`, one read and four writes;
 - **every write through `savePortable`.** Three are switched off in the
-  notebook, but cell 56 is not, and it overwrites
+  notebook, but cell 55 is not, and it overwrites
   `data/2p/df_all_by_epoch_df_f_filtered.pkl` — a migrated file in the download
   archive — which its plain `pickle.dump` would have made unportable again,
   silently;
@@ -465,9 +465,9 @@ acceptance test changed from peak amplitude —
 `np.median(ref_trace.max_vals)` — to the std criterion the Methods describe,
 `trace.std() >= ref_threshold_std`. The old threshold and the old test were
 both commented out; only a reference line in a debug plot kept the old name,
-inside `if False and (...)` in cells 30 and 33, so it could never execute. That
+inside `if False and (...)` in cells 29 and 32, so it could never execute. That
 line is gone; if the plot is re-enabled it still colours accepted traces green.
-Cell 30 is the Figure 6B y-axis computation: feedback responses normalised by
+Cell 29 is the Figure 6B y-axis computation: feedback responses normalised by
 the neuron's sampling-epoch statistics and judged against the same threshold.
 
 **The raw input, trimmed (2026-09-14).** The original
@@ -479,12 +479,12 @@ in `2p_data.zip`) keeps the 23 M2/ALM L2/3 sessions — exactly those in
 rows. It names only `builtins`, `datetime`, `numpy` and `pandas`, and loads with
 no repo module imported.
 
-The trim was checked by running TwoPLoad's own cells 12, 23, 42, 44, 54 and 55
+The trim was checked by running TwoPLoad's own cells 12, 20, 41, 43, 53 and 54
 on both files: identical accepted neurons (1,446), identical rows and columns,
 identical traces in every one of the 2,892 arrays. The other sessions and
-columns change nothing — cell 23 already restricts to M2/ALM L2/3, and the one
+columns change nothing — cell 20 already restricts to M2/ALM L2/3, and the one
 dropped column the pipeline names, `anlys_path`, is read by `CalcBaseline` only
-with `track_is_active=True`, which cell 54 does not pass.
+with `track_is_active=True`, which cell 53 does not pass.
 
 Two findings that are *not* about the trim:
 
@@ -494,12 +494,12 @@ Two findings that are *not* about the trim:
   TwoPLoad writes (22,468 vs 22,483; traces otherwise identical): 14 trailing
   `Wait Trial Start` rows with no outcome, plus all four epochs of
   `GP4_80_S2_L51_D250_M2m` trial 159. Some step after TwoPLoad dropped them,
-  so re-running cell 56 would not reproduce the shipped file exactly.
+  so re-running cell 55 would not reproduce the shipped file exactly.
 
 **Lineage, from a full search of `OneDrive/caiman/`.** `TwoP/again/load.ipynb`
 → `caiman/paper_fast_slow/code/TwoPLoad.ipynb` → this repo's `TwoPLoad.ipynb`.
 `shorth` and `_iqrPRCNT` originate in `TwoP/again/ROC_tests_new15_09_23_local.ipynb`
-(the "Coped from ROC_tests_new15_09" in cell 23's first line), with copies in
+(the "Coped from ROC_tests_new15_09" in cell 20's first line), with copies in
 both `TwoP.ipynb`s. `ref_accepted_traces` is commented out in **every**
 ancestor, `load.ipynb` included — it has never had a value anywhere. Other
 `loopCombinations` definitions (`behavior/evdaccum*.ipynb`,
@@ -510,6 +510,71 @@ The same search re-checked a D1 deletion: `plotSgfActivitySum` is defined in
 `only_sgf=False` and `save_figs=False`. It never produced the significant-only
 sum the Methods use for S12D-bottom / S12J-right; those come from
 `2pAnalysis.ipynb` (`TrajectoryTuningPlot`, `movementneurons.py`).
+
+### D1b — every 2P notebook run top to bottom (2026-09-15)
+
+D1's static pass cannot see cell order, calls into changed signatures, or names
+bound only inside a function. So each notebook was executed headless
+(`nbclient`, the lockfile environment) with a write guard that mirrors every
+write under the repo into a sandbox; a before/after snapshot of every repo file
+confirmed nothing under `results/` or `data/` changed.
+
+| Notebook | First run | After the fixes |
+|---|---|---|
+| `2pSeqWithinDeviation.ipynb` | clean, 1.3 min | — |
+| `2pAnalysis.ipynb` | cells 0–70 clean; cell 72 passed a 4 h cell timeout | **clean, 6.6 min** |
+| `TwoPTraces.ipynb` | 11 failing cells | **clean, 13.4 min** |
+| `plottraces3.ipynb` | 11 failing cells | **clean, 8.0 min** |
+| `TwoPLoad.ipynb` | 10 failing cells | 8, all behind two open decisions |
+
+Fixed:
+
+- **Half-finished renames** from `825fd7f`. `avg()` in TwoPTraces had moved from
+  `only_single_sess` to `plot_only_ids_li`, but `loopHeatmapCombinations` and
+  `loopCombinationsTraces` still passed the old names — Figures 4H, 5B and the
+  4E/S8B average traces never ran. (D1's "4H restored" was a rename that only a
+  run could show was incomplete.) `plotSum()` in plottraces3 had moved from
+  `append_start` to `append_where`; the three callers now pass `"end"` for the
+  old default and `"start"` for `append_start=True`.
+- **Leftovers deleted**: plottraces3 cells reading variables local to
+  `runCombinations()`, early copies of two later cells, two displays of columns
+  that no longer exist, and a shuffle cell that is commented out in the
+  ancestor and read nowhere. TwoPLoad's cell 13 (it inspected a frame before
+  it was built).
+- **Out of order**: TwoPLoad's feedback-heatmap cell plotted from
+  `all_res_unnormed_df` before it existed and read `accepted_sampling_traces`
+  from a later cell. Moved after `DecideNeurons` (it is now cell 22), computing
+  its accepted traces as its sibling `loopThresholds` already did. **TwoPLoad
+  cell numbers above are as renumbered by this change.**
+- **Saves that could never succeed**: plottraces3's `plotActivitySum` calls
+  lacked the prefix and label it asserts when saving, and `plotSum`,
+  `plotActivitySum` and the decoder plots write into `activity_sum/`,
+  `activity_sum2/` and `decoders/`, which nothing creates. With
+  `SAVE_FIGS = True` (the notebook's default) each would have raised.
+- **2pAnalysis shuffles** (cells 71–76): 1,000-iteration nulls, over 6 hours,
+  none saved under `data/`, read only by a `printStats` argument that is
+  commented out. Behind `RUN_UNUSED_SHUFFLES = False`.
+
+Latent, not fixed: plottraces3's "Take 2" cell redefines `loopNeuronsPlot`,
+`plotNeuronCorr` and `_plotFilteredComb`, so `createShuffle` (which needs the
+first versions) would break — but it only runs when `rt_corr_shuffled.pkl` is
+missing, and that file ships.
+
+Open decisions (TwoPLoad):
+
+- **(a)** Cell 29 needs a per-neuron `neuronal_stats` column that
+  `NormalizeZScore` produces only in the ancestor's newer
+  `OneDrive/caiman/common/analysis/pipeline/tracesnormalize.py`; this repo
+  carries the 2024 pipeline. Cells 32, 35 and 46 follow from it.
+- **(b)** Cell 13 calls `_alignAroundEpoch(limit_trial_end=True)`, which
+  `AlignTraceAroundEpoch` has always raised on; cells 23–25 follow from it.
+
+For E: writes that ignore any flag. A literal `True` save flag sits at 13
+places (TwoPTraces cells 27 and 31; 2pAnalysis 54, 56, 57, 66, 68, 75, 94 and
+twice in 104; TwoPLoad 32 and 49), `SAVE_FIGS = True` is the default in plottraces3 and
+2pSeqWithinDeviation, and five data files are rewritten on every run
+(`df_all_by_epoch_df_f_filtered.pkl`, `sgf_all.pkl`, three `seq_*` pickles).
+A top-to-bottom run of TwoPTraces alone rewrites 92 committed heatmaps.
 
 - **D2** Extract the inline panels: 4G, 4K, 6B, 6C, 6E, S9A–B, S10A–C,
   S11A-mid/right, S11B, S12G, S14A.
