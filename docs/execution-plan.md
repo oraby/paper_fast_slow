@@ -26,11 +26,11 @@ The eight workstreams as stated:
 | **A** | Unified `uv` | **done** — everything runs from the lockfile; guarded by `test_environment.py` |
 | **B** | Model trim + docs | **not started** — `Decay Q` still in the registry, `rlmodel/README.md` still says 3 s and uses the oldest figure numbers |
 | **C** | Behaviour tests | **Done, C1–C8.** Every extracted panel reproduces its committed figure and is tested; `figcode/`, `opto/` and `tracking/` went 0 → 112, 51 and 124 tests. C8 extracted `Tracking.ipynb`'s preprocessing (identical output on all 76,311 frames) and fixed two silent breakages: pandas 3 copy-on-write and a machine-time-zone dependence. S3J–M legend/Methods text is drafted (`methods_model_revision.md` Blocks 10–12); S3K is regenerated choice-normalised next revision; interpolation wording (#13) is open |
-| **D** | 2-photon reorg | **D0, D1, D1b done** — **all five 2P notebooks run top to bottom, 0 errors, and write nothing** (`SAVE_FIGS`/`SAVE_DATA`, both `False`). Figure 6B's statistics are recomputed in `twop/zscorestats.py`; the dead unnormed-feedback path is gone. Raw input trimmed to 657 MB and portable. D2 (extraction) remains |
+| **D** | 2-photon reorg | **D0, D1, D1b, D4 done; D2 in progress** — all five 2P notebooks run top to bottom, 0 errors, writing nothing (`SAVE_FIGS`/`SAVE_DATA`). **Seven panels extracted from `2pAnalysis.ipynb`** with 95 tests, plus two de-duplications; `plottraces3.ipynb`'s six panels remain. Raw input trimmed to 657 MB and portable |
 | **E** | Runner / papermill | **started ahead of plan** — 4 notebooks carry a `parameters` cell; see the E section for what that does and does not yet cover |
 | **F** | Final cleanup | **not started** — `data/to_delete/` is still 563 MB |
 
-Suite: **1475 passed, 1 skipped, 0 failed**, and green with
+Suite: **1584 passed, 1 skipped, 0 failed**, and green with
 `FutureWarning`/`DeprecationWarning` promoted to errors.
 
 ---
@@ -608,17 +608,40 @@ left as they are — `data_runs_*.pkl` and `rt_corr_shuffled.pkl` only write whe
 the shipped file is missing. Verified by rerunning all five: **zero writes
 attempted**, where TwoPTraces alone had been rewriting 92 committed heatmaps.
 
-- **D2** Extract the inline panels: 4G, 4K, 6B, 6C, 6E, S9A–B, S10A–C,
-  S11A-mid/right, S11B, S12G, S14A. **Started 2026-09-16**: 4G
-  (`twop/fastslowvenn.py`), 6B (`twop/tunedneurons.py`) and 6E
-  (`twop/priorcurtuning.py`) are out, with 35 tests; the six 6E SVGs and
-  both 4G images reproduce byte for byte (after normalising matplotlib's
-  per-run date and id salt). Two findings recorded in
-  [`repo-audit.md`](repo-audit.md): the sequence-permutation cells are
-  **unseeded** so Figures 4J and S9G differ between runs (they should be
-  seeded; not done, because it moves published p-values), and the old
-  `wfield` conda env carries a **locally patched scipy** whose overflow
-  guard upstream no longer needs.
+- **D2** Extract the inline panels. **In progress (2026-09-16)** — seven out
+  of 2pAnalysis are done, each verified by running the notebook before and
+  after with saving on and comparing the files (matplotlib's per-run date and
+  id salt normalised away first):
+
+  | Panel | Module | Tests |
+  |---|---|---|
+  | 4G fast/slow overlap Venn | `twop/fastslowvenn.py` | 13 |
+  | 6B per-neuron tuning table | `twop/tunedneurons.py` | 10 |
+  | 6C tuning balance across a streak | `twop/balancechange.py` | 15 |
+  | 6E priors-vs-current Venn | `twop/priorcurtuning.py` | 12 |
+  | S9A activity criterion (shared with TwoPLoad) | `twop/tracereliability.py` | 16 |
+  | S9B firing-reliability CDF | `twop/activetrialscdf.py` | 13 |
+  | S14A previous-outcome modulation | `twop/prevoutcomemod.py` | 16 |
+
+  Two duplications went with them: `shorth` (2pAnalysis had its own copy of
+  TwoPLoad's) and the 383-line activity-criterion cell both notebooks carried.
+
+  Found on the way, and recorded in each module's docstring: 6C's error bar is
+  the SEM across the window's **time points**, not across trials; its example
+  neuron is picked by a monotonic-rise rule rather than by hand; 4G's
+  denominator is the union of the session's fast and slow trace ids; 6E's Venn
+  circles are ratios to the overlap while only the labels carry percentages;
+  S9B's axis labels read the other way round from the data. Also: S9B could
+  never have saved (`results/2P/active_cdf/` does not exist — the module
+  creates it), `plotMaxFiring` could not run in TwoPLoad's copy (seven values
+  unpacked from a nine-tuple), and 2pAnalysis's criterion cell **loads four
+  cached dicts** from `data/2p/` rather than computing them, with the compute
+  path in a disabled `else` branch.
+
+  **Remaining, all in `plottraces3.ipynb`:** 4K left/right, S10A, S10C,
+  S11A-mid/right, S11B, S12G. Its baseline figures are already captured for
+  the same before/after check.
+
 - **D3** Consolidate trace loading across the three notebooks, on top of G0's
   shared unpickler.
 - **D4** Delete whatever D0 resolves as dead. **Done** — D0's modules, D1's
