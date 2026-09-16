@@ -26,11 +26,11 @@ The eight workstreams as stated:
 | **A** | Unified `uv` | **done** — everything runs from the lockfile; guarded by `test_environment.py` |
 | **B** | Model trim + docs | **not started** — `Decay Q` still in the registry, `rlmodel/README.md` still says 3 s and uses the oldest figure numbers |
 | **C** | Behaviour tests | **Done, C1–C8.** Every extracted panel reproduces its committed figure and is tested; `figcode/`, `opto/` and `tracking/` went 0 → 112, 51 and 124 tests. C8 extracted `Tracking.ipynb`'s preprocessing (identical output on all 76,311 frames) and fixed two silent breakages: pandas 3 copy-on-write and a machine-time-zone dependence. S3J–M legend/Methods text is drafted (`methods_model_revision.md` Blocks 10–12); S3K is regenerated choice-normalised next revision; interpolation wording (#13) is open |
-| **D** | 2-photon reorg | **D0, D1, D1b done** — every 2P notebook was run top to bottom behind a write guard: `2pAnalysis`, `TwoPTraces`, `plottraces3` and `2pSeqWithinDeviation` now run clean; `TwoPLoad` fails only behind two open decisions (the ancestor's `neuronal_stats`, and an unimplemented alignment option). Its raw input is trimmed to 657 MB and portable. D2 (extraction) remains |
+| **D** | 2-photon reorg | **D0, D1, D1b done** — **all five 2P notebooks run top to bottom, 0 errors, and write nothing** (`SAVE_FIGS`/`SAVE_DATA`, both `False`). Figure 6B's statistics are recomputed in `twop/zscorestats.py`; the dead unnormed-feedback path is gone. Raw input trimmed to 657 MB and portable. D2 (extraction) remains |
 | **E** | Runner / papermill | **started ahead of plan** — 4 notebooks carry a `parameters` cell; see the E section for what that does and does not yet cover |
 | **F** | Final cleanup | **not started** — `data/to_delete/` is still 563 MB |
 
-Suite: **1466 passed, 1 skipped, 0 failed**, and green with
+Suite: **1475 passed, 1 skipped, 0 failed**, and green with
 `FutureWarning`/`DeprecationWarning` promoted to errors.
 
 ---
@@ -525,7 +525,7 @@ confirmed nothing under `results/` or `data/` changed.
 | `2pAnalysis.ipynb` | cells 0–70 clean; cell 72 passed a 4 h cell timeout | **clean, 6.6 min** |
 | `TwoPTraces.ipynb` | 11 failing cells | **clean, 13.4 min** |
 | `plottraces3.ipynb` | 11 failing cells | **clean, 8.0 min** |
-| `TwoPLoad.ipynb` | 10 failing cells | 8, all behind two open decisions |
+| `TwoPLoad.ipynb` | 10 failing cells | **clean, 11.4 min** (after the two decisions below) |
 
 Fixed:
 
@@ -560,27 +560,60 @@ Latent, not fixed: plottraces3's "Take 2" cell redefines `loopNeuronsPlot`,
 first versions) would break — but it only runs when `rt_corr_shuffled.pkl` is
 missing, and that file ships.
 
-Open decisions (TwoPLoad):
+Both TwoPLoad decisions were then resolved (2026-09-16), and it too runs clean.
 
-- **(a)** Cell 29 needs a per-neuron `neuronal_stats` column that
-  `NormalizeZScore` produces only in the ancestor's newer
-  `OneDrive/caiman/common/analysis/pipeline/tracesnormalize.py`; this repo
-  carries the 2024 pipeline. Cells 32, 35 and 46 follow from it.
-- **(b)** Cell 13 calls `_alignAroundEpoch(limit_trial_end=True)`, which
-  `AlignTraceAroundEpoch` has always raised on; cells 23–25 follow from it.
+**(a) Figure 6B's missing statistics — recomputed, not ported.** The panel
+normalises each feedback response by that neuron's sampling mean and std: the
+numbers `NormalizeZScore` computes and this repo's pipeline discards. Diffing
+the two `tracesnormalize.py` files, the ancestor's differs in exactly three
+ways — it returns those statistics and stores them in a `<set>_stats` column;
+it moves two helpers from closures to methods (no behaviour change); and, to
+carry the statistics, it unpacks `trace_data, *stats = self._normFunc(...)`.
+That last one is a regression: `NormalizePercentile` still returns a bare dict,
+which unpacks to its *keys*, so in the ancestor that normaliser is broken on
+both paths — and this repo uses it in four places, including the heatmaps
+behind 4H, 5B and 6A. Rather than change the shared normaliser, `twop/
+zscorestats.py` recomputes the statistics from the same frame — the sampling
+epochs cut by `alignSampling` with `NoNormalization`, which is exactly what the
+z-score consumed, since `alignSampling` normalises per session *after* cutting
+and skips that step entirely for `NoNormalization`. `test_zscorestats.py`
+pins it: `(raw - mean) / std` reproduces the pipeline's own z-scored traces,
+and the per-trial keying (a repeated trial number replaces the earlier segment)
+matches the normaliser's dict. The cell now reports 52% of MFC and 25.9% of LFC
+neurons as feedback-responsive.
 
-For E: writes that ignore any flag. A literal `True` save flag sits at 13
-places (TwoPTraces cells 27 and 31; 2pAnalysis 54, 56, 57, 66, 68, 75, 94 and
-twice in 104; TwoPLoad 32 and 49), `SAVE_FIGS = True` is the default in plottraces3 and
-2pSeqWithinDeviation, and five data files are rewritten on every run
-(`df_all_by_epoch_df_f_filtered.pkl`, `sgf_all.pkl`, three `seq_*` pickles).
-A top-to-bottom run of TwoPTraces alone rewrites 92 committed heatmaps.
+**(b) The unnormed-feedback path — deleted.** Its first cell called
+`_alignAroundEpoch(limit_trial_end=True)`. That guard raises for
+`limit_trial_start or limit_trial_end`, but only the *start* case is
+unimplemented (it needs `trace_trial_offset_start_idx`); the trial-end branch
+is implemented 25 lines below. So the path did run once — the cells still
+carried outputs — until a guard aimed at the other flag disabled it. Narrowing
+that guard to `limit_trial_start` would revive it, if the results are ever
+wanted. The three consumers were already superseded: the last of them defines a
+`plotFeedbackExamples` that the live Figure 6B cell redefines, and that cell
+reads `all_res_cut_feedback_df` with the old source commented out beside it.
+Two later cells did still need the frame the deleted cell built by renaming
+Reward/Punishment to "Feedback"; they drop to one row per trial and never read
+`epoch`, so they now read `df_all_by_epoch` directly.
+
+**E, done for the 2P notebooks (2026-09-16): a run writes nothing.** Each of
+the five now declares `SAVE_FIGS = False` and `SAVE_DATA = False` in its
+settings cell, and every save derives from them: the 13 literal `True` flags
+(TwoPTraces 27 and 31; 2pAnalysis 54, 56, 57, 66, 68, 75, 94 and twice in 104;
+TwoPLoad 32 and 49), the `SAVE_FIGS = True` defaults in plottraces3 and
+2pSeqWithinDeviation, and the four unconditional data writes
+(`df_all_by_epoch_df_f_filtered.pkl`, `sgf_all.pkl`, `seq_within_deviation_df`
+/`seq_cross_deviation_df`/`seq_shuffle_calibration_df`). Cache-style writes are
+left as they are — `data_runs_*.pkl` and `rt_corr_shuffled.pkl` only write when
+the shipped file is missing. Verified by rerunning all five: **zero writes
+attempted**, where TwoPTraces alone had been rewriting 92 committed heatmaps.
 
 - **D2** Extract the inline panels: 4G, 4K, 6B, 6C, 6E, S9A–B, S10A–C,
   S11A-mid/right, S11B, S12G, S14A.
 - **D3** Consolidate trace loading across the three notebooks, on top of G0's
   shared unpickler.
-- **D4** Delete whatever D0 resolves as dead.
+- **D4** Delete whatever D0 resolves as dead. **Done** — D0's modules, D1's
+  dead cells, and D1b's unnormed-feedback path.
 
 **Depends on:** G0 item 5. **Blocks:** E, and the 2P half of F.
 
