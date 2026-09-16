@@ -609,7 +609,16 @@ the shipped file is missing. Verified by rerunning all five: **zero writes
 attempted**, where TwoPTraces alone had been rewriting 92 committed heatmaps.
 
 - **D2** Extract the inline panels: 4G, 4K, 6B, 6C, 6E, S9A–B, S10A–C,
-  S11A-mid/right, S11B, S12G, S14A.
+  S11A-mid/right, S11B, S12G, S14A. **Started 2026-09-16**: 4G
+  (`twop/fastslowvenn.py`), 6B (`twop/tunedneurons.py`) and 6E
+  (`twop/priorcurtuning.py`) are out, with 35 tests; the six 6E SVGs and
+  both 4G images reproduce byte for byte (after normalising matplotlib's
+  per-run date and id salt). Two findings recorded in
+  [`repo-audit.md`](repo-audit.md): the sequence-permutation cells are
+  **unseeded** so Figures 4J and S9G differ between runs (they should be
+  seeded; not done, because it moves published p-values), and the old
+  `wfield` conda env carries a **locally patched scipy** whose overflow
+  guard upstream no longer needs.
 - **D3** Consolidate trace loading across the three notebooks, on top of G0's
   shared unpickler.
 - **D4** Delete whatever D0 resolves as dead. **Done** — D0's modules, D1's

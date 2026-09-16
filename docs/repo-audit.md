@@ -737,6 +737,66 @@ Figure 2A, 2B and 1I-right extractions were verified. A naive
 `>([^<]+)<` regex is not enough: it straddles `<use>` elements and will report
 differences that are not there.
 
+3. **Two runs of unchanged code do not match either**, for a reason worth
+   knowing before chasing a diff: matplotlib writes a creation date into every
+   SVG and PDF, and salts SVG element ids per process (`svg.hashsalt` is unset).
+   Normalise `<dc:date>`, `/CreationDate`, `id="…"`, `xlink:href="#…"` and
+   `url(#…)` away and identical code does then produce identical files — that
+   is how the D2 extractions are checked (`compareruns.py` in the run harness).
+
+### The permutation panels are unseeded — Figures 4J and S9G
+
+With that normalisation in place, **26 of 222 figures still differ between two
+runs of identical code**, all from `2pAnalysis.ipynb`'s sequence-permutation
+section: `Sequence/deviation_rank_*`, `deviation_summary_*` and
+`penality_sgf_summary_*`.
+
+The cause is that both inline calls — `stats.permutation_test(...,
+permutation_type="pairings")` in the Monte-Carlo cell and in the
+firing-deviation cell — pass **no `rng`**, so every run draws a different set
+of permutations. The p-values move a little each time, and so do the drawn
+nulls. The extracted `twop/seqdeviation.py` beside them does seed everything
+(`seed=0`, `np.random.default_rng(seed)`); these two cells were left as they
+were.
+
+**They should be seeded, and they are not.** Seeding is the fix, but it will
+shift the published numbers slightly, so it is a deliberate decision rather
+than a cleanup — left alone until that call is made. Until then, a
+regenerated 4J or S9G will not reproduce the committed panel exactly, and
+neither will two regenerations of it.
+
+### scipy was patched locally in the `wfield` conda env — and no longer needs to be
+
+Checked by diffing all three installed copies against pristine wheels of the
+same versions:
+
+| scipy | where | result |
+|---|---|---|
+| 1.18.0 | `.venv` (uv, the environment everything runs in) | **pristine**, 0 files differ |
+| 1.17.1 | conda `py312` | unmodified (`_resampling.py` identical ignoring the conda-forge build's whitespace) |
+| 1.11.4 | conda `wfield` | **one local patch**, in `stats/_resampling.py` |
+
+The patch guards the permutation count against overflow:
+
+```python
+n_max = factorial(n_obs_sample)        # upstream: factorial(n_obs_sample)**n_samples
+try:
+    n_max **= n_samples
+except FloatingPointError:
+    n_max = np.inf
+```
+
+In 1.11.4 that `factorial` is `scipy.special.factorial`, which works in
+floating point and overflows to `inf` past ~170 observations — and the
+notebooks run under `np.seterr(all='raise')`, which turns the overflow into an
+exception. Hence the patch.
+
+**Nothing needs to be carried over.** Upstream switched to `math.factorial`,
+which is exact and unbounded, so 1.18.0 cannot overflow there; the repo's own
+scipy is unpatched and the permutation cells run clean. The note matters only
+if someone re-creates the old conda environment and wonders why a stock scipy
+fails where that one worked.
+
 ---
 
 ## Notebook parameterisation (fork 7)
