@@ -380,7 +380,12 @@ transcript-style artifacts that should not ship.
 
 ## Stale documentation
 
-### `rlmodel/README.md`
+### `rlmodel/README.md` — **fixed** (2026-09-17, B1 + B3)
+
+Every row below was corrected, and the document now carries the model's
+equations (baseline DDM, Q-learning, R-learning, the reward-rate channels) with
+the parameter ranges and the code that implements each one. Kept as the record
+of what was wrong:
 
 | Statement | Reality |
 |---|---|

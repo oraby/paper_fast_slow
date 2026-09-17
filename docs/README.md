@@ -45,7 +45,7 @@ notebook heading, translate it:
 | `opto.ipynb`, `widefield.ipynb`, `TwoPTraces.ipynb` | One main figure behind | `Fig. N` → `Figure N+1`; `Extended Fig. N` → `Figure S(N−1)`. |
 | `2pAnalysis.ipynb` | Mixed | `Fig. 5F` → `Figure 5F` (current); `Fig. S8x` → `Figure S12x`. |
 | `Tracking.ipynb` | Own scheme | `Extended Fig. 4b–e` → `Figure S3J–M`. |
-| `rlmodel/*.ipynb`, `rlmodel/README.md` | Oldest | `Fig. 1k` → `Figure 2E`; `Fig. 1l` → `Figure 2G`; `Fig. 5f middle` → `Figure 7D`; `Ext. Fig. 5a` → `Figure S4A/C`. |
+| `rlmodel/*.ipynb` | Oldest | `Fig. 1k` → `Figure 2E`; `Fig. 1l` → `Figure 2G`; `Fig. 5f middle` → `Figure 7D`; `Ext. Fig. 5a` → `Figure S4A/C`. `rlmodel/README.md` was renumbered to the current scheme on 2026-09-17 and needs no translation. |
 
 Renumbering the headings to the current scheme is listed as a cleanup task in
 [`repo-audit.md`](repo-audit.md).

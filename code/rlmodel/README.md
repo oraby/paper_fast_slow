@@ -171,11 +171,132 @@ The code is organized as follows:
   different models for the different subjects.
 
 
-## Models
+## The model
 
-A model is defined by the combining one of each of [bias](model/bias.py),
-[drift](model/drift.py) and [noise](model/noise.py) functions.
+A model is one [bias](model/bias.py) + one [drift](model/drift.py) + one
+[noise](model/noise.py) function. The equations below are what the code runs;
+the manuscript's own numbering for each of them is in
+[`docs/manuscript-methods-map.md`](../../docs/manuscript-methods-map.md#the-model).
 
+### Baseline DDM
+
+Evidence accumulates from a starting point until it reaches one of two absorbing
+bounds at $\pm a/2$:
+
+$$x_{t+\Delta t} = x_t + k \cdot Cohr \cdot \Delta t + s \cdot \epsilon_t \cdot \sqrt{\Delta t}, \qquad x_0 = Z \cdot a/2$$
+
+- $Cohr \in [-1, 1]$ — the trial's stimulus coherence and direction (`DV` in the
+  dataframe); $Cohr > 0$ means *left* is the correct choice.
+- $\epsilon_t \sim N(0, 1)$, $\Delta t = 0.005\,$s (`initvals.DT`).
+- $Z \in [-1, 1]$ — the normalised starting point, 0 without Q-learning.
+- The sampling time is $T_{st} = T_0 + T_{decision}$, capped at
+  $T_{max} = 4.8\,$s (`initvals.T_dur`); a trial that reaches neither bound by
+  $T_{max}$ is a no-choice trial.
+
+The non-decision time $T_0$ is not added after the fact: the drift and the noise
+are zeroed for the first $T_0/\Delta t$ steps, so the accumulator sits at its
+starting point and the crossing index already includes $T_0$.
+
+Free parameters: $k$ (`DRIFT_COEF`), $s$ (`NOISE_SIGMA`), $T_0$
+(`NON_DECISION_TIME`).
+
+Code: `drift.py::_driftClassic`, `noise.py::_noiseNormal`,
+`bias.py::_biasNone`, stepping in `logic.py::simulateDDMTrial`.
+
+### Q-learning + DDM — trial-history bias
+
+Action values start at $Q_L^1 = Q_R^1 = 0.5$ and only the chosen side updates;
+a no-choice trial leaves both alone:
+
+$$Q_{L|R}^{n} = Q_{L|R}^{n-1} + \alpha \cdot (Reward^{n-1} - Q_{L|R}^{n-1}) \quad \text{if } ChoiceDir^{n-1} = L|R$$
+
+The two values become one normalised log ratio, floored at 0.01 so the ratio
+cannot blow up, and rescaled onto $[-1, 1]$:
+
+$$q^n = \log\left(\frac{\mathrm{clip}(Q_L^n,\, 0.01,\, 1)}{\mathrm{clip}(Q_R^n,\, 0.01,\, 1)}\right) \Big/ \log(100)$$
+
+which then sets the starting point, together with the subject's constant motor
+bias $offset$:
+
+$$Z^n = \mathrm{clip}(\delta \cdot q^n + offset,\, -1,\, 1)$$
+
+Free parameters: $\alpha$ (`ALPHA`), $\delta$ (`BIAS_COEF`), $offset$
+(`Q_VAL_OFFSET`).
+
+Code: `state_updates.py::update_q_values`, `::compute_q_value`,
+`::compute_starting_point_z`; `bias.py::_biasQVal` for the simulator.
+
+> **Known divergence.** The two fitting paths compose the starting point in a
+> different order: MLE computes $\mathrm{clip}(\delta \cdot q + offset, \pm 1)$
+> (`state_updates.py`), χ² computes
+> $\mathrm{clip}(\mathrm{clip}(q + offset, \pm 1) \cdot \delta, \pm 1)$
+> (`bias.py::_biasQVal`). The paper states the MLE form. Recorded in
+> [`methods_model_revision.md`](methods_model_revision.md) under "Known code
+> issue"; deliberately not fixed here, because fixing it changes the published
+> χ² fits — it lands with the next refit.
+
+### R-learning + DDM — reward-rate modulation
+
+A single reward rate, also starting at 0.5 each session, tracks how well the
+animal is doing:
+
+$$RR^{n} = RR^{n-1} + \beta \cdot (Reward^{n-1} - RR^{n-1})$$
+
+and scales the diffusion noise, so a well-performing animal accumulates more
+noisily and answers sooner:
+
+$$x_{t+\Delta t}^n = x_t^n + k \cdot Cohr^n \cdot \Delta t + RR^n \cdot s \cdot \epsilon_t \cdot \sqrt{\Delta t}$$
+
+Free parameter: $\beta$ (`BETA`).
+
+Code: `state_updates.py::update_reward_rate`,
+`drift.py::_noiseGainRewardRate`.
+
+### Q + R-learning + DDM
+
+Both of the above at once — the model behind Figures 2E–G. Nothing new is
+added: $Z^n$ comes from the Q-values and the noise gain from the reward rate.
+
+### What counts as a reward
+
+The learning signal is the *simulated* outcome, not the animal's: under χ²
+each trial's Q and reward-rate update reads the choice the model just made
+(`logic.py::processMultipleSess`). A simulated response faster than
+`logic.EWD_TIME` (0.3 s) is treated as unrewarded whatever bound it hit
+(`FORCE_EWD`), mirroring the early-withdrawal trials in the data. Under MLE the
+latents are propagated with the **animal's** observed choices and outcomes
+instead (teacher forcing) — see [Fitting criteria](#fitting-criteria).
+
+### The scale axis: BOUND or NOISE_SIGMA, never both
+
+The bound $a$ and the noise $s$ are near-degenerate — doubling both leaves
+behaviour almost unchanged — so exactly one of the pair is fitted and the other
+is frozen. By default `NOISE_SIGMA` is fitted and `BOUND` is frozen at 1.0, so
+the bounds sit at $\pm 1$ and $Z$ is a fraction of the bound. `--scale-bound`
+swaps them: `BOUND` is fitted in $[0.3, 5.0]$, `NOISE_SIGMA` is frozen at 1.0,
+and the bias is then read in absolute DDM-state units. `InitVals`' `BOUND` /
+`_BOUND_FIXED` and `NOISE_SIGMA` / `_NOISE_FIXED` pairs encode this, and
+`fit.simulateDDM` clamps the inactive axis at fit time.
+
+### Fitted parameters
+
+Every parameter the optimiser can fit, with the (min, max) range and initial
+value from [`model/initvals.py`](model/initvals.py). A parameter enters a fit
+only if the selected model uses it.
+
+| Parameter | Symbol | Range (init) | Fitted when |
+|---|---|---|---|
+| `DRIFT_COEF` | $k$ | 0 – 20 (1) | always |
+| `NOISE_SIGMA` | $s$ | 0 – 5 (1.5) | default scale axis |
+| `BOUND` | $a/2$ | 0.3 – 5 (1) | `--scale-bound` only |
+| `NON_DECISION_TIME` | $T_0$ | 0 – 1 s (0.3) | always |
+| `ALPHA` | $\alpha$ | 0 – 1 (0.3) | Q-learning models |
+| `BIAS_COEF` | $\delta$ | 0 – 1 (0.95) | Q-learning models |
+| `Q_VAL_OFFSET` | $offset$ | −1 – 1 (0) | Q-learning models |
+| `BETA` | $\beta$ | 0 – 1 (0.3) | R-learning models |
+| `LAPSE_RATE` | $\lambda$ | 0 – 0.1 (0.02) | MLE / joint fits only |
+
+`--init-val NAME=MIN,MAX[,DEFAULT]` overrides any row for one run.
 
 ### Execution sequence
 
@@ -192,12 +313,9 @@ calls `simulateDDMMultipleSess()` -> `processMultipleSess()` which calls
 
 The `betweenTrialsCb()` function calls `simulateDDMTrial()`.
 
-### Initial values
-
-If Q-values are included in the model, the initial trial Q-values are set to 0.5 for
-both left and right choices.
-
-If Reward-Rate is included in the model, the initial trial Reward-Rate is set to 0.5.
+All sessions of a subject step forward together, one trial index at a time, so
+the per-trial simulation is one vectorised call across sessions rather than a
+Python loop over trials.
 
 ### Implemented models
 
@@ -211,16 +329,11 @@ brackets):
 | R-Learning DDM    | `_biasNone()` (`None_`)              | `_noiseGainRewardRate()` (`NoiseGain-RewardRate`) | `_noiseNormal()` (`Normal(0, 1)`) |
 | Q+R-Learning DDM  | `_biasQVal()` (`Q-Val (Offset)`)     | `_noiseGainRewardRate()` (`NoiseGain-RewardRate`) | `_noiseNormal()` (`Normal(0, 1)`) |
 
-The Q-value that biases the starting point is the normalised log ratio
-$q = \log\left(\frac{\mathrm{clip}(Q_L, 0.01, 1)}{\mathrm{clip}(Q_R, 0.01, 1)}\right) / \log(100)$,
-which lies in $[-1, 1]$.
-
-> **Known divergence.** The two fitting paths turn $q$ into the starting point
-> in a different order: MLE computes $\mathrm{clip}(\delta \cdot q + offset, \pm 1)$
-> (`state_updates.py`), χ² computes $\mathrm{clip}(\mathrm{clip}(q + offset, \pm 1) \cdot \delta, \pm 1)$
-> (`bias.py::_biasQVal`). The paper states the MLE form. Recorded in
-> [`methods_model_revision.md`](methods_model_revision.md) under "Known code
-> issue"; not yet fixed, because fixing it changes the χ² fits.
+These four, plus the reward-rate channels below, are the whole registry: the
+variants that never reached a figure (a `Decay Q` drift family, a
+`Decaying Q-Val` noise, four non-Q bias functions and an asymmetric
+learning-rate experiment) were removed on 2026-09-17 and are recoverable from
+commit `67ef1ac`.
 
 #### Reward-rate channels
 
