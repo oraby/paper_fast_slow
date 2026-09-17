@@ -24,7 +24,7 @@ The eight workstreams as stated:
 |---|---|---|
 | **G0** | Trustworthy baseline | **done** |
 | **A** | Unified `uv` | **done** — everything runs from the lockfile; guarded by `test_environment.py` |
-| **B** | Model trim + docs | **not started** — `Decay Q` still in the registry, `rlmodel/README.md` still says 3 s and uses the oldest figure numbers |
+| **B** | Model trim + docs | **B1 done** (2026-09-17) — `rlmodel/README.md` corrected against the code; B2 waits on decisions 2 and 3 below, and B3 on B2. `Decay Q` is still in the registry |
 | **C** | Behaviour tests | **Done, C1–C8.** Every extracted panel reproduces its committed figure and is tested; `figcode/`, `opto/` and `tracking/` went 0 → 112, 51 and 124 tests. C8 extracted `Tracking.ipynb`'s preprocessing (identical output on all 76,311 frames) and fixed two silent breakages: pandas 3 copy-on-write and a machine-time-zone dependence. S3J–M legend/Methods text is drafted (`methods_model_revision.md` Blocks 10–12); S3K is regenerated choice-normalised next revision; interpolation wording (#13) is open |
 | **D** | 2-photon reorg | **DONE (D0-D4)** — all five 2P notebooks run top to bottom, 0 errors, writing nothing (`SAVE_FIGS`/`SAVE_DATA`); every listed panel is an extracted, tested module, verified figure-for-figure against pre-extraction runs; every load goes through `twop/dataload.py`. Two items are deliberately left for the next revision (unseeded permutation panels; the 15-row difference in the shipped filtered frame) — see [`repo-audit.md`](repo-audit.md) |
 | **E** | Runner / papermill | **started ahead of plan** — 4 notebooks carry a `parameters` cell; see the E section for what that does and does not yet cover |
@@ -206,6 +206,32 @@ Order **within** the workstream matters:
 
 **B3 must follow B2**, otherwise you write documentation for code you are about
 to delete.
+
+### B1 — done (2026-09-17)
+
+Every claim in `rlmodel/README.md` was checked against the code and the saved
+fits, not against the older docs:
+
+| Was | Now |
+|---|---|
+| χ² "maximum allowed duration (3s)"; a bin "below the 0.1 quantile" | 4.8 s (`initvals.T_dur`); the first bin ends just above the fastest trial, seven bins per condition (`logic.chi2Loss`) |
+| `Fig. 1l`, `Fig. 5f middle`, no figure numbers elsewhere | Figures 2E, 2F, 2G, S4, S14B and 7D; `fig1l` explained as a preset name |
+| MLE mentioned only as something "we are open to adopting" | New "Fitting criteria" section: χ², MLE and joint, with flags, filenames and the figures each feeds |
+| `python model_runner.py --help` (fails: relative import) | `uv run python -m code.rlmodel.model_runner --help`, run from the root |
+| Q-value "i.e. log(Q_left/Q_right)" | the clipped log ratio ÷ log(100), in [−1, 1] (`state_updates.compute_q_value`) |
+| Q/RR updates "in `logic.py`" | in `state_updates.py`; `logic.py` holds thin wrappers |
+| Model table without registry keys | adds the keys (`Q-Val (Offset)`, `NoiseGain-RewardRate`, …) |
+| Fit pickles: functions and `OptimRes` as objects, `/data/rlmodel/` | stored by registry key / as dicts, `fitio.loadFit` / `saveFit`, the trace stripped, `/data/RLModel/`; MLE and joint payload keys added |
+| "Subjects with fewer than 2,500 trials are excluded" | all 22 are fitted; the threshold applies at analysis, leaving 9 (checked on the saved fits) |
+| Padding trials "do not affect the Q-value updates" | they do update, but only after a session's last real trial |
+| — | the Z-formula divergence stated, pointing to `methods_model_revision.md` |
+
+The same stale description of the joint loss — each term divided by its
+valid-trial count, and the weights "not in the filename" — was in
+`model_runner.py`'s `--help`, `MLEModelConfig`'s comment and
+`test_joint_loss.py`'s docstring. The code divides by the subject's reference
+losses and suffixes joint filenames with the weights, and its own tests check
+exactly that; the three texts now say so. No behaviour changed.
 
 **Two gates before B2 can start**, both of which are decisions rather than work:
 

@@ -116,14 +116,17 @@ class MLEModelConfig:
     mle_choice_norm: str = "marginal"
     # Outer joint-loss weights (``--mle-mle-weight`` / ``--mle-chi2-weight``).
     # The DE objective becomes
-    # ``w_mle·(MLE_negloglik/N_mle) + w_chi2·(Chi2/N_chi2)`` — a composite of
-    # the teacher-forced per-trial MLE term and the generative Ratcliff-quantile
-    # Chi² term, each made trial-count-invariant by ÷ valid-trial count. Default
-    # ``(1.0, 0.0)`` ⇒ pure MLE: when ``mle_chi2_weight == 0`` the joint path is
-    # never taken (``fit._processSubject`` keeps the unchanged, byte-identical
-    # vectorized-MLE driver and never runs the Chi² simulation). EXCLUDED from
-    # ``fit.evolveFP`` (filename invariant — A/B by overwriting), preserved in
-    # the saved ``model_config``. Joint mode is no longer pure MLE, so the
+    # ``w_mle·(MLE_negloglik/ref_mle) + w_chi2·(Chi2/ref_chi2)`` — a composite
+    # of the teacher-forced per-trial MLE term and the generative
+    # Ratcliff-quantile Chi² term, each divided by the subject's standalone-best
+    # loss for that term (``fit._jointVectorizedObjectiveWrapper``) so each is 1 at its own
+    # optimum. Default ``(1.0, 0.0)`` ⇒ pure MLE: when ``mle_chi2_weight == 0``
+    # the joint path is never taken (``fit._processSubject`` keeps the
+    # unchanged, byte-identical vectorized-MLE driver and never runs the Chi²
+    # simulation). Joint fits get a ``_mleW{m}_chi2W{c}`` suffix from
+    # ``fit.evolveFP``; pure MLE keeps the plain name so it can serve as the
+    # reference. Preserved in the saved ``model_config``. Joint mode is no
+    # longer pure MLE, so the
     # ``aic``/``bic`` in ``result_payload`` reflect only the MLE component.
     mle_mle_weight: float = 1.0
     mle_chi2_weight: float = 0.0

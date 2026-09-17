@@ -449,9 +449,11 @@ def main():
         "--mle-mle-weight", type=float, default=1.0,
         help=(
             "Outer weight on the MLE term of the joint loss "
-            "`w_mle*(MLE/N) + w_chi2*(Chi2/N)`. Default 1.0. Each term is "
-            "divided by its valid-trial count so the weights transfer across "
-            "subjects regardless of trial count."))
+            "`w_mle*(MLE/ref_mle) + w_chi2*(Chi2/ref_chi2)`. Default 1.0. "
+            "Each term is divided by the subject's own best loss from the "
+            "pure-MLE and the chisq fit, so each is 1 at its own optimum and "
+            "the weights transfer across subjects; both reference fits must "
+            "already exist."))
     parser.add_argument(
         "--mle-chi2-weight", type=float, default=0.0,
         help=(
@@ -459,9 +461,10 @@ def main():
             "joint loss. Default 0.0 ⇒ pure MLE (the Chi² simulation is never "
             "run; the fit is byte-identical to today). >0 switches to the "
             "joint MLE+Chi² objective and REQUIRES --fit-mode mle. NOTE: joint "
-            "mode is no longer pure MLE (AIC/BIC/standard errors don't apply) "
-            "and does NOT affect the filename, so it overwrites any existing "
-            "fit at the same path."))
+            "mode is no longer pure MLE (AIC/BIC/standard errors don't apply). "
+            "Joint fits get a _mleW{m}_chi2W{c} filename suffix, so fits at "
+            "different weights coexist with each other and with the pure-MLE "
+            "reference."))
     parser.add_argument(
         "--asym-q", action="store_true", default=False,
         help=(

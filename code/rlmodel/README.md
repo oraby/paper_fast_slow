@@ -29,9 +29,11 @@ underlying the models used in this work.
    - Several previous studies (e.g. [Gupta et al.](https://www.nature.com/articles/s41467-024-44880-5),
    [DePasquale et al.](https://elifesciences.org/articles/84955),
    [Shinn et al.](https://elifesciences.org/articles/56938)) have achieved strong model fits.
-   - Many prior works use Max-Likelihood–Estimation based fitting, which can
-     improve fit quality at the cost of increased computational complexity. We
-     are open to adopting this approach if reviewers find it more appropriate.
+   - Many prior works use Maximum-Likelihood-Estimation based fitting, which can
+     improve fit quality at the cost of increased computational complexity.
+     The model is fitted both ways here: with the χ² loss (Figures 2E–G, S4)
+     and with MLE, alone or jointly with χ² (Figures 7A–B, S14B–H). See
+     [Fitting criteria](#fitting-criteria).
    - Increasing model complexity (e.g., more parameters) can improve fit quality,
      but at the cost of interpretability.
 - A claim of novelty in combining Q-learning or R-learning individually with
@@ -80,18 +82,29 @@ The code is organized as follows:
 
 - [`model_analysis.ipynb`](model_analysis.ipynb)
 
-    Runs and saves the analysis for the model fitting.
-  Here you will find the paper’s figures
+    Runs and saves the analysis for the model fitting: Figures 2E–G, S4 and
+  S14B.
 
 - [`model_to_behavior.ipynb`](model_to_behavior.ipynb)
 
-    Generates schematic-like figure based on Q-value + R-learning model.
-    Check [# Schematic-like figure (Fig. 5f, middle)](#schematic-like-figure-fig-5f-middle) section below for more details.
+    Generates the landscape figure based on the Q-value + R-learning model
+    (Figure 7D). See [Landscape figure (Figure 7D)](#landscape-figure-figure-7d)
+    below for more details.
+
+- [`model_neural_correlate.ipynb`](model_neural_correlate.ipynb)
+
+    Correlates single-neuron activity with the fitted model's latents
+  (Figures 7A–B, S14C–H).
+
+- [`model_compare.ipynb`](model_compare.ipynb)
+
+    Compares the fitting criteria — χ², MLE and joint (Figure S14B).
 
 - [`model_runner.py`](model_runner.py)
 
-    Provides a command-line interface to run the model optimization. Run
-  `python model_runner.py --help` for more information.
+    Provides a command-line interface to run the model optimization. It is a
+  module of the package, so run it from the repository root:
+  `uv run python -m code.rlmodel.model_runner --help`.
 
 - [`metrics_runner.py`](metrics_runner.py)
 
@@ -111,8 +124,25 @@ The code is organized as follows:
 
   - [`logic.py`](model/logic.py)
 
-    Makes a single run for a given subject and model parameters. Here
-  you will find the loss function.
+    Makes a single simulated run for a given subject and model parameters.
+  Here you will find the χ² loss function.
+
+  - [`state_updates.py`](model/state_updates.py)
+
+    The Q-value and reward-rate updates, shared by the χ² and MLE paths.
+
+  - [`mle.py`](model/mle.py), [`mle_batch.py`](model/mle_batch.py),
+    [`mle_likelihood.py`](model/mle_likelihood.py),
+    [`first_passage.py`](model/first_passage.py) and
+    [`diffusion/`](model/diffusion/)
+
+    The maximum-likelihood path: the first-passage density of the diffusion,
+  the per-trial likelihood, and the batched population objective.
+
+  - [`fitio.py`](model/fitio.py)
+
+    Reads and writes the saved fits (see
+  [Saved results](#saved-results---pickle-file-structure)).
 
   - [`bias.py`](model/bias.py), [`drift.py`](model/drift.py) and
     [`noise.py`](model/noise.py)
@@ -149,10 +179,13 @@ A model is defined by the combining one of each of [bias](model/bias.py),
 
 ### Execution sequence
 
-Q-values and Reward-Rate updates are implemented in the
-[`model/logic.py`](model/logic.py) file (`_calcQVal()`, `_updateNextQL_Q()`, `_updateNextRewardRate()`).
+Q-values and Reward-Rate updates are implemented in
+[`model/state_updates.py`](model/state_updates.py) (`compute_q_value()`,
+`update_q_values()`, `update_reward_rate()`), which the χ² path reaches through
+the thin wrappers in [`model/logic.py`](model/logic.py) (`_calcQVal()`,
+`_updateNextQL_Q()`, `_updateNextRewardRate()`).
 
-An optimization run is controlled by [`model/logic.py`](model/logic.py) which
+A χ² optimization run is controlled by [`model/logic.py`](model/logic.py) which
 calls `simulateDDMMultipleSess()` -> `processMultipleSess()` which calls
 `betweenTrialsCb()`, `_calcQVal()`, `_updateNextQL_Q()` and
 `_updateNextRewardRate()` if used.
@@ -168,14 +201,26 @@ If Reward-Rate is included in the model, the initial trial Reward-Rate is set to
 
 ### Implemented models
 
-The following table of models were implemented:
+The four models in the paper (registry keys, as passed to `model_runner`, in
+brackets):
 
-| Model Name        | Bias Function  | Drift Function           | Noise Function      |
-|-------------------|----------------|--------------------------|---------------------|
-| Classic DDM       | `_biasNone()`  | `_driftClassic()`        | `_noiseNormal()`    |
-| Q-Learning DDM    | `_biasQVal()`  | `_driftClassic()`        | `_noiseNormal()`    |
-| R-Learning DDM    | `_biasNone()`  | `_noiseGainRewardRate()` | `_noiseNormal()`    |
-| Q+R-Learning DDM  | `_biasQVal()`  | `_noiseGainRewardRate()` | `_noiseNormal()`    |
+| Model Name        | Bias Function                        | Drift Function                                   | Noise Function                   |
+|-------------------|--------------------------------------|--------------------------------------------------|----------------------------------|
+| Classic DDM       | `_biasNone()` (`None_`)              | `_driftClassic()` (`Classic`)                    | `_noiseNormal()` (`Normal(0, 1)`) |
+| Q-Learning DDM    | `_biasQVal()` (`Q-Val (Offset)`)     | `_driftClassic()` (`Classic`)                    | `_noiseNormal()` (`Normal(0, 1)`) |
+| R-Learning DDM    | `_biasNone()` (`None_`)              | `_noiseGainRewardRate()` (`NoiseGain-RewardRate`) | `_noiseNormal()` (`Normal(0, 1)`) |
+| Q+R-Learning DDM  | `_biasQVal()` (`Q-Val (Offset)`)     | `_noiseGainRewardRate()` (`NoiseGain-RewardRate`) | `_noiseNormal()` (`Normal(0, 1)`) |
+
+The Q-value that biases the starting point is the normalised log ratio
+$q = \log\left(\frac{\mathrm{clip}(Q_L, 0.01, 1)}{\mathrm{clip}(Q_R, 0.01, 1)}\right) / \log(100)$,
+which lies in $[-1, 1]$.
+
+> **Known divergence.** The two fitting paths turn $q$ into the starting point
+> in a different order: MLE computes $\mathrm{clip}(\delta \cdot q + offset, \pm 1)$
+> (`state_updates.py`), χ² computes $\mathrm{clip}(\mathrm{clip}(q + offset, \pm 1) \cdot \delta, \pm 1)$
+> (`bias.py::_biasQVal`). The paper states the MLE form. Recorded in
+> [`methods_model_revision.md`](methods_model_revision.md) under "Known code
+> issue"; not yet fixed, because fixing it changes the χ² fits.
 
 #### Reward-rate channels
 
@@ -206,22 +251,81 @@ The user-facing `--drift RewardRate*` name resolves to the matching internal
 `DriftGain(1+r)-`) via `drift.resolve_drift_alias`, and that key is part of the
 saved-fit filename, so the channels never overwrite each other.
 
-## Loss function
+## Fitting criteria
+
+Parameters are optimised with `scipy`'s
+[`differential_evolution`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.optimize.differential_evolution.html)
+under one of three criteria, chosen with `model_runner`'s `--fit-mode` and
+weight flags. The equations as the paper states them are in
+[`docs/manuscript-methods-map.md`](../../docs/manuscript-methods-map.md#the-model).
+
+| Criterion | Flags | Saved as | Used for |
+|---|---|---|---|
+| χ² | `--fit-mode chisq` | `chisq_*.pkl` | Figures 2E–G, S4 |
+| MLE | `--fit-mode mle` | `mle_*.pkl` | Figure S14B (reference for the joint loss) |
+| Joint MLE + χ² | `--fit-mode mle --mle-chi2-weight 0.5` | `mle_*_mleW1_chi2W0.5.pkl` | Figures 7A–B, S14B–H |
+
+Figure S14B also compares a joint fit at `--mle-chi2-weight 0.1`.
+
+### χ² loss
 
 We adapted the [Chi-Square Fitting Method](https://pmc.ncbi.nlm.nih.gov/articles/PMC2474747/) to compute the loss between the real and simulated data (see
 [`model/logic.py:calcLoss()`](model/logic.py)). The loss is summed across each
 condition. Conditions are: choice correctness (correct/incorrect) and choice
 direction (left/right). Within each condition, the reaction times are binned
-into quantiles (0.1, 0.3, 0.5, 0.7 and 0.9), an additional bin below the 0.1
-quantile that contains exactly one observation is preappended. This helps
-in detecting non-decision time better. Additionally, one more bin is created for
-trials where the subject did not respond within the maximum allowed duration
-(3s), either due to long reaction times or no response.
+at the quantiles (0.1, 0.3, 0.5, 0.7 and 0.9) of the observed reaction times.
+The first bin is split just above the fastest observed trial, so that it holds
+exactly that one observation; this helps in detecting non-decision time better.
+The last bin ends at the maximum allowed duration (4.8 s), giving seven bins per
+condition. Additionally, one more term compares the number of trials where the
+subject did not respond within the maximum allowed duration, either due to long
+reaction times or no response.
 The loss is computed as the sum of the squared differences between the observed
-and expected counts in each bin, normalized by the expected counts.
+and simulated counts in each bin, normalized by the observed counts.
+
+During fitting, the latents ($Q_L$, $Q_R$, reward rate) are propagated with the
+**model's own** simulated choices and outcomes.
+
+### MLE loss
+
+No simulation: the first-passage density of the discretised diffusion is
+propagated forward from the starting point, absorbing mass at each bound, until
+the maximum duration ([`model/mle.py`](model/mle.py),
+[`model/first_passage.py`](model/first_passage.py)). A trial's likelihood is the
+joint density of its observed choice and sampling time, mixed with a uniform
+contaminant of free rate `LAPSE_RATE` (≤ 0.1) for responses the diffusion cannot
+generate. Observed no-choice trials are excluded, and the likelihood is
+renormalised to condition on a choice being made.
+
+Unlike χ², the latents are propagated with the **animal's** observed choices and
+outcomes (teacher forcing).
+
+`--mle-backend CPU` runs on NumPy; `--mle-backend GPU` runs the same computation
+on CuPy and fails rather than falling back when CUDA is unavailable.
+
+### Joint MLE + χ² loss
+
+Fitted alone, MLE favours parameter sets that hold the Q-value and reward rate
+effectively constant, which disables both learning components. The joint loss
+adds the χ² term back:
+
+$$L = w_{MLE} \cdot \frac{-\log L}{-\log L^*} + w_{\chi^2} \cdot \frac{\chi^2}{\chi^{2*}}$$
+
+where each reference ($-\log L^*$, $\chi^{2*}$) is the subject's own best loss
+from the pure MLE and pure χ² fits, so each term is 1 at its own optimum
+(`model/fit.py`, `tests/test_joint_loss.py`). Both reference fits must therefore
+exist before a joint fit is run.
+
+> Joint fits carry their weights in the filename (`_mleW1_chi2W0.5`); pure MLE
+> and χ² fits keep the plain name, which is how the joint fit finds its
+> references. `--mle-conditions`, `--mle-choice-weight`, `--mle-rt-weight` and
+> `--mle-choice-norm` are **not** in the filename, so re-running with different
+> values overwrites the existing fit.
 
 ## Data inclusion criteria
-- Subjects with fewer than 2,500 trials across all sessions are excluded.
+- Every subject is fitted (22 in the saved fits), but subjects with fewer than
+  2,500 trials across all sessions are excluded from the analyses and figures,
+  leaving nine (`MIN_NUM_TRIALS` in [`model/aggregate.py`](model/aggregate.py)).
 - Trials that are not included in the behavioral analysis (e.g.
   optogenetic trials, trials with no response, etc.) are kept but marked as
   invalid in the dataframe (`df['valid'] = False`); as Q-value and reward rate
@@ -234,9 +338,10 @@ and expected counts in each bin, normalized by the expected counts.
 For each subject, the longest session length is determined. All other sessions
 are padded with trials to match this length. This ensures that all sessions
 have the same number of trials, which is necessary for a faster vectorized
-computation. The padding trials are marked as invalid (`df['valid'] = False`) so
-that they do not affect the Q-value and reward rate updates or the loss
-computation.
+computation. The padding trials repeat the session's last trial and are marked
+as invalid (`df['valid'] = False`), so they do not enter the loss; and since
+they come after the session's last real trial, the updates they cause cannot
+reach any real trial.
 
 
 # Fit results
@@ -244,9 +349,21 @@ computation.
 ## Saved results - pickle file structure
 
 The optimized fitting results for model are saved in the
-[`/data/rlmodel/`](/data/rlmodel/) directory as `{model_combination}.pkl`.
+[`/data/RLModel/`](/data/RLModel/) directory as
+`{fit_mode}_{drift}_bias{bias}_{noise}_{t_dur}s_dt{dt}[suffixes].pkl`, e.g.
+`chisq_NoiseGain-RewardRate_biasQ-Val (Offset)_Normal(0, 1)_4.8s_dt0.005.pkl`.
 Each file is a dictionary of dictionaries. The outer dictionary keys are
-subject names. The inner dictionary has the following structure:
+subject names.
+
+Every file opens with a plain `pd.read_pickle`, on any machine: the bias, drift
+and noise functions are stored by their registry key (e.g. `"Q-Val (Offset)"`),
+`OptimRes` as a plain dict, and an MLE fit's `model_config` as a dict.
+[`model/fitio.py`](model/fitio.py)'s `loadFit` puts the functions and the config
+back; write fits only through its `saveFit`. The mid-run optimisation trace
+(`candidate_losses_df`) was stripped from the saved files by
+[`model/stripfits.py`](model/stripfits.py).
+
+The inner dictionary of a **χ² fit** has the following structure:
 
 - `"subject_df"`: The subject’s behavioral dataframe before running the simulation.
 - `"dt"`: DDM time step.
@@ -279,6 +396,21 @@ The following fields are primarily used by the optimization function, and some a
   - `"x"`: Best-fit parameters found, corresponding to `params_names`.
   - `"fun"`: Value of the loss function at the best-fit parameters.
 
+An **MLE or joint fit** shares `subject_df`, `dt`, `t_dur`, `include_Q`,
+`include_RewardRate`, `params_names`, `params_init` and `OptimRes`, and adds:
+
+- `"mle_df"`: The per-trial latents the fitted model produced ($Q_L$, $Q_R$,
+  reward rate, starting point, …). This is what
+  [`model/neural_correlate.py`](model/neural_correlate.py) correlates with
+  neuronal activity (Figures 7A–B).
+- `"model_config"`: The `MLEModelConfig` the fit ran with, as a dict.
+- `"loglik"`, `"neg_loglik"`, `"aic"`, `"bic"`, `"n_trials_loss"`: The
+  likelihood at the best fit. For a joint fit these cover only the MLE term.
+- Joint fits only: `"mle_mle_weight"`, `"mle_chi2_weight"`, `"ref_mle"`,
+  `"ref_chi2"`, `"mle_raw_loss"`, `"chi2_raw_loss"`, `"mle_part_loss"`,
+  `"chi2_part_loss"`, `"total_loss"` — the breakdown of the joint loss at the
+  best fit.
+
 
 ## Results Visualization
 
@@ -286,7 +418,8 @@ Results from model fitting are stored in the
 [`/results/RLModel/`](/results/RLModel/). These include:
 - [`figs/{subject_name}/`](/results/RLModel/figs/)
 
-  Figures for each subject and model. Includes:
+  Figures for each subject and model (the example mouse's are Figures 2F and
+  S4A). Includes:
   - Reaction time distributions for real data vs model based on:
     - correct and incorrect trials (Row 1, Col 1)
     - left and right choices (Row 1, Col 2)
@@ -305,8 +438,8 @@ Results from model fitting are stored in the
     Col 2 lower)
   - Starting-point bias observed across model trials transformed as a function
     of correct/incorrect choices (Row 2, Col 3 upper).
-  - Q-values ($Q_{left}$, $Q_{right}$ and $Q_{val}$, i.e.
-    $log(\frac{Q_{left}}{Q_{right}})$) observed across trials (if Q-learning is
+  - Q-values ($Q_{left}$, $Q_{right}$ and $Q_{val}$, the normalised log
+    ratio defined under [Implemented models](#implemented-models)) observed across trials (if Q-learning is
     included in the model) (Row 2, Col 3 lower)
   - Current reaction time as a function of number of previous trial outcomes
     (2 previous incorrect, 1 previous incorrect, 1 previous correct and 2
@@ -315,7 +448,8 @@ Results from model fitting are stored in the
 
 - [`RewardRate/{subject_name}.svg`](/results/RLModel/RewardRate/)
 
-  Reward rate for the real data and each model for each subject.
+  Reward rate for the real data and each model for each subject (the example
+  mouse's is Figure 2E).
 
 - [`StrategyByPrevCorrect/{subject_name}.svg`](/results/RLModel/StrategyByPrevCorrect/)
 
@@ -326,7 +460,10 @@ Results from model fitting are stored in the
 - [`aggregates_R2_bar.svg`](/results/RLModel/aggregates_R2_bar.svg)
 
   Subjects' Psychometric $R^2$ and Reward-Rate $r$ Pearson correlation for
-  each model as bar plots (Fig. 1l).
+  each model as bar plots (Figure 2G). The same comparison for the
+  reward-rate channels and the scale-bound variant is in
+  `aggregates_R2_drift_rr.svg` and `aggregates_R2_scale_bound.svg` (Figure
+  S4B–C), and for the fitting criteria in `aggregates_R2_mle_weights.svg`.
 
 - [`aggregates_R2_subj_color.svg`](/results/RLModel/aggregates_R2_subj_color.svg)
 
@@ -365,8 +502,11 @@ That does everything: builds a work dir per figure, submits the array(s), and
 chains a dependent merge job. To run one figure, or to see the `sbatch` commands
 first:
 
+(`fig1l` is the preset for Figure 2G; the name predates the current figure
+numbering.)
+
 ```bash
-python code/rlmodel/slurm/launch_metrics.py --figure fig1l --dry-run
+uv run python code/rlmodel/slurm/launch_metrics.py --figure fig1l --dry-run
 ```
 
 The three phases are also usable on their own via
@@ -374,10 +514,10 @@ The three phases are also usable on their own via
 Slurm involved:
 
 ```bash
-python code/rlmodel/metrics_runner.py --mode prepare --figure fig1l \
+uv run python code/rlmodel/metrics_runner.py --mode prepare --figure fig1l \
     --num-evaluations 100
-python code/rlmodel/metrics_runner.py --mode run  --work-dir <dir> --all --num-cpus 8
-python code/rlmodel/metrics_runner.py --mode merge --work-dir <dir>
+uv run python code/rlmodel/metrics_runner.py --mode run  --work-dir <dir> --all --num-cpus 8
+uv run python code/rlmodel/metrics_runner.py --mode merge --work-dir <dir>
 ```
 
 Notes:
@@ -412,7 +552,7 @@ Notes:
   The `simcache_<name>.pkl` sidecar restores the seed-0 per-subject frames, so
   the per-subject fit panels work off a cache hit too.
 
-# Schematic-like figure (Fig. 5f, middle)
+# Landscape figure (Figure 7D)
 
 ![Schematic-like figure](/results/RLModel/Q_R_Heatmap.svg)
 

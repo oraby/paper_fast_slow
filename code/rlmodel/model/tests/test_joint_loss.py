@@ -2,19 +2,20 @@
 ``--mle-chi2-weight``).
 
 The DE objective becomes
-``w_mle·(MLE_negloglik/N_mle) + w_chi2·(Chi2/N_chi2)`` — the teacher-forced
-per-trial MLE term (GPU-vectorized population path) plus the generative
-Ratcliff-quantile Chi² term (per-candidate CPU simulation), each divided by its
-own valid-trial count so a single weight transfers across subjects. The default
+``w_mle·(MLE_negloglik/ref_mle) + w_chi2·(Chi2/ref_chi2)`` — the
+teacher-forced per-trial MLE term (GPU-vectorized population path) plus the
+generative Ratcliff-quantile Chi² term (per-candidate CPU simulation), each
+divided by the subject's standalone-best loss for that term, so each is 1 at
+its own optimum and a single weight transfers across subjects. The default
 ``(1.0, 0.0)`` is pure MLE: the Chi² simulation is never run.
 
 Coverage:
-- the combiner arithmetic + per-trial normalization (stubbed terms);
+- the combiner arithmetic + normalization by the reference losses (stubbed terms);
 - a zero weight skips its term entirely (no GPU call / no Chi² simulation);
 - the shared ``_candidate_to_makeOneRun_kwargs`` sentinel logic;
 - end-to-end dispatch + diagnostics through ``simulateDDM`` dry-run, including
   the gate that keeps pure MLE byte-clean;
-- config validation and ``evolveFP`` filename invariance.
+- config validation and the ``evolveFP`` weight suffix.
 """
 from __future__ import annotations
 
