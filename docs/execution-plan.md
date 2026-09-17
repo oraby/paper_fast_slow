@@ -24,7 +24,7 @@ The eight workstreams as stated:
 |---|---|---|
 | **G0** | Trustworthy baseline | **done** |
 | **A** | Unified `uv` | **done** — everything runs from the lockfile; guarded by `test_environment.py` |
-| **B** | Model trim + docs | **B1 done** (2026-09-17) — `rlmodel/README.md` corrected against the code; B2 waits on decisions 2 and 3 below, and B3 on B2. `Decay Q` is still in the registry |
+| **B** | Model trim + docs | **B1, B2 done** (2026-09-17) — `rlmodel/README.md` corrected against the code; every registry entry the manuscript does not use is gone, verified fit-for-fit against the shipped pickles. B3 (the docs rewrite) is the remainder |
 | **C** | Behaviour tests | **Done, C1–C8.** Every extracted panel reproduces its committed figure and is tested; `figcode/`, `opto/` and `tracking/` went 0 → 112, 51 and 124 tests. C8 extracted `Tracking.ipynb`'s preprocessing (identical output on all 76,311 frames) and fixed two silent breakages: pandas 3 copy-on-write and a machine-time-zone dependence. S3J–M legend/Methods text is drafted (`methods_model_revision.md` Blocks 10–12); S3K is regenerated choice-normalised next revision; interpolation wording (#13) is open |
 | **D** | 2-photon reorg | **DONE (D0-D4)** — all five 2P notebooks run top to bottom, 0 errors, writing nothing (`SAVE_FIGS`/`SAVE_DATA`); every listed panel is an extracted, tested module, verified figure-for-figure against pre-extraction runs; every load goes through `twop/dataload.py`. Two items are deliberately left for the next revision (unseeded permutation panels; the 15-row difference in the shipped filtered frame) — see [`repo-audit.md`](repo-audit.md) |
 | **E** | Runner / papermill | **started ahead of plan** — 4 notebooks carry a `parameters` cell; see the E section for what that does and does not yet cover |
@@ -199,7 +199,7 @@ Order **within** the workstream matters:
   MLE and joint MLE+χ² fitting are not documented at all despite producing
   Figures 7A–B and S14B–H.
 - **B2** — delete the unused registry entries: 5 bias functions, 1 noise
-  function, the 10-entry `Decay Q` drift family.
+  function, the 10-entry `Decay Q` drift family. **Done** — see below.
 - **B3** — rewrite the model documentation against
   [`manuscript-methods-map.md`](manuscript-methods-map.md#the-model), which
   carries every equation as the paper states it.
@@ -233,16 +233,53 @@ valid-trial count, and the weights "not in the filename" — was in
 losses and suffixes joint filenames with the weights, and its own tests check
 exactly that; the three texts now say so. No behaviour changed.
 
-**Two gates before B2 can start**, both of which are decisions rather than work:
+**The two gates were decided on 2026-09-17**, and both were decisions rather
+than work:
 
-- **The asymmetric-learning-rate experiment.** `Decaying Q-Val` is reached from
-  `mle.py:141`, `model_runner.py:482`, `tests/test_asymmetric_lr.py` and
-  `tests/test_mle_smoke.py`. Deleting the `Decay Q` family forces a decision on
-  whether that unpublished experiment stays.
-- **The Z-formula divergence.** The MLE and χ² paths compute the DDM starting
-  point differently and the paper states only the MLE form. The fix lands in
-  `bias.py`, which B2 also edits — and **correcting the χ² path would change a
-  published number.** Resolve this before touching `bias.py`, not after.
+- **The asymmetric-learning-rate experiment** goes, together with `Decay Q` —
+  but only after being made to work, so the version left in history is a
+  recoverable one.
+- **The Z-formula divergence** is deferred to the χ²/joint refit. B2 therefore
+  edited `bias.py` only to delete entries; `_biasQVal`'s formula is untouched,
+  so the code still reproduces the shipped fits and Figures 2E–G / S4.
+
+### B2 — done (2026-09-17)
+
+Two commits, deliberately kept apart:
+
+1. **`67ef1ac` — make the unpublished variants work first.** Three defects meant
+   several of them could not be fitted under χ² at all: `util.decayingQ` took
+   `np.arange` of the noise array's `(trials, steps)` shape and indexed its
+   scalar rate, so every `Decaying Q-Val` evaluation raised; that noise drew
+   from the global `np.random` instead of the seeded generator, so the loss
+   changed between two evaluations of the same parameters; and the
+   `μ, σ (Corr/Incorr)` bias called `_biasMeanDir` without `BIAS_COEF`. A sweep
+   of every bias × drift × noise combination (420 under χ², 180 under MLE) is
+   what found them.
+2. **`417629e` — delete them.** The registry entries, their `InitVals` fields,
+   the whole asymmetric-rate path (flags, config fields, GUI controls, filename
+   suffix, design document), and the Decay-Q-only compute paths: the factored
+   time-varying mu in `mle.py` / `mle_batch.py`, which leaves the batched
+   solver constant-drift only. About 1,900 lines out of `code/rlmodel/`.
+
+**Verification was against the shipped fits, not only the suite.** All 15
+`data/RLModel/*.pkl` × 22 subjects were re-simulated and re-scored before and
+after: identical χ² loss, identical simulated trials, identical MLE likelihood
+(298/298 rows on every column).
+
+That check earned its keep. With the asymmetric rates gone,
+`update_q_values` multiplied the float32 Q-state by a plain Python `alpha`, so
+the update ran in float32 where the removed `xp.where(…, alpha_unrewarded,
+alpha)` had promoted it to float64. The χ² loss was unchanged but the simulated
+Q trajectories differed in their last bits — invisible to the tests. `alpha`
+and `beta` are now cast explicitly.
+
+**One bug found on the way, fixed separately (`2585ced`).** G0's portability
+rewrite stored every fit's `OptimRes` as a plain dict and `loadFit` never
+rebuilt it, so on the shipped fits re-simulating or re-scoring raised
+`AttributeError`, `getattr(OptimRes, "fun", nan)` readers recorded NaN in
+silence, and a joint MLE+χ² fit could not start at all. The tests all used
+`SimpleNamespace` stand-ins, which is why none of them saw it.
 
 ---
 
@@ -783,8 +820,8 @@ Six, in the order they are needed:
 | # | Decision | Gates | Note |
 |---|---|---|---|
 | 1 | ~~Is `behavior_v2.ipynb` current or dead?~~ | — | **resolved** — deleted |
-| 2 | Z-formula divergence: fix the χ² path, or footnote the paper? | B2 | **Fixing it changes a published number** |
-| 3 | Keep or delete the asymmetric-learning-rate experiment? | B2 | Entangled with `Decay Q` through `Decaying Q-Val` |
+| 2 | ~~Z-formula divergence: fix the χ² path, or footnote the paper?~~ | B2 | **resolved 2026-09-17** — deferred to the refit; B2 left `bias.py`'s formula alone |
+| 3 | ~~Keep or delete the asymmetric-learning-rate experiment?~~ | B2 | **resolved 2026-09-17** — fixed, committed, then deleted |
 | 4 | Adopt or delete the orphaned `twop/plot/stats*` modules? | D0, D4 | 909 lines; possibly a better factoring than the inline code |
 | 5 | Ship only manuscript figures, or all per-subject results? | E, F | Shapes E's flag and F's pruning; the README currently advertises the full set as a feature. **Now also decides the `global_save_figs` default**, which currently differs between notebooks |
 | 6 | Strip notebook outputs before publishing? | F | Against stripping: outputs are the only record for cells that cannot currently rerun |
