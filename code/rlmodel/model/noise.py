@@ -30,7 +30,10 @@ def _noiseQval(size : tuple[int, int],
                Q_VAL_DECAY_RATE : float,
                Q_VAL_COEF : float):
     global run_logger
-    rndm_noise = np.random.normal(0, 1, size=size) * np.sqrt(dt)
+    # The seeded generator logic.makeOneRun installs, as _noiseNormal uses:
+    # the global np.random made the chisq loss differ between two evaluations
+    # of the same parameters.
+    rndm_noise = rnd_default_rng.standard_normal(size=size) * np.sqrt(dt)
     decaying_Q = decayingQ(size, Q_val, Q_VAL_DECAY_RATE,  Q_VAL_COEF, dt)
     noise_Q = rndm_noise + decaying_Q
     if run_logger is not None:

@@ -22,7 +22,9 @@ def _biasMeanCorrIncorr(size : int,
                         BIAS_MU : float,
                         BIAS_SIGMA : float,
                         DV : npt.NDArray):
-    norm = _biasMeanDir(size, BIAS_MU, BIAS_SIGMA)
+    # Draw unscaled (coef 1) and scale once below: calling _biasMeanDir without
+    # BIAS_COEF raised, and passing it would have applied the coef twice.
+    norm = _biasMeanDir(size, 1.0, BIAS_MU, BIAS_SIGMA)
     norm[DV < 0] = -norm[DV < 0]
     return norm * BIAS_COEF
 

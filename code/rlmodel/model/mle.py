@@ -19,12 +19,9 @@ from .mle_batch import (
 from .mle_likelihood import trial_choice_rt_loglik, LOGLIK_FLOOR
 
 
-# "Q-Val-asym (Offset)" enables asymmetric ALPHA via the gating in
-# fit.py:simulateDDM. Mathematically the bias is identical to
-# "Q-Val (Offset)" — only the Q-update side branches on reward, not the
-# starting-point bias — so uses_q_bias also accepts the -asym variant.
-SUPPORTED_MLE_BIASES = {
-    "None_", "Q-Val", "Q-Val (Offset)", "Q-Val-asym (Offset)"}
+# Asymmetric ALPHA is not a bias of its own: it is the --asym-q flag
+# (``MLEModelConfig.uses_asymmetric_alpha``) on any of these.
+SUPPORTED_MLE_BIASES = {"None_", "Q-Val", "Q-Val (Offset)"}
 SUPPORTED_MLE_ARRAY_BACKENDS = {"auto", "numpy", "cupy"}
 SUPPORTED_MLE_CUPY_FALLBACKS = {"numpy", "error"}
 _PREPARED_SESSION_BACKEND_CACHE = {}

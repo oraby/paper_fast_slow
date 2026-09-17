@@ -965,12 +965,10 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
     biasFn_str = reverse_BiasLookup[biasFn]
     noiseFn_str = reverse_NoiseLookup[noiseFn]
     # Prefer the caller-supplied canonical names when available. The
-    # reverse_*Lookup picks the LAST dict key for a given function
-    # object, which the "-asym" aliases in BIAS_FN_DICT/DRIFT_FN_DICT
-    # (same fn, different key) hijack — without this override the user's
-    # "--bias 'Q-Val (Offset)'" silently turns into "Q-Val-asym (Offset)",
-    # which then fails validate_mle_config. Passing the str through
-    # runModel preserves the exact name the user / CLI provided.
+    # reverse_*Lookup picks the LAST dict key for a given function object,
+    # so any two keys registered to the same object would be confused;
+    # passing the str through runModel preserves the exact name the user /
+    # CLI provided.
     if bias_fn_str is not None:
         biasFn_str = bias_fn_str
     if drift_fn_str is not None:

@@ -1544,7 +1544,7 @@ def _makeModelName(driftFn_str, biasFn_str):
     """Build a human-readable model name from registry key strings.
 
     Inputs are the BIAS_FN_DICT / DRIFT_FN_DICT keys ("Classic",
-    "NoiseGain-RewardRate-asym", "Q-Val (Offset)", "None_", …), not
+    "NoiseGain-RewardRate", "Q-Val (Offset)", "None_", …), not
     function ``__name__``s. The earlier ``__name__``-based implementation
     is dead since the GUI was switched to registry-key widget values.
     """
@@ -1554,8 +1554,6 @@ def _makeModelName(driftFn_str, biasFn_str):
         bias_label = "Init Q-Value"
     elif biasFn_str == "Q-Val (Offset)":
         bias_label = "Init Q-Value (Offset)"
-    elif biasFn_str == "Q-Val-asym (Offset)":
-        bias_label = "Init Q-Value (Offset, asym α)"
     else:
         bias_label = biasFn_str
 
@@ -1565,8 +1563,6 @@ def _makeModelName(driftFn_str, biasFn_str):
         drift_label = f"Classic DDM + Decaying Q ({driftFn_str})"
     elif driftFn_str == "NoiseGain-RewardRate":
         drift_label = "Noise*RewardRate"
-    elif driftFn_str == "NoiseGain-RewardRate-asym":
-        drift_label = "Noise*RewardRate (asym β)"
     elif driftFn_str.startswith("NoiseGain-RewardRate"):
         drift_label = f"Noise*RewardRate + Decaying Q ({driftFn_str})"
     else:
