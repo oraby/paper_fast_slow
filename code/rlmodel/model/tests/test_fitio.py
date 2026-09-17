@@ -112,6 +112,39 @@ def test_loadFit_rebuilds_what_bare_pickle_leaves_plain(tmp_path):
     assert isinstance(loaded["model_config"], MLEModelConfig)
 
 
+def test_a_migrated_optimres_dict_reads_back_with_attribute_access(tmp_path):
+    """The portability rewrite stored OptimRes as a plain dict; every reader
+    asks for ``.x`` / ``.fun``, which a plain dict does not have."""
+    from scipy.optimize import OptimizeResult
+    out = tmp_path / "chisq_fake.pkl"
+    payload = toStorable(_payload())
+    payload["OptimRes"] = {"x": np.array([0.1, 1.0]), "fun": 12.5}
+    with open(out, "wb") as fp:
+        pickle.dump({"GP4-85": payload}, fp)
+
+    optim = loadFit(out)["GP4-85"]["OptimRes"]
+    assert isinstance(optim, OptimizeResult)
+    np.testing.assert_array_equal(optim.x, [0.1, 1.0])
+    assert optim.fun == 12.5 and optim["fun"] == 12.5
+
+
+def test_a_live_optimres_and_a_missing_one_pass_through():
+    from scipy.optimize import OptimizeResult
+    live = OptimizeResult(x=np.zeros(2), fun=1.0)
+    assert fromStorable({"OptimRes": live})["OptimRes"] is live
+    assert fromStorable({"OptimRes": None})["OptimRes"] is None
+
+
+def test_the_joint_reference_loss_reads_a_migrated_fit(tmp_path):
+    from .. import fit
+    ref = tmp_path / "data" / "RLModel" / "chisq_fake.pkl"
+    ref.parent.mkdir(parents=True)
+    with open(ref, "wb") as fp:
+        pickle.dump({"GP4-85": {"OptimRes": {"x": np.zeros(2), "fun": 42.0},
+                                "fit_finish_time": "2026-01-01T00:00:00"}}, fp)
+    assert fit._load_reference_loss(ref, "GP4-85") == (42.0, "2026-01-01T00:00:00")
+
+
 def test_a_reconstructed_partial_still_matches_the_registry():
     """An unpickled partial is a new object, so identity alone is not enough.
 

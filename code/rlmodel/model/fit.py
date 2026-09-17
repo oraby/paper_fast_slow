@@ -13,7 +13,7 @@ from .mle import (
     result_payload,
 )
 from .util import initDF, driftFnColsAndKwargs, biasFnColsAndKwargs, noiseFnColsAndKwargs
-from .fitio import toStorable
+from .fitio import loadFit, toStorable
 from ...util.portablepickle import assertPortable
 import numpy as np
 import pandas as pd
@@ -601,8 +601,9 @@ def _load_reference_loss(ref_FP, subject):
             f"which does not exist. Run that fit first: pure MLE with "
             f"--mle-chi2-weight 0 (for ref_mle), and --fit-mode chisq "
             f"(for ref_chi2), before the joint fit.")
-    with open(ref_path, "rb") as f:
-        ref_dict = pickle.load(f)
+    # loadFit, not pickle.load: the shipped reference fits store OptimRes as a
+    # plain dict, which has no ``.fun``.
+    ref_dict = loadFit(ref_path)
     if subject not in ref_dict:
         raise KeyError(
             f"Reference fit {ref_path} has no entry for subject {subject!r}; "

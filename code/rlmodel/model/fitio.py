@@ -117,6 +117,14 @@ def fromStorable(payload):
     if isinstance(config, dict):
         from .mle import MLEModelConfig
         out["model_config"] = MLEModelConfig(**config)
+
+    # The 2026-08-31 portability rewrite turned every OptimizeResult into a
+    # plain dict, and every reader asks for ``OptimRes.x`` / ``.fun``. An
+    # OptimizeResult is itself a dict, so key access keeps working too.
+    optim = out.get("OptimRes")
+    if type(optim) is dict:
+        from scipy.optimize import OptimizeResult
+        out["OptimRes"] = OptimizeResult(optim)
     return out
 
 
