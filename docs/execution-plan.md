@@ -24,7 +24,7 @@ The eight workstreams as stated:
 |---|---|---|
 | **G0** | Trustworthy baseline | **done** |
 | **A** | Unified `uv` | **done** — everything runs from the lockfile; guarded by `test_environment.py` |
-| **B** | Model trim + docs | **B1, B2 done** (2026-09-17) — `rlmodel/README.md` corrected against the code; every registry entry the manuscript does not use is gone, verified fit-for-fit against the shipped pickles. B3 (the docs rewrite) is the remainder |
+| **B** | Model trim + docs | **DONE (B1–B3)** (2026-09-17) — `rlmodel/README.md` corrected against the code and then rewritten to carry the model's equations; every registry entry the manuscript does not use is gone, verified fit-for-fit against the shipped pickles |
 | **C** | Behaviour tests | **Done, C1–C8.** Every extracted panel reproduces its committed figure and is tested; `figcode/`, `opto/` and `tracking/` went 0 → 112, 51 and 124 tests. C8 extracted `Tracking.ipynb`'s preprocessing (identical output on all 76,311 frames) and fixed two silent breakages: pandas 3 copy-on-write and a machine-time-zone dependence. S3J–M legend/Methods text is drafted (`methods_model_revision.md` Blocks 10–12); S3K is regenerated choice-normalised next revision; interpolation wording (#13) is open |
 | **D** | 2-photon reorg | **DONE (D0-D4)** — all five 2P notebooks run top to bottom, 0 errors, writing nothing (`SAVE_FIGS`/`SAVE_DATA`); every listed panel is an extracted, tested module, verified figure-for-figure against pre-extraction runs; every load goes through `twop/dataload.py`. Two items are deliberately left for the next revision (unseeded permutation panels; the 15-row difference in the shipped filtered frame) — see [`repo-audit.md`](repo-audit.md) |
 | **E** | Runner / papermill | **started ahead of plan** — 4 notebooks carry a `parameters` cell; see the E section for what that does and does not yet cover |
@@ -202,7 +202,7 @@ Order **within** the workstream matters:
   function, the 10-entry `Decay Q` drift family. **Done** — see below.
 - **B3** — rewrite the model documentation against
   [`manuscript-methods-map.md`](manuscript-methods-map.md#the-model), which
-  carries every equation as the paper states it.
+  carries every equation as the paper states it. **Done** — see below.
 
 **B3 must follow B2**, otherwise you write documentation for code you are about
 to delete.
@@ -273,6 +273,25 @@ the update ran in float32 where the removed `xp.where(…, alpha_unrewarded,
 alpha)` had promoted it to float64. The χ² loss was unchanged but the simulated
 Q trajectories differed in their last bits — invisible to the tests. `alpha`
 and `beta` are now cast explicitly.
+
+### B3 — done (2026-09-17)
+
+`rlmodel/README.md` documented the code's structure but never the model.
+`d8a6aec` gives it a "The model" section: the baseline DDM (accumulation,
+bounds, how the non-decision time is applied, what makes a no-choice trial),
+the Q-learning bias (update, normalised log ratio, starting point), the
+R-learning noise gain, and the two combined — each equation with the parameters
+it introduces and the code implementing it, checked against the source rather
+than the older docs.
+
+Three things were previously discoverable only by reading the code:
+
+- under χ², the Q and reward-rate updates learn from the model's **own**
+  simulated outcome, and a simulated response faster than 0.3 s is forced to
+  unrewarded (`logic.FORCE_EWD`);
+- `BOUND` and `NOISE_SIGMA` are a scale pair of which exactly one is ever
+  fitted, `--scale-bound` choosing which;
+- a table of every fittable parameter with its range and initial value.
 
 **One bug found on the way, fixed separately (`2585ced`).** G0's portability
 rewrite stored every fit's `OptimRes` as a plain dict and `loadFit` never
