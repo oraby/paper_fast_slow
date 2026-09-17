@@ -6,15 +6,20 @@ The contract, checked against the real notebooks on every test run:
 - that cell declares ``SAVE_FIGS``, ``SAVE_DATA`` and ``PAPER_FIGURES_ONLY``,
   all ``False``, so running a notebook as it stands writes nothing;
 - no other cell redefines them, and none of their uses comes before that cell;
-- no cell passes ``save_figs=True`` literally, which would ignore the flag.
+- no cell passes ``save_figs=True`` literally, which would ignore the flag;
+- every cell that reads ``SAVE_FIGS`` is tagged ``paper-figure`` (saves in every
+  saving run) or ``per-subject`` (saves only as
+  ``SAVE_FIGS and not PAPER_FIGURES_ONLY``), and the code agrees with the tag.
 
 These are what make ``uv run python code/run_notebooks.py`` safe to point at the
 whole repository. Nothing here executes a notebook.
 """
 from __future__ import annotations
 
+import ast
 import json
 import re
+import warnings
 
 import pytest
 
@@ -77,6 +82,81 @@ def test_no_literal_save_true(relpath):
     offenders = [i for i, cell in enumerate(_load(relpath)["cells"])
                  if literal.search(_uncommented(_code(cell)))]
     assert not offenders, f"cells {offenders} save regardless of SAVE_FIGS"
+
+
+# --- every saving cell says what it saves -------------------------------------
+
+TAGS = ("paper-figure", "per-subject")
+GATED = re.compile(r"\bSAVE_FIGS\s+and\s+not\s+PAPER_FIGURES_ONLY\b")
+SAVE_FIGS_USE = re.compile(r"\bSAVE_FIGS\b")
+
+
+def _tags(cell):
+    return [t for t in cell.get("metadata", {}).get("tags", []) if t in TAGS]
+
+
+def _saving_cells(nb):
+    """(index, cell, uncommented code) for every cell reading SAVE_FIGS."""
+    params = rn.parametersCell(nb)
+    for i, cell in enumerate(nb["cells"]):
+        body = _uncommented(_code(cell))
+        if cell is not params and SAVE_FIGS_USE.search(body):
+            yield i, cell, body
+
+
+def _literal_save_flags(body):
+    """Calls in a cell that pass ``save_fig(s)=`` a constant, not the flag."""
+    source = "\n".join(line for line in body.split("\n")
+                       if not line.lstrip().startswith(("%", "!")))
+    with warnings.catch_warnings():     # the notebooks' own invalid escapes
+        warnings.simplefilter("ignore", SyntaxWarning)
+        tree = ast.parse(source)
+    return [ast.unparse(node.func) for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            for kw in node.keywords
+            if kw.arg in ("save_fig", "save_figs") and isinstance(kw.value, ast.Constant)]
+
+
+@pytest.mark.parametrize("relpath", rn.NOTEBOOKS)
+def test_every_saving_cell_is_tagged_paper_figure_or_per_subject(relpath):
+    nb = _load(relpath)
+    saving = {i: cell for i, cell, _ in _saving_cells(nb)}
+    untagged = [i for i, cell in saving.items() if len(_tags(cell)) != 1]
+    assert not untagged, f"cells {untagged} need exactly one of {TAGS}"
+    stray = [i for i, cell in enumerate(nb["cells"]) if _tags(cell) and i not in saving]
+    assert not stray, f"cells {stray} are tagged but never read SAVE_FIGS"
+
+
+@pytest.mark.parametrize("relpath", rn.NOTEBOOKS)
+def test_per_subject_cells_are_skipped_by_a_paper_only_run(relpath):
+    offenders = [i for i, cell, body in _saving_cells(_load(relpath))
+                 if "per-subject" in _tags(cell)
+                 and len(SAVE_FIGS_USE.findall(body)) != len(GATED.findall(body))]
+    assert not offenders, \
+        f"per-subject cells {offenders} save without 'and not PAPER_FIGURES_ONLY'"
+
+
+@pytest.mark.parametrize("relpath", rn.NOTEBOOKS)
+def test_paper_figure_cells_save_whenever_figures_are_saved(relpath):
+    # A paper cell may gate a bulk call inside it, but something in it must
+    # save under SAVE_FIGS alone, and nothing in it may pass a literal flag --
+    # which is how 4E, 4F, 5C, 5E, 5F, 6A and S12 once silently stopped saving.
+    for i, cell in enumerate(_load(relpath)["cells"]):
+        if "paper-figure" not in _tags(cell):
+            continue
+        body = _uncommented(_code(cell))
+        literal = _literal_save_flags(body)
+        assert not literal, f"paper-figure cell {i} passes a literal save flag to {literal}"
+        assert len(SAVE_FIGS_USE.findall(body)) > len(GATED.findall(body)), \
+            f"paper-figure cell {i} only saves when PAPER_FIGURES_ONLY is off"
+
+
+@pytest.mark.parametrize("relpath", rn.NOTEBOOKS)
+def test_no_side_flag_overrides_save_figs(relpath):
+    side = re.compile(r"\b\w+_SAVE_FIGS\b")
+    offenders = [i for i, cell in enumerate(_load(relpath)["cells"])
+                 if side.search(_uncommented(_code(cell)))]
+    assert not offenders, f"cells {offenders} use a side flag instead of SAVE_FIGS"
 
 
 # --- the runner's own logic ----------------------------------------------------
@@ -169,3 +249,12 @@ def test_a_malformed_extra_parameter_is_refused(bad):
 def test_list_mode_runs_nothing(capsys):
     assert rn.main(["--list", "--only", "opto"]) == 0
     assert "opto.ipynb" in capsys.readouterr().out
+
+
+def test_list_mode_shows_the_values_a_run_would_use(capsys):
+    rn.main(["--list", "--only", "widefield", "--save-figs",
+             "--param", "MFC_LFC_MAP=False"])
+    out = capsys.readouterr().out
+    assert "'SAVE_FIGS': True" in out
+    assert "'MFC_LFC_MAP': False" in out
+    assert "'DEFAULT_ALLEN_MAP': False" in out      # not overridden, so its default

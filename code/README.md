@@ -195,12 +195,38 @@ dependency -- the correct wheel name depends on your CUDA version
 (`cupy-cuda12x` and so on). Install it yourself if you want the GPU path;
 nothing else changes.
 
-# Missing
+# Running the notebooks
 
-- A command-line runner (e.g. [`papermill`](https://papermill.readthedocs.io)
-  driven from a `uv` script) for batch execution of all notebooks, with a flag
-  to generate either only the manuscript figures or every figure including the
-  per-subject ones.
-  `behavior.ipynb`, `opto.ipynb`, `widefield.ipynb` and `Tracking.ipynb`
-  already carry a papermill `parameters` cell; the rest do not, and several
-  cells still pass `save_figs=True` literally rather than honouring the flag.
+[`run_notebooks.py`](run_notebooks.py) executes the figure notebooks with
+[`papermill`](https://papermill.readthedocs.io), from the repository root:
+
+```
+uv run python code/run_notebooks.py --list                   # what would run
+uv run python code/run_notebooks.py                          # everything, writes nothing
+uv run python code/run_notebooks.py --save-figs --paper-figures-only
+uv run python code/run_notebooks.py --save-figs --only behavior opto
+uv run python code/run_notebooks.py --only widefield --param MFC_LFC_MAP=False
+```
+
+Every figure notebook has one cell tagged `parameters` declaring three flags,
+all `False` by default, so a plain run -- or opening the notebook and running
+all cells -- writes nothing:
+
+| flag | runner option | effect |
+|---|---|---|
+| `SAVE_FIGS` | `--save-figs` | write figures under `results/` |
+| `SAVE_DATA` | `--save-data` | rewrite cached intermediate data under `data/` |
+| `PAPER_FIGURES_ONLY` | `--paper-figures-only` | skip the per-subject / per-session figures |
+
+Each cell that saves a figure is tagged `paper-figure` (saves whenever
+`SAVE_FIGS` is on) or `per-subject` (saves only under
+`SAVE_FIGS and not PAPER_FIGURES_ONLY`). Where a paper panel is one example
+picked from a loop over every session or neuron, the whole loop stays
+`paper-figure`, so a paper-only run can still write more than the manuscript
+shows. Executed copies go to `runs/<timestamp>/` (git-ignored).
+`code/util/tests/test_run_notebooks.py` fails the suite if a notebook breaks
+this contract -- a missing tag, a literal `save_figs=True`/`False` in a paper
+cell, or a side flag overriding `SAVE_FIGS`.
+
+`rlmodel/model_to_behavior.ipynb` does not finish on a workstation: its
+Figure 7D cell resamples every session 10,000 times in memory (~320 GiB).

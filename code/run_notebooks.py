@@ -185,17 +185,19 @@ def main(argv=None):
     declared = {n: declaredParameters(json.load(open(CODE_DIR / n, encoding="utf-8")))
                 for n in selected}
 
-    if args.list:
-        for relpath in selected:
-            print(f"{relpath:36s} {declared[relpath]}")
-        return 0
-
     typos = unusedExtra(extra, declared)
     if typos:
         raise SystemExit(f"No selected notebook declares: {', '.join(typos)}")
 
     flags = {"save_figs": args.save_figs, "save_data": args.save_data,
              "paper_figures_only": args.paper_figures_only}
+
+    if args.list:
+        # The values each notebook would run with, not its defaults.
+        for relpath in selected:
+            params = declared[relpath] | buildParameters(declared[relpath], flags, extra)
+            print(f"{relpath:36s} {params}")
+        return 0
     stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     run_dir = args.out or (REPO_DIR / "runs" / stamp)
     print(f"Running {len(selected)} notebook(s) -> {run_dir}")

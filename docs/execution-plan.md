@@ -27,7 +27,7 @@ The eight workstreams as stated:
 | **B** | Model trim + docs | **DONE (B1–B3)** (2026-09-17) — `rlmodel/README.md` corrected against the code and then rewritten to carry the model's equations; every registry entry the manuscript does not use is gone, verified fit-for-fit against the shipped pickles |
 | **C** | Behaviour tests | **Done, C1–C8.** Every extracted panel reproduces its committed figure and is tested; `figcode/`, `opto/` and `tracking/` went 0 → 112, 51 and 124 tests. C8 extracted `Tracking.ipynb`'s preprocessing (identical output on all 76,311 frames) and fixed two silent breakages: pandas 3 copy-on-write and a machine-time-zone dependence. S3J–M legend/Methods text is drafted (`methods_model_revision.md` Blocks 10–12); S3K is regenerated choice-normalised next revision; interpolation wording (#13) is open |
 | **D** | 2-photon reorg | **DONE (D0-D4)** — all five 2P notebooks run top to bottom, 0 errors, writing nothing (`SAVE_FIGS`/`SAVE_DATA`); every listed panel is an extracted, tested module, verified figure-for-figure against pre-extraction runs; every load goes through `twop/dataload.py`. Two items are deliberately left for the next revision (unseeded permutation panels; the 15-row difference in the shipped filtered frame) — see [`repo-audit.md`](repo-audit.md) |
-| **E** | Runner / papermill | **started ahead of plan** — 4 notebooks carry a `parameters` cell; see the E section for what that does and does not yet cover |
+| **E** | Runner / papermill | **done**, one open item — all 11 figure notebooks parameterised, `code/run_notebooks.py`, cells tagged `paper-figure`/`per-subject`; `model_to_behavior.ipynb` still needs ~320 GiB for Figure 7D (see the E section) |
 | **F** | Final cleanup | **not started** — `data/to_delete/` is still 563 MB |
 
 Suite: **1705 passed, 1 skipped, 0 failed**, and green with
@@ -753,39 +753,85 @@ attempted**, where TwoPTraces alone had been rewriting 92 committed heatmaps.
 
 ---
 
-## E — Notebook parameterisation and runner — **partly started**
+## E — Notebook parameterisation and runner — **done** (one open item)
 
-Four notebooks now carry a papermill `parameters` cell: `behavior.ipynb`,
-`opto.ipynb`, `widefield.ipynb` and `Tracking.ipynb`. `widefield.ipynb`'s goes
-beyond the save flag (`MFC_LFC_MAP`, `DEFAULT_ALLEN_MAP`), which is the right
-shape.
+**Scope.** The 11 notebooks that produce manuscript figures: `behavior`,
+`Tracking`, `opto`, `widefield`, `TwoPLoad`, `2pAnalysis`, `TwoPTraces`,
+`plottraces3`, `2pSeqWithinDeviation`, `rlmodel/model_analysis`,
+`rlmodel/model_to_behavior`. Exploratory notebooks (`model_viewer` and the
+like) are out of scope.
 
-Two things to settle before this spreads further:
+**E1 — one `parameters` cell per notebook.** `SAVE_FIGS`, `SAVE_DATA`,
+`PAPER_FIGURES_ONLY`, all `False`; `widefield` adds `MFC_LFC_MAP` and
+`DEFAULT_ALLEN_MAP`. `global_save_figs` was renamed to `SAVE_FIGS` everywhere,
+Tracking's `True` default is gone, and no call passes `save_figs=True`
+literally. With every flag off, all notebooks but `model_to_behavior` ran top
+to bottom through the runner and a before/after snapshot of the repository
+showed no file written.
 
-- **The default is inconsistent.** `Tracking.ipynb` defaults
-  `global_save_figs = True`; the other three default `False`. A batch run will
-  write `results/` from one notebook and not the others.
-- **A `parameters` cell does not make a notebook parameterised.** 19 literal
-  `save_fig=True` / `save_figs=True` call sites remain, so those cells ignore
-  the flag entirely:
+**E2 — `code/run_notebooks.py`.** papermill, each notebook executed from its
+own directory so the relative data paths hold; `--save-figs`, `--save-data`,
+`--paper-figures-only`, `--only`, `--param NAME=VALUE` (injected only where a
+notebook declares it; a name no notebook declares is refused as a typo),
+`--list`. Executed copies go to `runs/<timestamp>/`. Usage is in
+[`code/README.md`](../code/README.md#running-the-notebooks).
 
-  | notebook | literals | `parameters` cell |
-  |---|---|---|
-  | `2pAnalysis.ipynb` | 9 | no |
-  | `TwoPLoad.ipynb` | 3 | no |
-  | `plottraces3.ipynb` | 3 | no |
-  | `TwoPTraces.ipynb` | 2 | no |
-  | `Tracking.ipynb` | 1 | yes |
-  | `model_to_behavior.ipynb` | 1 | no |
-  | `model_viewer.ipynb` | 1 | no |
+**E3 — `--paper-figures-only`.** Every cell that reads `SAVE_FIGS` is tagged
+`paper-figure` or `per-subject`; per-subject saves are
+`SAVE_FIGS and not PAPER_FIGURES_ONLY`. Fixed along the way — published panels
+whose call passed a literal `False`, so no flag could ever regenerate them:
+2pAnalysis 5C, 4F, 5E, 5F, S12D/F/H/I, S12J (via a separate
+`MOVEMENT_SAVE_FIGS`, now folded into `SAVE_FIGS`), and TwoPTraces 4E/S8B,
+4H, 5B, 6A bottom, 5c. `code/util/tests/test_run_notebooks.py` checks the
+contract on every suite run.
 
-  `behavior.ipynb` and `opto.ipynb` are clean on both counts.
+Two things only a saving run could show, both found in the write sandbox:
 
-Still to do: the remaining `parameters` cells, the 19 literals, repo-root-relative
-data paths, the `--paper-figures-only` flag, and the runner itself. The 2P
-notebooks should wait for **D** rather than be parameterised twice — and
-`plottraces3.ipynb` cannot be run by any runner until D1 fixes its six
-`NameError` cells.
+- **behavior 1H asserted** the moment figures were saved. The cell overlays
+  mice and humans on one shared axis and then saves that figure itself, but
+  passed `save_figs` (with `save_prefix=None`) into the overlay calls too —
+  which asserts on the missing prefix, and would otherwise have written the
+  half-built figure and closed it before the real save. The overlay calls now
+  only draw.
+- **TwoPLoad's two `per-subject` cells never write anything**, whatever the
+  flags: they pass `StdDistCollector.track` as the `processFn`, which ignores
+  the `pdf` it is handed, and `PdfPages` opens its file only on the first
+  `savefig`. The tag is correct in intent and inert in fact; left alone.
+
+The classification is deliberately over-inclusive: a cell is `per-subject`
+only when it is unambiguously bulk. Where a published panel is one example
+drawn from a loop over every session or neuron, and the example's ID is not
+recorded, the whole loop stays `paper-figure`: 4F's fast/slow traces and 6C's
+feedback-tuned neuron (2pAnalysis), 4E/S8B's average traces (TwoPTraces),
+2E/2F/S4A's example mouse and Ext. 5a-right (`model_analysis`).
+
+**Verified per notebook in a write sandbox** (a headless run whose every write
+is redirected to a mirror, plus a before/after snapshot of the repository).
+Each ran twice, saving on, once paper-only; all 0 errors, every paper-only
+write also written by the full run, and nothing written outside the mirror:
+
+| notebook | paper-only | full |
+|---|---|---|
+| behavior | 76 | 142 |
+| Tracking | 5 | 29 |
+| opto | 39 | 110 |
+| TwoPLoad | 3 | 3 |
+| 2pAnalysis | 1,695 | 1,718 |
+| TwoPTraces | 389 | 477 |
+
+The narrow gaps are the over-inclusive loops above, and they are most of what
+a paper-only run writes: 1,446 of 2pAnalysis's files are 4F's per-neuron
+traces and 184 are 6C's, and 381 of TwoPTraces' are 4E's per-neuron traces.
+Pinning those example IDs is what would make `--paper-figures-only` mean the
+manuscript's figures — which is also what F's `results/` pruning needs.
+
+**Open.** `rlmodel/model_to_behavior.ipynb` cannot finish on a workstation.
+Its Figure 7D cell resamples the 272 fitted sessions 10,000 times into one
+frame (~1.1 billion rows, ~320 GiB) and fails with `MemoryError` on a 49 GB
+machine. Before E, the cell was never reached: the notebook loaded a
+`…_3s_dt0.005.pkl` fit that no longer exists (now the chi-squared 4.8 s fit).
+Needs a decision — a cluster run, a smaller `resample_count`, or streaming
+the resamples.
 
 ## F — Final cleanup and publish *(small–medium; last)*
 
