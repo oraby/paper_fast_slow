@@ -26,11 +26,11 @@ The eight workstreams as stated:
 | **A** | Unified `uv` | **done** — everything runs from the lockfile; guarded by `test_environment.py` |
 | **B** | Model trim + docs | **not started** — `Decay Q` still in the registry, `rlmodel/README.md` still says 3 s and uses the oldest figure numbers |
 | **C** | Behaviour tests | **Done, C1–C8.** Every extracted panel reproduces its committed figure and is tested; `figcode/`, `opto/` and `tracking/` went 0 → 112, 51 and 124 tests. C8 extracted `Tracking.ipynb`'s preprocessing (identical output on all 76,311 frames) and fixed two silent breakages: pandas 3 copy-on-write and a machine-time-zone dependence. S3J–M legend/Methods text is drafted (`methods_model_revision.md` Blocks 10–12); S3K is regenerated choice-normalised next revision; interpolation wording (#13) is open |
-| **D** | 2-photon reorg | **D0, D1, D1b, D2, D4 done** — all five 2P notebooks run top to bottom, 0 errors, writing nothing (`SAVE_FIGS`/`SAVE_DATA`). **Every listed panel is an extracted, tested module** (178 tests across 15 modules), verified figure-for-figure against pre-extraction runs. **D3 (shared loading) remains** |
+| **D** | 2-photon reorg | **DONE (D0-D4)** — all five 2P notebooks run top to bottom, 0 errors, writing nothing (`SAVE_FIGS`/`SAVE_DATA`); every listed panel is an extracted, tested module, verified figure-for-figure against pre-extraction runs; every load goes through `twop/dataload.py`. Two items are deliberately left for the next revision (unseeded permutation panels; the 15-row difference in the shipped filtered frame) — see [`repo-audit.md`](repo-audit.md) |
 | **E** | Runner / papermill | **started ahead of plan** — 4 notebooks carry a `parameters` cell; see the E section for what that does and does not yet cover |
 | **F** | Final cleanup | **not started** — `data/to_delete/` is still 563 MB |
 
-Suite: **1684 passed, 1 skipped, 0 failed**, and green with
+Suite: **1705 passed, 1 skipped, 0 failed**, and green with
 `FutureWarning`/`DeprecationWarning` promoted to errors.
 
 ---
@@ -654,8 +654,16 @@ attempted**, where TwoPTraces alone had been rewriting 92 committed heatmaps.
   labels carry percentages; S10C's summary percentage is out of the *region's*
   neurons; S9B's axis labels read the other way round from the data.
 
-- **D3** Consolidate trace loading across the three notebooks, on top of G0's
-  shared unpickler.
+- **D3** Consolidate trace loading across the notebooks. **Done 2026-09-17.**
+  The four 2P notebooks opened `data/2p` twenty-four times in four idioms, each
+  path relative to the notebook, so a frame could only be found from `code/`.
+  `twop/dataload.py` names every artifact, says what wrote it, resolves paths
+  from the package, and points at `data_downloader.ipynb` when one is absent
+  (19 tests). No literal `../data/2p` path is left in any notebook; writes stay
+  where the frame is built, behind `SAVE_DATA`. TwoPTraces' custom unpickler
+  went with it — it stubbed out `caiman` classes the data rewrite removed, and
+  the file reads plainly now. Verified by rerunning all five notebooks: 0
+  errors, and figures identical to the pre-extraction baselines.
 - **D4** Delete whatever D0 resolves as dead. **Done** — D0's modules, D1's
   dead cells, and D1b's unnormed-feedback path.
 

@@ -759,11 +759,45 @@ nulls. The extracted `twop/seqdeviation.py` beside them does seed everything
 (`seed=0`, `np.random.default_rng(seed)`); these two cells were left as they
 were.
 
-**They should be seeded, and they are not.** Seeding is the fix, but it will
-shift the published numbers slightly, so it is a deliberate decision rather
-than a cleanup — left alone until that call is made. Until then, a
-regenerated 4J or S9G will not reproduce the committed panel exactly, and
-neither will two regenerations of it.
+**They should be seeded, and they are not. TODO for the next revision.**
+Decided 2026-09-17: leave them unseeded for now, because seeding shifts the
+published p-values and this revision's numbers are already out. Until it is
+done, a regenerated 4J, S9G or S14A will not reproduce the committed panel
+exactly, and neither will two regenerations of it.
+
+The same applies to `twop/prevoutcomemod.py` (Figure S14A), whose hand-rolled
+`np.random.shuffle` loop is unseeded for the same reason; it takes an ``rng``
+argument, so seeding it is a one-line change at the call site when the decision
+is made.
+
+### The shipped filtered frame is 15 rows short of what TwoPLoad writes
+
+`data/2p/df_all_by_epoch_df_f_filtered.pkl` has **22,468** rows; running
+TwoPLoad produces **22,483**. The difference is **12 whole trials**, dropped
+rather than trimmed: 11 that contribute a single `Wait Trial Start` row each,
+and one ordinary four-epoch trial (`GP4_80_S2_L51_D250_M2m` trial 159, a
+correct choice with normal epoch durations, whose neighbours 157, 158, 160 and
+161 are all present).
+
+**No property separates them from the rows that were kept**, so this is not a
+filter someone applied:
+
+| Check | Result |
+|---|---|
+| Trials with only a `Wait Trial Start` row, as TwoPLoad writes them | 40 |
+| ...of those, present in the shipped file | 29 |
+| Rows with no outcome surviving in the shipped file | 307 (162 `Wait Trial Start`) |
+| Dropped rows that are their session's last trial | 0 of 15 |
+
+The raw input agrees with TwoPLoad (both 22,483 rows over the 23 sessions), so
+it is the shipped file that is the outlier — most likely written by a slightly
+different run than the one that produced the ancestor copy.
+
+It is 0.07% of the frame and every published figure was made from the shipped
+file, so nothing in the paper is affected. **TODO for the next revision:**
+decide whether to reship the frame TwoPLoad actually writes. Until then a
+regenerated file will not byte-match the shipped one, and the notebooks' save
+of it stays behind `SAVE_DATA`.
 
 ### scipy was patched locally in the `wfield` conda env — and no longer needs to be
 
