@@ -40,3 +40,6 @@ data/2p/normed_sampling_by_quantiles2.pkl
 data/2p/rt_corr_shuffled.pkl
 data/2p/svm_df.pkl
 data/2p/traces_cut_feedback_filtered_full_df.pkl
+
+# Executed notebooks from code/run_notebooks.py; each run gets a timestamped folder.
+/runs/

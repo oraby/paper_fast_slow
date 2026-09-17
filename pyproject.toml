@@ -45,6 +45,10 @@ dependencies = [
     # common.cache falls back silently when dill is absent; declaring it makes
     # the caching path deterministic rather than environment-dependent.
     "dill",
+    # code/run_notebooks.py executes the figure notebooks through papermill,
+    # which injects SAVE_FIGS / SAVE_DATA / PAPER_FIGURES_ONLY into each one's
+    # `parameters` cell.
+    "papermill",
 ]
 
 [tool.uv]
