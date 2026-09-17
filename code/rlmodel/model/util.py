@@ -13,29 +13,6 @@ class PsychometricPlot(Enum):
     SlowFast = auto()
 
 
-def decayingQ(size, Q_val, Q_val_decay_rate, Q_val_coef, dt):
-    '''Per-step Q-value push for the "Decaying Q-Val" noise, ``(trials, steps)``.
-
-    ``sign(Q) * max(|Q| * coef - (1 - rate * log(t + 1) / log(n_t + 1)), 0)``,
-    the same shape the MLE path uses (``mle._decaying_q_noise_array``).
-    ``size`` is the noise array's ``(n_trials, n_t)`` shape and the rate is a
-    scalar parameter; this used to take ``n_t`` alone with a per-trial rate, so
-    every chisq fit with this noise raised before the loss was reached.
-    '''
-    n_t = size[1]
-    indices = np.arange(n_t)
-    decay = 1 - (Q_val_decay_rate * np.log(indices + 1) / np.log(n_t + 1))
-    # Calculate the values
-    Q_val_abs = np.abs(np.asarray(Q_val, dtype=float))
-    Q_val_abs *= Q_val_coef
-    decay_Q = np.maximum(Q_val_abs[:, np.newaxis] - decay, 0)
-    # Get the original sign
-    minus_mask = Q_val < 0
-    decay_Q[minus_mask] = -decay_Q[minus_mask]
-    return decay_Q
-
-
-
 def initDF(df, include_Q, include_RewardRate):
     df = df.copy()
     df["DVabs"] = df.DV.abs()
@@ -80,9 +57,7 @@ def extractParams(driftFn, biasFn):
     params.remove("NONDECTIME")
     params.add("NON_DECISION_TIME")
     include_RewardRate = "REWARDRATE" in params
-    include_Q = ("Q_VAL" in params) or \
-                ("Q_VAL_COEF" in params) or \
-                ("Q_VAL_DECAY_RATE" in params)
+    include_Q = "Q_VAL" in params
 
     return params, include_RewardRate, include_Q
 

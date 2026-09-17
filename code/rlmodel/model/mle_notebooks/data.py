@@ -128,14 +128,6 @@ def flatten_mle_results(results: list[MLEModelResult]) -> pd.DataFrame:
         if model_config is not None:
             df["mle_terminal_c"] = float(
                 getattr(model_config, "mle_terminal_c", 0.0))
-            # Asymmetric-LR opt-ins (orthogonal to bias / drift / noise
-            # identity). ``getattr(..., False)`` lets old pickles whose
-            # saved MLEModelConfig predates the fields load cleanly as
-            # symmetric — same backwards-compat as mle_terminal_c above.
-            df["mle_uses_asymmetric_alpha"] = bool(
-                getattr(model_config, "uses_asymmetric_alpha", False))
-            df["mle_uses_asymmetric_beta"] = bool(
-                getattr(model_config, "uses_asymmetric_beta", False))
             # Bound-RewardRate per-trial bound + ``--scale-bound`` opt-in.
             # Same backwards-compat pattern: old pickles whose saved
             # MLEModelConfig predates these fields default to False so the

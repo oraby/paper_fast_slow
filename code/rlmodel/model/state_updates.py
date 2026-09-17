@@ -12,12 +12,6 @@ Each function takes an ``xp`` kwarg defaulted to ``np``. Pass
 ``xp=cupy`` (or any drop-in module) to dispatch all underlying ops on
 that backend; broadcasting follows NumPy semantics so the same call
 sites handle scalar, 1-D, and (n_candidates, n_sessions) inputs.
-
-Asymmetric-rate contract (see ``update_q_values`` / ``update_reward_rate``):
-``alpha_unrewarded=None`` (or omitted) means "use the symmetric
-``alpha``". Sentinels like ``np.nan`` are NOT accepted — callers in the
-Chisqr path now pass ``None`` for frozen-out params (see
-``fit.py:_makeOneRunWrapper``).
 """
 from dataclasses import dataclass
 
@@ -55,22 +49,19 @@ def compute_q_value(q_left, q_right, group_every=0, *, xp=np):
 
 
 def update_q_values(q_left, q_right, observed_choice_left, observed_reward, alpha,
-                    alpha_unrewarded=None, *, xp=np):
+                    *, xp=np):
     """Update only the chosen side; no-choice trials leave both Q values unchanged.
 
-    ``alpha_unrewarded=None`` (or omitted) means "use ``alpha``" — the
-    symmetric/legacy single-rate behavior. Any other value enables the
-    asymmetric branch: when reward == 0 or there's no choice, the
-    unrewarded rate is used; otherwise the rewarded ``alpha`` fires.
+    Pass ``xp=cupy`` for the GPU population path; broadcasting follows NumPy
+    semantics, so ``alpha[:, None]`` against ``(n_candidates, n_sessions)``
+    Q-state works the same way.
 
-    No NaN sentinel handling: the Chisqr frozen-param path now passes
-    ``None`` (not ``np.nan``) so this function has exactly one fallback
-    rule. Pass ``xp=cupy`` for the GPU population path; broadcasting
-    follows NumPy semantics, so ``alpha[:, None]`` against
-    ``(n_candidates, n_sessions)`` Q-state works the same way.
+    ``alpha`` is taken to float64 so the update is computed there whatever the
+    Q-state's own dtype (the chisq simulator keeps it in float32). Without
+    that, a plain Python ``alpha`` would leave the arithmetic in float32 and
+    the rounding would drift away from the published fits.
     """
-    if alpha_unrewarded is None:
-        alpha_unrewarded = alpha
+    alpha = xp.asarray(alpha, dtype=float)
     if observed_reward is None:
         observed_reward = 0
     else:
@@ -79,42 +70,35 @@ def update_q_values(q_left, q_right, observed_choice_left, observed_reward, alph
         observed_choice_left = xp.nan
     choice_left = xp.asarray(observed_choice_left, dtype=float)
     no_choice = xp.isnan(choice_left)
-    learning_rate = xp.where(
-        no_choice | (observed_reward == 0),
-        alpha_unrewarded,
-        alpha,
-    )
     new_q_left = xp.where(
         no_choice | (choice_left == 0),
         q_left,
         # Previous trial was a left choice:
-        q_left + learning_rate * (observed_reward - q_left)
+        q_left + alpha * (observed_reward - q_left)
     )
     new_q_right = xp.where(
         no_choice | (choice_left == 1),
         q_right,
         # Previous trial was a right choice:
-        q_right + learning_rate * (observed_reward - q_right)
+        q_right + alpha * (observed_reward - q_right)
     )
     return new_q_left, new_q_right
 
 
-def update_reward_rate(reward_rate, observed_reward, beta, beta_unrewarded=None,
-                       group_every=0, *, xp=np):
-    """``beta_unrewarded=None`` (or omitted) means "use ``beta``".
+def update_reward_rate(reward_rate, observed_reward, beta, group_every=0,
+                       *, xp=np):
+    """Pass ``xp=cupy`` for the GPU population path.
 
-    Mirrors the ``update_q_values`` contract. Pass ``xp=cupy`` for the
-    GPU population path.
+    ``beta`` goes to float64 for the same reason ``alpha`` does in
+    :func:`update_q_values`.
     """
-    if beta_unrewarded is None:
-        beta_unrewarded = beta
+    beta = xp.asarray(beta, dtype=float)
     if observed_reward is None:
         observed_reward = 0
     else:
         observed_reward = xp.nan_to_num(observed_reward, nan=0)
-    learning_rate = xp.where(observed_reward == 0, beta_unrewarded, beta)
     new_reward_rate = reward_rate + \
-                      learning_rate * (observed_reward - reward_rate)
+                      beta * (observed_reward - reward_rate)
     if group_every != 0:
         new_reward_rate = xp.round(new_reward_rate / group_every) * group_every
     return new_reward_rate

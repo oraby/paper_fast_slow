@@ -276,7 +276,22 @@ output against the published SVGs is the first task of fork 5.
 
 ---
 
-## Model code the manuscript does not use
+## Model code the manuscript does not use — **removed** (2026-09-17)
+
+All of it is gone as of commits `67ef1ac` (fix) and the removal that follows it;
+the last working version of each variant is recoverable from `67ef1ac`. The
+survey below is what was there, kept as the record of what was taken out.
+
+Verified against the shipped fits: every one of the 15 `data/RLModel/*.pkl`
+files, for all 22 subjects, gives the **same** χ² loss, the same simulated
+trials and the same MLE likelihood before and after the removal.
+
+One thing the removal nearly changed silently: with the asymmetric rates gone,
+`state_updates.update_q_values` multiplied the float32 Q-state by a plain
+Python `alpha`, so the update was computed in float32 where the removed
+`xp.where(…, alpha_unrewarded, alpha)` had promoted it to float64. The χ² loss
+was unchanged but the simulated Q trajectories differed in the last bits;
+`alpha` / `beta` are now cast explicitly, restoring the published behaviour.
 
 The manuscript fits four models (DDM, +QL, +RL, +QL+RL) plus four reward-rate
 channels for Figure S4C. Registered but never used in any published figure:
@@ -319,6 +334,21 @@ are also reached by:
 
 So fork 2 has to decide the fate of the asymmetric-learning-rate experiment at
 the same time; the two are entangled through the noise function.
+
+**Decided (2026-09-17): both go.** The experiment was first made to work —
+three defects meant several of these variants could not be fitted under χ² at
+all (see `67ef1ac`) — and then deleted with everything else, so the recoverable
+version in git history is a working one. Removing them also took out the
+Decay-Q-only compute paths further down: the factored time-varying drift in
+`mle.py` / `mle_batch.py`, and the `_asymQ` / `_asymRR` / `_asymQRR` filename
+suffix. The generic first-passage solver in `model/diffusion/` keeps its
+time-varying backend — it is a standalone numerical tool with its own
+equivalence tests, not a model variant.
+
+Two deliberate leftovers: `FitFileId.model_key` still ends in `|sym`, because
+the metrics caches under `data/RLModel/metrics/` are keyed on those strings;
+and `fitio` refuses, rather than silently mis-reads, a fit whose saved config
+has `uses_asymmetric_alpha/beta` set (no such fit exists on disk).
 
 **Fit artifacts on disk vs. figures.** `data/RLModel/` holds 12 χ² fits and
 3 MLE fits (pure MLE, joint w_χ²=0.1, joint w_χ²=0.5). Figure 2G uses four χ²

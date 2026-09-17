@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
 
 import numpy as np
 
@@ -52,126 +51,6 @@ class _BatchedSolverResult:
     terminal_no_decision_mass_xp: object
     valid_idx: np.ndarray          # (b,) numpy indices into the full batch
     metadata: dict
-
-
-@dataclass
-class TimeVaryingMuFactors:
-    """Factorized time-varying mu — avoids the ``(n_trials, n_t)`` materialization.
-
-    For Decay-Q drift / Decaying-Q-Val noise variants, ``mu[i, t]`` is a sum
-    of:
-
-    - a constant-in-t per-trial baseline  ``base_mu[i]``
-    - (optional) a drift contribution    ``q_drift_coef[i] * decay_form[c(i), t]``
-    - (optional) a noise contribution    ``sigma[i] * sign(q_rel[i]) *
-                                          max(|q_rel[i]| * q_coef[c(i)] -
-                                              log_decay[c(i), t], 0) / dt``
-
-    where ``c(i)`` is the candidate that owns trial ``i``. Each per-time term
-    factors into a per-trial scalar times a per-candidate ``(n_t,)`` shape,
-    so the (n_trials, n_t) tensor never needs to exist — instead the solver
-    computes ``mu_t`` on the fly each timestep from ``(n_trials,)`` and
-    ``(n_candidates, n_t)`` arrays.
-
-    Memory for a typical Decay-Q fit (S = 60, N ≈ 5000, n_t = 3000):
-
-    - dense ``(b, n_t)`` mu tensor: ~7 GB on GPU
-    - this factored form: ~``2 * b * 8 + 2 * S * n_t * 8`` ≈ 25 MB
-
-    See O6 in ``mle_optimization_plan.md``.
-    """
-    n_trials: int
-    n_t: int
-    dt: float
-    # Per-trial constants (host arrays; solver indexes by valid_idx, then pushes
-    # the subset to xp).
-    base_mu: np.ndarray                              # (n_trials,) — DRIFT_COEF * DV
-    candidate_id_per_trial: np.ndarray               # (n_trials,) int64
-    # Decay-Q drift terms (optional pair)
-    q_drift_coef_per_trial: Optional[np.ndarray] = None  # (n_trials,) — q_for_drift * Q_VAL_COEF
-    decay_form_per_cand: Optional[np.ndarray] = None     # (n_candidates, n_t)
-    # Decaying-Q-Val noise terms (optional triplet)
-    q_abs_x_qcoef_per_trial: Optional[np.ndarray] = None  # (n_trials,) — |q_rel| * Q_VAL_COEF
-    q_sign_per_trial: Optional[np.ndarray] = None         # (n_trials,) — sign(q_rel)
-    sigma_per_trial: Optional[np.ndarray] = None          # (n_trials,) — sigma for noise scaling
-    log_decay_per_cand: Optional[np.ndarray] = None       # (n_candidates, n_t)
-
-    def isfinite_per_trial(self) -> np.ndarray:
-        """(n_trials,) bool mask — finite across all populated factor arrays."""
-        mask = np.isfinite(self.base_mu)
-        for arr in (self.q_drift_coef_per_trial,
-                    self.q_abs_x_qcoef_per_trial,
-                    self.q_sign_per_trial,
-                    self.sigma_per_trial):
-            if arr is not None:
-                mask &= np.isfinite(arr)
-        return mask
-
-    def select_valid(self, valid_idx: np.ndarray) -> "TimeVaryingMuFactors":
-        """Return a new factors object subsetted to the given trial indices.
-
-        The per-candidate ``(n_candidates, n_t)`` shapes are kept intact — they
-        index by ``candidate_id_per_trial`` which is also subsetted here.
-        """
-        def _maybe(arr):
-            return None if arr is None else arr[valid_idx]
-        return TimeVaryingMuFactors(
-            n_trials=int(valid_idx.size),
-            n_t=self.n_t,
-            dt=self.dt,
-            base_mu=self.base_mu[valid_idx],
-            candidate_id_per_trial=self.candidate_id_per_trial[valid_idx],
-            q_drift_coef_per_trial=_maybe(self.q_drift_coef_per_trial),
-            decay_form_per_cand=self.decay_form_per_cand,
-            q_abs_x_qcoef_per_trial=_maybe(self.q_abs_x_qcoef_per_trial),
-            q_sign_per_trial=_maybe(self.q_sign_per_trial),
-            sigma_per_trial=_maybe(self.sigma_per_trial),
-            log_decay_per_cand=self.log_decay_per_cand,
-        )
-
-
-class _SolverMuFactorsXP:
-    """Backend-resident mirror of ``TimeVaryingMuFactors`` for inside ``solve``.
-
-    Pushes the per-trial factors and the per-candidate decay shapes to ``xp``
-    once at solver setup. Per timestep, ``mu_t(t_idx)`` computes a ``(b,)``
-    drift vector entirely on-device via column-gather from the per-candidate
-    shapes plus per-trial scalars. No (b, n_t) tensor materialized.
-    """
-
-    def __init__(self, factors: TimeVaryingMuFactors, xp):
-        self.xp = xp
-        self.dt = float(factors.dt)
-        self.base_mu = xp.asarray(factors.base_mu)
-        self.candidate_id = xp.asarray(factors.candidate_id_per_trial)
-        self.q_drift_coef = (None if factors.q_drift_coef_per_trial is None
-                             else xp.asarray(factors.q_drift_coef_per_trial))
-        self.decay_form = (None if factors.decay_form_per_cand is None
-                           else xp.asarray(factors.decay_form_per_cand))
-        self.q_abs_x_qcoef = (None if factors.q_abs_x_qcoef_per_trial is None
-                              else xp.asarray(factors.q_abs_x_qcoef_per_trial))
-        self.q_sign = (None if factors.q_sign_per_trial is None
-                       else xp.asarray(factors.q_sign_per_trial))
-        self.sigma = (None if factors.sigma_per_trial is None
-                      else xp.asarray(factors.sigma_per_trial))
-        self.log_decay = (None if factors.log_decay_per_cand is None
-                          else xp.asarray(factors.log_decay_per_cand))
-
-    def mu_t(self, t_idx: int):
-        """Return ``(b,)`` mu at timestep ``t_idx`` on ``xp``."""
-        xp = self.xp
-        result = self.base_mu
-        if self.q_drift_coef is not None and self.decay_form is not None:
-            # decay_form[:, t_idx] is (n_candidates,); gather to per-trial.
-            decay_t = self.decay_form[:, t_idx][self.candidate_id]
-            result = result + self.q_drift_coef * decay_t
-        if (self.q_abs_x_qcoef is not None and self.log_decay is not None
-                and self.q_sign is not None and self.sigma is not None):
-            log_decay_t = self.log_decay[:, t_idx][self.candidate_id]
-            decayed = xp.maximum(self.q_abs_x_qcoef - log_decay_t, 0.0)
-            signed = xp.where(self.q_sign < 0, -decayed, decayed)
-            result = result + self.sigma * signed / self.dt
-        return result
 
 
 class BatchedDiffusionSolver:
@@ -240,26 +119,10 @@ class BatchedDiffusionSolver:
             raise ValueError(f"n_x={n_x} (need at least 2 bins); decrease dx")
         self.ensure_shape(float(bound), float(dx), n_x)
 
-        # O6: detect the factorized time-varying mu form. When present, we
-        # never materialize the (n_trials, n_t) mu tensor; `mu_t` is computed
-        # on the fly per timestep from per-trial scalars and per-candidate
-        # (n_t,) decay shapes. The (b, n_t) GPU residency was the dominant
-        # memory cost for Decay-Q population fits (~7 GB for S=60, N=5000).
-        mu_is_factored = isinstance(mu, TimeVaryingMuFactors)
-        if mu_is_factored:
-            if mu.n_trials != n_trials or mu.n_t != n_t:
-                raise ValueError(
-                    f"TimeVaryingMuFactors shape ({mu.n_trials}, {mu.n_t}) "
-                    f"!= solver shape ({n_trials}, {n_t})")
-            mu_is_constant = False
-            mu_cpu = None  # not used on factored path
-            finite_mu = mu.isfinite_per_trial()
-        else:
-            # O4: keep mu in natural shape. For constant-mu (1-D), this avoids
-            # the old (b, n_t) expansion and the cupy → numpy transfer of that
-            # tensor.
-            mu_cpu, mu_is_constant = _prepare_mu(mu, n_trials, n_t)
-            finite_mu = _mu_isfinite_per_trial(mu_cpu, mu_is_constant)
+        # O4: mu is one drift per trial, (n_trials,); it is never expanded
+        # to (b, n_t).
+        mu_cpu = _prepare_mu(mu, n_trials)
+        finite_mu = np.isfinite(mu_cpu)
         valid_solver = (
             np.asarray(valid_for_loss, dtype=bool)
             & np.isfinite(z)
@@ -280,8 +143,7 @@ class BatchedDiffusionSolver:
             "n_x": int(n_x),
             "n_t": int(n_t),
             "backend": self.xp.__name__,
-            "mu_is_constant": bool(mu_is_constant),
-            "mu_is_factored": bool(mu_is_factored),
+            "mu_is_constant": True,
         }
         if b == 0:
             return _BatchedSolverResult(
@@ -304,17 +166,7 @@ class BatchedDiffusionSolver:
         p[self.xp.arange(b), self.xp.asarray(z_idx)] = 1.0
         sigma_valid = np.asarray(sigma[valid_idx], dtype=float)
         sigma_valid_xp = self.xp.asarray(sigma_valid)
-        # Constant-mu: (b,) view; never expanded to (b, n_t). Time-varying:
-        # (b, n_t) — the whole matrix lives on xp so the per-timestep slice
-        # `mu_valid_xp[:, t]` is a zero-copy view feeding the batched
-        # transition_terms (no per-step CPU→xp transfer). Factored mu
-        # (O6) skips this entirely — `mu_t` is materialized on demand.
-        if mu_is_factored:
-            mu_valid_xp = None
-        else:
-            assert mu_cpu is not None  # narrow type for pyright
-            mu_valid = mu_cpu[valid_idx]                # (b,) or (b, n_t)
-            mu_valid_xp = self.xp.asarray(mu_valid)
+        mu_valid_xp = self.xp.asarray(mu_cpu[valid_idx])   # (b,)
 
         # O1: per-valid-trial decision-time index on xp. Sentinel value -1
         # (or anything outside [0, n_t-1]) means "skip the gather for this
@@ -333,93 +185,63 @@ class BatchedDiffusionSolver:
         lower_at_decision = self.xp.zeros(b, dtype=float)
         upper_prob_valid = self.xp.zeros(b, dtype=float)
         lower_prob_valid = self.xp.zeros(b, dtype=float)
-        bucket_count = 0
 
-        # O2: for constant-mu the bucket structure (which trials share (mu, σ))
-        # is identical at every timestep — compute it ONCE before the loop and
-        # reuse the cached `local_xp` index arrays. For time-varying mu we
-        # fall back to per-timestep bucketing (trajectory-based caching is a
-        # candidate for a later pass once O6's factorization is in place).
-        cached_buckets = None
-        constant_bucket_total = 0
-        kernel_cache_count = 0
-        kernel_cache_hits = 0
-        per_trial_mass_above = None
-        per_trial_mass_below = None
-        per_trial_kernel_fft = None
-        p_pad_buffer = None
-        factors_xp: Optional[_SolverMuFactorsXP] = None
-        if mu_is_constant:
-            cached_buckets = self._constant_mu_buckets(
-                mu_valid_xp, sigma_valid_xp)
+        # O2: the bucket structure (which trials share (mu, σ)) is identical
+        # at every timestep — compute it ONCE before the loop and reuse the
+        # cached `local_xp` index arrays. b > 0 here, so there is at least one
+        # bucket.
+        cached_buckets = self._constant_mu_buckets(
+            mu_valid_xp, sigma_valid_xp)
 
-            # O8: batch the per-bucket transition + kernel-FFT setup. The old
-            # per-bucket Python loop did 6 CuPy dispatches × n_buckets just to
-            # populate per-bucket mass/kernel-FFT — for NoiseGain-RewardRate
-            # with ~8400 buckets that was ~50k setup-time dispatches per
-            # evaluation. Now we compute the whole (n_buckets, ...) batch in
-            # ~7 dispatches total, then gather to (b, ...) per-trial exactly
-            # as O7 needs.
-            if len(cached_buckets) > 0:
-                # (n_buckets,) scalars → xp arrays. The Python list
-                # comprehension is unavoidable here (host-side dict access),
-                # but it runs once per fit on the small bucket table, not in
-                # the hot loop.
-                mu_per_bucket = self.xp.asarray(
-                    [bk["mu"] for bk in cached_buckets], dtype=float)
-                sigma_per_bucket = self.xp.asarray(
-                    [bk["sigma"] for bk in cached_buckets], dtype=float)
+        # O8: batch the per-bucket transition + kernel-FFT setup. The old
+        # per-bucket Python loop did 6 CuPy dispatches × n_buckets just to
+        # populate per-bucket mass/kernel-FFT — for NoiseGain-RewardRate
+        # with ~8400 buckets that was ~50k setup-time dispatches per
+        # evaluation. Now we compute the whole (n_buckets, ...) batch in
+        # ~7 dispatches total, then gather to (b, ...) per-trial exactly
+        # as O7 needs.
+        # (n_buckets,) scalars → xp arrays. The Python list
+        # comprehension is unavoidable here (host-side dict access),
+        # but it runs once per fit on the small bucket table, not in
+        # the hot loop.
+        mu_per_bucket = self.xp.asarray(
+            [bk["mu"] for bk in cached_buckets], dtype=float)
+        sigma_per_bucket = self.xp.asarray(
+            [bk["sigma"] for bk in cached_buckets], dtype=float)
 
-                # Batched transition_terms: one set of CDF dispatches across
-                # all buckets. Returns (n_buckets, 2n-1), (n_buckets, n),
-                # (n_buckets, n).
-                kernels_b, mass_above_b, mass_below_b = (
-                    self._transition_terms_batched(
-                        mu_per_bucket, sigma_per_bucket, bound, dt, dx))
-                # Batched kernel FFT: one rfft on (n_buckets, fft_n).
-                kernel_ffts_b = self._kernel_fft_batched(kernels_b, n_x)
-                del kernels_b  # no longer needed; only the FFT survives
+        # Batched transition_terms: one set of CDF dispatches across
+        # all buckets. Returns (n_buckets, 2n-1), (n_buckets, n),
+        # (n_buckets, n).
+        kernels_b, mass_above_b, mass_below_b = (
+            self._transition_terms_batched(
+                mu_per_bucket, sigma_per_bucket, bound, dt, dx))
+        # Batched kernel FFT: one rfft on (n_buckets, fft_n).
+        kernel_ffts_b = self._kernel_fft_batched(kernels_b, n_x)
+        del kernels_b  # no longer needed; only the FFT survives
 
-                # Scatter bucket ids to per-trial. Still N Python iterations,
-                # but each is just an int-array slice assignment; trivial vs
-                # the old per-bucket transition-term loop.
-                bucket_id_per_trial = self.xp.zeros(b, dtype=self.xp.int64)
-                for bid, bucket in enumerate(cached_buckets):
-                    bucket_id_per_trial[bucket["local_xp"]] = bid
+        # Scatter bucket ids to per-trial. Still N Python iterations,
+        # but each is just an int-array slice assignment; trivial vs
+        # the old per-bucket transition-term loop.
+        bucket_id_per_trial = self.xp.zeros(b, dtype=self.xp.int64)
+        for bid, bucket in enumerate(cached_buckets):
+            bucket_id_per_trial[bucket["local_xp"]] = bid
 
-                # O7 per-trial gather (same as before, just no intermediate
-                # per-bucket dict storage).
-                per_trial_mass_above = mass_above_b[bucket_id_per_trial]
-                per_trial_mass_below = mass_below_b[bucket_id_per_trial]
-                per_trial_kernel_fft = kernel_ffts_b[bucket_id_per_trial]
-                del mass_above_b, mass_below_b, kernel_ffts_b
+        # O7 per-trial gather (same as before, just no intermediate
+        # per-bucket dict storage).
+        per_trial_mass_above = mass_above_b[bucket_id_per_trial]
+        per_trial_mass_below = mass_below_b[bucket_id_per_trial]
+        per_trial_kernel_fft = kernel_ffts_b[bucket_id_per_trial]
+        del mass_above_b, mass_below_b, kernel_ffts_b
 
-                # Reuse one FFT padding buffer across timesteps; only the
-                # leading n_x columns are touched per step, so the tail stays
-                # at the initial zeros.
-                p_pad_buffer = self.xp.zeros((b, self.fft_n), dtype=float)
+        # Reuse one FFT padding buffer across timesteps; only the
+        # leading n_x columns are touched per step, so the tail stays
+        # at the initial zeros.
+        p_pad_buffer = self.xp.zeros((b, self.fft_n), dtype=float)
 
-            # One bucket-count tally for the whole solve (instead of × n_t).
-            constant_bucket_total = len(cached_buckets) * n_t
-            kernel_cache_count = len(cached_buckets)
-            kernel_cache_hits = len(cached_buckets) * n_t
-        else:
-            # Time-varying mu setup (O7 extension): mu_valid_xp is already on
-            # xp from the unconditional push above; we just need a reusable
-            # FFT padding buffer. No bucketing — every trial gets its own
-            # kernel/mass row computed per timestep via the batched transition
-            # terms below.
-            p_pad_buffer = self.xp.zeros((b, self.fft_n), dtype=float)
-            if mu_is_factored:
-                # O6 factored time-varying: push per-trial scalars and the
-                # per-candidate (n_t,) decay shapes to xp ONCE. The (b, n_t)
-                # mu tensor never gets built; the timestep loop calls
-                # `factors_xp.mu_t(t_idx)` to get a (b,) drift vector each
-                # step from per-trial scalars + column-gather from the
-                # per-candidate shapes.
-                assert isinstance(mu, TimeVaryingMuFactors)  # narrow for pyright
-                factors_xp = _SolverMuFactorsXP(
-                    mu.select_valid(valid_idx), self.xp)
+        # One bucket-count tally for the whole solve (instead of × n_t).
+        constant_bucket_total = len(cached_buckets) * n_t
+        kernel_cache_count = len(cached_buckets)
+        kernel_cache_hits = len(cached_buckets) * n_t
 
         step_iter = _progress_iter(
             range(n_t),
@@ -428,78 +250,28 @@ class BatchedDiffusionSolver:
             desc=self.progress_desc or "MLE diffusion",
         )
         for t_idx in step_iter:
-            if (mu_is_constant
-                    and per_trial_mass_above is not None
-                    and p_pad_buffer is not None):
-                # O7 vectorized path. Six batched cupy/numpy ops per step,
-                # independent of bucket count.
-                upper_abs_t = (p * per_trial_mass_above).sum(axis=1)
-                lower_abs_t = (p * per_trial_mass_below).sum(axis=1)
-                upper_prob_valid = upper_prob_valid + upper_abs_t
-                lower_prob_valid = lower_prob_valid + lower_abs_t
-                hits = decision_idx_xp == t_idx
-                upper_at_decision = self.xp.where(
-                    hits, upper_abs_t / dt, upper_at_decision)
-                lower_at_decision = self.xp.where(
-                    hits, lower_abs_t / dt, lower_at_decision)
-                # Batched FFT convolution: per-trial kernel applied in one go.
-                # ``p_pad_buffer`` is reused across timesteps; only the leading
-                # n_x columns change per step.
-                p_pad_buffer[:, :n_x] = p
-                full = self.xp.fft.irfft(
-                    self.xp.fft.rfft(p_pad_buffer, axis=1)
-                    * per_trial_kernel_fft,
-                    n=self.fft_n,
-                    axis=1,
-                )
-                p = full[:, n_x - 1: 2 * n_x - 1]
-            else:
-                # Time-varying mu (Decay-Q drift / Decaying-Q-Val noise):
-                # vectorize across all valid trials per timestep using the
-                # batched transition_terms. No bucketing — for population
-                # fits the trajectories are usually unique per (cand, trial)
-                # so bucketing wasn't compressing anything.
-                assert p_pad_buffer is not None, "time-varying setup missing"
-                # O6 vs O7-tv: route the per-timestep mu_t source.
-                if factors_xp is not None:
-                    # Factored: materialize (b,) on the fly from per-trial
-                    # scalars + per-candidate column gather. No (b, n_t)
-                    # tensor anywhere in this branch.
-                    mu_t_xp = factors_xp.mu_t(t_idx)
-                else:
-                    assert mu_valid_xp is not None, (
-                        "time-varying branch reached without mu_valid_xp bound")
-                    mu_t_xp = mu_valid_xp[:, t_idx]           # (b,) xp view
-                kernel_b, mass_above_b, mass_below_b = (
-                    self._transition_terms_batched(
-                        mu_t_xp, sigma_valid_xp, bound, dt, dx))
-                # kernel_b: (b, 2n-1)
-                # mass_above_b, mass_below_b: (b, n)
-                upper_abs_t = (p * mass_above_b).sum(axis=1)   # (b,)
-                lower_abs_t = (p * mass_below_b).sum(axis=1)   # (b,)
-                upper_prob_valid = upper_prob_valid + upper_abs_t
-                lower_prob_valid = lower_prob_valid + lower_abs_t
-                hits = decision_idx_xp == t_idx
-                upper_at_decision = self.xp.where(
-                    hits, upper_abs_t / dt, upper_at_decision)
-                lower_at_decision = self.xp.where(
-                    hits, lower_abs_t / dt, lower_at_decision)
-                # Build per-trial kernel-FFT freshly each timestep (kernel
-                # changes with mu_t). One batched rfft on (b, fft_n).
-                k_pad = self.xp.zeros((b, self.fft_n), dtype=float)
-                k_pad[:, :2 * n_x - 1] = kernel_b
-                kernel_fft_b = self.xp.fft.rfft(k_pad, axis=1)
-                p_pad_buffer[:, :n_x] = p
-                full = self.xp.fft.irfft(
-                    self.xp.fft.rfft(p_pad_buffer, axis=1) * kernel_fft_b,
-                    n=self.fft_n,
-                    axis=1,
-                )
-                p = full[:, n_x - 1: 2 * n_x - 1]
-                bucket_count += 1
-
-        if cached_buckets is not None:
-            bucket_count = constant_bucket_total
+            # O7 vectorized path. Six batched cupy/numpy ops per step,
+            # independent of bucket count.
+            upper_abs_t = (p * per_trial_mass_above).sum(axis=1)
+            lower_abs_t = (p * per_trial_mass_below).sum(axis=1)
+            upper_prob_valid = upper_prob_valid + upper_abs_t
+            lower_prob_valid = lower_prob_valid + lower_abs_t
+            hits = decision_idx_xp == t_idx
+            upper_at_decision = self.xp.where(
+                hits, upper_abs_t / dt, upper_at_decision)
+            lower_at_decision = self.xp.where(
+                hits, lower_abs_t / dt, lower_at_decision)
+            # Batched FFT convolution: per-trial kernel applied in one go.
+            # ``p_pad_buffer`` is reused across timesteps; only the leading
+            # n_x columns change per step.
+            p_pad_buffer[:, :n_x] = p
+            full = self.xp.fft.irfft(
+                self.xp.fft.rfft(p_pad_buffer, axis=1)
+                * per_trial_kernel_fft,
+                n=self.fft_n,
+                axis=1,
+            )
+            p = full[:, n_x - 1: 2 * n_x - 1]
 
         survival_valid = self.xp.sum(p, axis=1)
         # Terminal-C redistribution: partition residual interior mass into
@@ -519,7 +291,7 @@ class BatchedDiffusionSolver:
         # (b,) GPU->CPU copy per batch. For xp=numpy this is a no-op
         # pass-through.
         meta = dict(base_meta)
-        meta["bucket_count"] = int(bucket_count)
+        meta["bucket_count"] = int(constant_bucket_total)
         meta["kernel_cache_count"] = int(kernel_cache_count)
         meta["kernel_cache_hits"] = int(kernel_cache_hits)
         meta["terminal_c"] = float(terminal_c)
@@ -542,9 +314,8 @@ class BatchedDiffusionSolver:
 
         ``mu_t_xp`` and ``sigma_t_xp`` are ``(B,)`` arrays on ``self.xp``;
         returns ``(B, 2n_x-1)`` transition kernels and ``(B, n_x)`` absorbed-
-        mass tensors in a single CuPy dispatch per CDF call. Used by both
-        the constant-mu setup (`B = n_buckets`) and the time-varying hot
-        loop (`B = b`, recomputed every timestep).
+        mass tensors in a single CuPy dispatch per CDF call, for the
+        per-bucket setup (`B = n_buckets`).
         """
         # ensure_shape() ran at the top of solve(), and the solver constructor
         # always receives a normal_cdf when used from production paths. The
@@ -750,17 +521,8 @@ def _evaluate_batch(result, observed_choice_left, no_choice, valid_for_loss, z,
                     offset, solver, terminal_c=MLE_TERMINAL_C.Default,
                     lapse_rate=0.0):
     n_t = int(round(float(tmax) / float(dt)))
-    # O6: factored time-varying mu skips the host-side coerce/expand path —
-    # the solver consumes the factors object directly and computes mu_t on
-    # the fly. For arrays we still go through _prepare_mu (O4) which keeps
-    # constant-mu as (n_trials,) and validates time-varying shape.
-    if isinstance(mu_values, TimeVaryingMuFactors):
-        finite_mu_mask = mu_values.isfinite_per_trial()
-        mu_for_solve = mu_values
-    else:
-        mu_cpu, mu_is_constant = _prepare_mu(mu_values, len(valid_for_loss), n_t)
-        finite_mu_mask = _mu_isfinite_per_trial(mu_cpu, mu_is_constant)
-        mu_for_solve = mu_cpu
+    mu_for_solve = _prepare_mu(mu_values, len(valid_for_loss))
+    finite_mu_mask = np.isfinite(mu_for_solve)
     valid_solver = (
         valid_for_loss
         & np.isfinite(z)
@@ -916,34 +678,15 @@ def _coerce_to_numpy(value):
     return np.asarray(value)
 
 
-def _prepare_mu(mu_values, n_trials, n_t):
-    """Return (mu_cpu, is_constant) without ever expanding (b,) to (b, n_t).
+def _prepare_mu(mu_values, n_trials):
+    """Return mu as a host ``(n_trials,)`` float array — one drift per trial.
 
-    O4: the previous ``_as_mu_matrix`` always returned the 2-D shape — for
-    constant-mu inputs that meant materializing an (n_trials × n_t) float
-    array purely to broadcast the same value per timestep. Now we keep the
-    natural shape and let the solver branch.
+    O4: never expanded to (n_trials, n_t).
     """
     mu_cpu = _coerce_to_numpy(mu_values).astype(float, copy=False)
-    if mu_cpu.ndim == 1:
-        if mu_cpu.shape != (n_trials,):
-            raise ValueError(
-                f"constant mu shape {mu_cpu.shape} != ({n_trials},)")
-        return mu_cpu, True
-    if mu_cpu.ndim == 2:
-        if mu_cpu.shape != (n_trials, n_t):
-            raise ValueError(
-                f"time-varying mu shape {mu_cpu.shape} != ({n_trials}, {n_t})")
-        return mu_cpu, False
-    raise ValueError(
-        f"mu must be 1-D (constant) or 2-D (time-varying); got ndim={mu_cpu.ndim}")
-
-
-def _mu_isfinite_per_trial(mu_cpu, is_constant):
-    """Per-trial isfinite mask. (n_trials,) bool."""
-    if is_constant:
-        return np.isfinite(mu_cpu)
-    return np.all(np.isfinite(mu_cpu), axis=1)
+    if mu_cpu.shape != (n_trials,):
+        raise ValueError(f"mu shape {mu_cpu.shape} != ({n_trials},)")
+    return mu_cpu
 
 
 def _empty_result(n_trials):

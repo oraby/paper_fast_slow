@@ -21,7 +21,7 @@ def first_passage_density(z, mu, sigma, bound, dt, dx, tmax, *,
         Starting point of the accumulator, in (-bound, +bound).
     mu : float | np.ndarray
         Drift. Scalar for constant-drift variants, or 1-D array of length
-        ``tmax / dt`` for time-varying drift (Decay-Q).
+        ``tmax / dt`` for time-varying drift.
     sigma, bound, dt, dx, tmax : float
         DDM and discretization parameters.
     backend : str, default "auto"

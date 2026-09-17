@@ -126,39 +126,6 @@ def test_bound_rewardrate_emits_per_trial_bound_in_latents():
         (2.0 - latents["reward_rate_before"]) * 1.0)  # BOUND_base=1.0 from _params()
 
 
-def test_bound_rewardrate_decay_q_rescale_broadcasts_against_2d_mu():
-    """Regression: ``_evaluate_trial_likelihoods_batched`` rescales
-    ``(mu, sigma, z)`` by ``rescale = BOUND / bound_per_trial`` when
-    ``uses_per_trial_bound`` is True. For Decay-Q drift families, ``mu``
-    is per-(trial, timestep) — shape ``(n_trials, n_t)`` — instead of
-    just ``(n_trials,)``, so the multiplication has to align the
-    per-trial ``rescale`` along the trial axis rather than the time axis.
-    Pre-fix, ``np.asarray(mu) * rescale`` exploded with
-    ``shapes (n_trials, n_t) (n_trials,)`` cannot be broadcast.
-    Hit through the result_payload path which runs Decay-Q drifts
-    through this evaluator at the final eval step.
-    """
-    df = _build_fixture()
-    params = dict(_params())
-    params["Q_VAL_DECAY_RATE"] = 1.0
-    params["Q_VAL_COEF"] = 0.4
-    # Decay-Q drift name → ``uses_decay_q_drift`` per the MLEModelConfig
-    # property, which makes ``_compute_mu_array`` return a 2-D mu.
-    config = MLEModelConfig(
-        drift_fn_str="Bound-RewardRate Decay Q (Offset)",
-        bias_fn_str="None_",
-        noise_fn_str="Normal(0, 1)",
-        include_Q=True,
-        include_RewardRate=True,
-        dt=0.005, t_dur=0.8, dx=0.02,
-        mle_use_batched_likelihood=True,
-        uses_per_trial_bound=True,
-    )
-
-    result = evaluate_neg_loglik(params, df, config)
-    assert np.isfinite(result.neg_loglik)
-
-
 def test_symmetric_path_unaffected_by_bound_rewardrate_flag_off():
     """Old pickles (and symmetric fits going forward) must not change
     behavior. With uses_per_trial_bound=False, the latent compute should
@@ -217,21 +184,17 @@ def test_bound_per_trial_widens_as_reward_rate_falls():
     assert np.all(np.diff(bpt[order]) <= 1e-9)   # ⇒ bound non-increasing
 
 
-def test_bound_rewardrate_decay_q_population_matches_reference():
-    """Decay-Q + Bound-RewardRate: the population (DE) path must apply the
-    per-trial bound scaling (μ /= s_t = 2 - r_t) to the Decay-Q *drift* term,
-    matching the rowwise/batched reference. Pre-fix, the population path rebuilt
-    base_mu_pop / q_drift_coef_pop WITHOUT /s_t, so DE fitting saw a different
-    (much larger) drift than the final eval — a large, systematic divergence.
+def test_bound_rewardrate_population_matches_reference():
+    """Bound-RewardRate: the population (DE) path must apply the per-trial
+    bound scaling (μ /= s_t = 2 - r_t) exactly as the batched reference does,
+    or DE fits a different model than the final eval scores.
     """
     from ..mle import objective_from_population
     df = _build_fixture(n_sessions=2, trials_per_session=15)
     params = dict(_params())
     params["BETA"] = 0.4              # reward rate moves → non-trivial s_t sweep
-    params["Q_VAL_DECAY_RATE"] = 1.0
-    params["Q_VAL_COEF"] = 0.5
     config = MLEModelConfig(
-        drift_fn_str="Bound-RewardRate Decay Q (Offset)",
+        drift_fn_str="Bound-RewardRate",
         bias_fn_str="None_", noise_fn_str="Normal(0, 1)",
         include_Q=True, include_RewardRate=True,
         dt=0.005, t_dur=0.8, dx=0.02,
@@ -240,14 +203,12 @@ def test_bound_rewardrate_decay_q_population_matches_reference():
     )
     ref = evaluate_neg_loglik(params, df, config).neg_loglik
     names = ["DRIFT_COEF", "NOISE_SIGMA", "BOUND", "NON_DECISION_TIME",
-             "ALPHA", "BETA", "BIAS_COEF", "Q_VAL_OFFSET", "LAPSE_RATE",
-             "Q_VAL_DECAY_RATE", "Q_VAL_COEF"]
+             "ALPHA", "BETA", "BIAS_COEF", "Q_VAL_OFFSET", "LAPSE_RATE"]
     cand = np.array([[params[k] for k in names]], dtype=float).T   # (n_params, 1)
     pop = objective_from_population(cand, np.array(names), df, config)
     assert np.isfinite(pop[0]) and np.isfinite(ref)
     # For a single candidate the population path builds the SAME per-trial latents
     # as the batched reference and makes the same solver call, so they agree to
-    # ~machine precision (measured ~1e-12). The pre-fix gap (Decay-Q drift term
-    # missing its /s_t) breaks this by ~0.5 for this config, so a tight tolerance
-    # is what makes this test actually sensitive to the bug.
+    # ~machine precision. A tight tolerance is what makes this sensitive to a
+    # missing /s_t.
     assert abs(pop[0] - ref) < 1e-6, f"population={pop[0]}, reference={ref}"

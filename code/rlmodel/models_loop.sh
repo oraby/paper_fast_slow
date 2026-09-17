@@ -15,10 +15,10 @@
 #
 # To pick which combinations to run, edit the ``combos`` array below.
 # Each entry uses ``|`` as the field separator so values can contain
-# spaces, parentheses, and dashes (e.g. ``RewardRate Decay Q (Offset)``).
+# spaces, parentheses, and dashes (e.g. ``Q-Val (Offset)``).
 # An OPTIONAL fourth ``|``-separated field carries extra CLI args to append
-# for that combo (e.g. ``--asym --scale-bound``) — this lets a single canonical
-# model name pair with multiple asym opt-ins side-by-side.
+# for that combo (e.g. ``--use-drift-rr --scale-bound``) — this lets a single
+# canonical model name pair with several opt-ins side-by-side.
 
 set -uo pipefail
 
@@ -28,9 +28,6 @@ combos=(
     #"Classic|Q-Val (Offset)|Normal(0, 1)|"
     #"RewardRate|None_|Normal(0, 1)|"
     "RewardRate|Q-Val (Offset)|Normal(0, 1)|"
-    # --- Decay-Q ---
-    #"Decay Q (Offset)|None_|Normal(0, 1)|"
-    #"RewardRate Decay Q (Offset)|None_|Normal(0, 1)|"
     # --- reward rate on the DRIFT (--use-drift-rr) ---
     # Overrides the noise / threshold channel: mu *= g(r_t), sigma and bound
     # flat. Resolves to the DriftGain-* drift, so these land in their own
@@ -60,7 +57,7 @@ for combo in "${combos[@]}"; do
     echo "=================================================================="
     echo "[$i/$total] drift='$drift'  bias='$bias'  noise='$noise'  extra='$extra'"
     echo "=================================================================="
-    # Word-split ``extra`` so flags like "--asym-q --asym-rr" become
+    # Word-split ``extra`` so flags like "--use-drift-rr --scale-bound" become
     # two separate argv entries to argparse.
     if "$PY" -m code.rlmodel.model_runner \
         --drift "$drift" \

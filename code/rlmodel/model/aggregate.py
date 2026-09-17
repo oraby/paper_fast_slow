@@ -150,7 +150,7 @@ class EvalSpec:
 
     ``model_key`` / ``column_label`` address a fit in the coordinate space of
     ``compare.discover_fits``: the key is the abstract model
-    (``FitFileId.model_key`` — drift alias + bias + noise + timing + asym) and
+    (``FitFileId.model_key`` — drift alias + bias + noise + timing) and
     the label is the fitting criterion (``compare.classify_column`` —
     ``"Chi²-Noise"``, ``"Chi²-Bound"``, ``"MLE"``, ``"MLE=1, Chi²=0.1"``, …).
 
@@ -1047,12 +1047,11 @@ def safe_filename(name):
 # --------------------------------------------------------------------------
 # Figure presets
 # --------------------------------------------------------------------------
-# The model_key format is ``{drift_alias}|{bias}|{noise}|{t_dur}|{dt}|{asym}``
+# The model_key format is ``{drift_alias}|{bias}|{noise}|{t_dur}|{dt}|sym``
 # (``mle_reeval.FitFileId.model_key``). Everything the paper compares is a
-# symmetric, 4.8s, dt=0.005, Normal(0, 1) fit.
-def model_key(drift_alias, bias, *, noise="Normal(0, 1)", t_dur=4.8, dt=0.005,
-              asym="sym"):
-    return f"{drift_alias}|{bias}|{noise}|{t_dur:g}|{dt:g}|{asym}"
+# 4.8s, dt=0.005, Normal(0, 1) fit.
+def model_key(drift_alias, bias, *, noise="Normal(0, 1)", t_dur=4.8, dt=0.005):
+    return f"{drift_alias}|{bias}|{noise}|{t_dur:g}|{dt:g}|sym"
 
 
 _Q = "Q-Val (Offset)"

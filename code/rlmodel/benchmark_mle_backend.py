@@ -61,8 +61,6 @@ def _params(config):
             "ALPHA": 0.3,
             "BIAS_COEF": 0.5,
             "Q_VAL_OFFSET": 0.0,
-            "Q_VAL_COEF": 0.5,
-            "Q_VAL_DECAY_RATE": 1.0,
         })
     if config.include_RewardRate:
         params["BETA"] = 0.3

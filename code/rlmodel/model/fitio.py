@@ -41,8 +41,8 @@ def _sameCallable(a, b):
     """Whether two registry candidates are the same model component.
 
     Identity is not enough. Several registry entries are ``functools.partial``
-    objects built once at import (``DRIFT_FN_DICT``'s ``Decay Q`` and
-    ``DriftGain`` families), and unpickling one from an existing fit constructs
+    objects built once at import (``DRIFT_FN_DICT``'s ``DriftGain``
+    family), and unpickling one from an existing fit constructs
     a *new* partial -- so ``is`` fails and ``==`` is false for partials, which
     do not define equality. Compare what actually identifies them: the wrapped
     function plus the bound arguments.
@@ -93,6 +93,27 @@ def toStorable(payload):
     return out
 
 
+#: ``MLEModelConfig`` fields of the removed asymmetric-learning-rate
+#: experiment. Every shipped fit stores them as False; see
+#: ``_withoutRemovedConfigFields``.
+_REMOVED_CONFIG_FIELDS = ("uses_asymmetric_alpha", "uses_asymmetric_beta")
+
+
+def _withoutRemovedConfigFields(config):
+    """A saved config dict minus the fields ``MLEModelConfig`` no longer has.
+
+    They are dropped only while False. A fit that actually used separate
+    unrewarded learning rates cannot be evaluated by this code, so it is
+    refused rather than silently read as a symmetric one.
+    """
+    used = [name for name in _REMOVED_CONFIG_FIELDS if config.get(name)]
+    if used:
+        raise ValueError(
+            f"This fit was run with {used}, the asymmetric-learning-rate "
+            f"experiment, which has been removed from the model code.")
+    return {k: v for k, v in config.items() if k not in _REMOVED_CONFIG_FIELDS}
+
+
 def fromStorable(payload):
     """Inverse of :func:`toStorable` -- rebuild the typed objects.
 
@@ -116,7 +137,7 @@ def fromStorable(payload):
     config = out.get("model_config")
     if isinstance(config, dict):
         from .mle import MLEModelConfig
-        out["model_config"] = MLEModelConfig(**config)
+        out["model_config"] = MLEModelConfig(**_withoutRemovedConfigFields(config))
 
     # The 2026-08-31 portability rewrite turned every OptimizeResult into a
     # plain dict, and every reader asks for ``OptimRes.x`` / ``.fun``. An

@@ -10,7 +10,7 @@ it loads data, sets config globals, and calls :func:`interactive_viewer`
 Model identity vs. columns
 --------------------------
 A "model" (one dropdown entry) is the abstract model — user-facing drift
-*alias* + bias + noise + timing + asym variant (see
+*alias* + bias + noise + timing (see
 ``mle_reeval.FitFileId.model_key``). ``_scaledB`` and the joint weight suffix
 are *column* axes, not identity, which is what lets Chi²-Noise
 (``NoiseGain-RewardRate``) and Chi²-Bound (``Bound-RewardRate`` + ``_scaledB``)
@@ -203,7 +203,7 @@ def _routed_kwargs(params, biasFn, driftFn, noiseFn):
     """Route an UPPERCASE params dict into the bias/drift/noise-fn kwargs and
     the top-level ``runAndPlot`` kwargs, mirroring ``visualize.updateGUI``.
 
-    The fittable-scalar fn params are uppercase (``Q_VAL_DECAY_RATE`` …), so
+    The fittable-scalar fn params are uppercase (``BIAS_COEF`` …), so
     membership against the fns' float-kwarg lists routes them directly.
     ``DRIFT_COEF`` / ``NOISE_SIGMA`` are COMMON_ARGS (excluded from those
     lists) → they land in the top-level kwargs. The frozen scale axis absent

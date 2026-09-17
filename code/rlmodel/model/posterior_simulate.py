@@ -171,7 +171,7 @@ def _split_kwargs(fitted_params, driftFn, biasFn, noiseFn):
 
     # _fnColsAndKargs returns lowercase param names from the function
     # signature; but the chisq-path drift/bias/noise functions declare their
-    # extra params in UPPERCASE already (e.g. Q_VAL_DECAY_RATE). The lookup
+    # extra params in UPPERCASE already (e.g. Q_VAL_OFFSET). The lookup
     # below is case-tolerant.
     def _grab(extra_names):
         out = {}
@@ -313,8 +313,7 @@ def _simulate_observed_history(df, fitted_params, model_config, *,
             )
             z = _compute_z(state, fitted_params, model_config, q_rel_before)
             mu = _compute_mu(
-                float(trial["DV"]), fitted_params, model_config,
-                q_rel_before, sigma,
+                float(trial["DV"]), fitted_params,
                 drift_scale=drift_scale_for_config(
                     state.reward_rate, model_config))
             bound = _param(fitted_params, "BOUND", 1.0)

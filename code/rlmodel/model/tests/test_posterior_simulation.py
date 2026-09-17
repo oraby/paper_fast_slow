@@ -48,14 +48,9 @@ def _common_params():
         "BOUND": 1.0,
         "NON_DECISION_TIME": 0.1,
         "BIAS_COEF": 0.5,
-        "BIAS_FIXED": 0.0,
         "ALPHA": 0.3,
         "BETA": 0.3,
         "Q_VAL_OFFSET": 0.0,
-        "Q_VAL_COEF": 5.0,
-        "Q_VAL_DECAY_RATE": 1.0,
-        "BIAS_MU": 0.0,
-        "BIAS_SIGMA": 0.1,
     }
 
 
@@ -64,9 +59,9 @@ SIM_COLS = ["SimRT", "SimStartingPoint", "SimChoiceCorrect", "SimChoiceLeft"]
 
 @pytest.mark.parametrize("drift,bias,include_Q,include_RR", [
     ("Classic", "None_", False, False),
-    ("Classic", "Q-Val", True, False),
+    ("Classic", "Q-Val (Offset)", True, False),
     ("NoiseGain-RewardRate", "None_", False, True),
-    ("NoiseGain-RewardRate", "Q-Val", True, True),
+    ("NoiseGain-RewardRate", "Q-Val (Offset)", True, True),
 ])
 def test_sim_from_fitted_params_chisq_compatible_columns(
         drift, bias, include_Q, include_RR):
@@ -116,7 +111,7 @@ def test_observed_history_mode_runs_and_has_sim_columns():
     df = initDF(_make_synthetic_df(n_trials=6),
                 include_Q=True, include_RewardRate=False)
     model_config = MLEModelConfig(
-        drift_fn_str="Classic", bias_fn_str="Q-Val",
+        drift_fn_str="Classic", bias_fn_str="Q-Val (Offset)",
         noise_fn_str="Normal(0, 1)",
         include_Q=True, include_RewardRate=False,
         dt=0.01, t_dur=1.0, dx=0.05,

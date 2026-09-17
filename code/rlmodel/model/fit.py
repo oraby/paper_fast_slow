@@ -80,15 +80,11 @@ def _candidate_to_makeOneRun_kwargs(x, x_params_names,
     include_RewardRate = logicFn_kwargs["include_RewardRate"]
     # Frozen-rate sentinels: ALPHA / BETA stay NaN (makeOneRun asserts
     # ``~np.isnan(ALPHA) if include_Q`` — NaN here means "Q-learning is
-    # off, this is a placeholder"). The asymmetric *_UNREWARDED params
-    # propagate as None, which state_updates interprets as "fall back to
-    # the symmetric rate" — no sentinel value special-case.
+    # off, this is a placeholder").
     if not include_Q:
         logicFn_kwargs["ALPHA"] = np.nan
     if not include_RewardRate:
         logicFn_kwargs["BETA"] = np.nan
-    logicFn_kwargs.setdefault("ALPHA_UNREWARDED", None)
-    logicFn_kwargs.setdefault("BETA_UNREWARDED", None)
     return {**logicFn_kwargs, "driftFn_kwargs": driftFn_kwargs,
             "noiseFn_kwargs": noiseFn_kwargs, "biasFn_kwargs": biasFn_kwargs}
 
@@ -548,36 +544,24 @@ def _weight_suffix(mle_mle_weight=1.0, mle_chi2_weight=0.0):
 
 def evolveFP(drift_fn_str, bias_fn_str, noise_fn_str, t_dur, dt,
             is_loss_no_dir, fit_mode,
-            uses_asym_q=False, uses_asym_rr=False,
             uses_scaled_bound=False,
             mle_mle_weight=1.0, mle_chi2_weight=0.0):
     """Build the saved-fit pickle path.
 
-    The optional ``_asymQ`` / ``_asymRR`` / ``_asymQRR`` suffix carries
-    the asymmetric-LR opt-ins orthogonally to the bias / drift / noise
-    model identity. ``_scaledB`` further marks fits where BOUND is the
-    fitted axis (NOISE_SIGMA frozen) — see ``--scale-bound``. A trailing
-    ``_mleW{m}_chi2W{c}`` marks joint MLE+Chi² fits so weight variants
-    don't overwrite each other (and the pure-MLE/chisq references
-    survive). Suffix ordering: asym, then scaledB, then weights.
-    Symmetric / fixed-bound / pure-MLE / chisq fits keep the original
-    filename format unchanged.
+    ``_scaledB`` marks fits where BOUND is the fitted axis (NOISE_SIGMA
+    frozen) — see ``--scale-bound``. A trailing ``_mleW{m}_chi2W{c}`` marks
+    joint MLE+Chi² fits so weight variants don't overwrite each other (and
+    the pure-MLE/chisq references survive). Suffix ordering: scaledB, then
+    weights. Fixed-bound / pure-MLE / chisq fits keep the original filename
+    format unchanged.
     """
     loss_no_dir_str = "" if not is_loss_no_dir else "_loss_no_dir"
-    if uses_asym_q and uses_asym_rr:
-        asym_suffix = "_asymQRR"
-    elif uses_asym_q:
-        asym_suffix = "_asymQ"
-    elif uses_asym_rr:
-        asym_suffix = "_asymRR"
-    else:
-        asym_suffix = ""
     scaled_bound_suffix = "_scaledB" if uses_scaled_bound else ""
     weight_suffix = _weight_suffix(mle_mle_weight, mle_chi2_weight)
     main_str = (f"data/RLModel/{fit_mode}_{drift_fn_str}_"
                 f"bias{bias_fn_str}_{noise_fn_str}"
                 f"{loss_no_dir_str}_{t_dur}s_dt{dt}"
-                f"{asym_suffix}{scaled_bound_suffix}{weight_suffix}.pkl")
+                f"{scaled_bound_suffix}{weight_suffix}.pkl")
     return pathlib.Path(main_str)
 
 
@@ -670,7 +654,6 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
                 mle_choice_norm="conditional",
                 mle_mle_weight=1.0, mle_chi2_weight=0.0,
                 bias_fn_str=None, drift_fn_str=None,
-                uses_asym_q=False, uses_asym_rr=False,
                 scale_bound=False):
     global _pool
     if fit_mode != "chisq":
@@ -785,26 +768,15 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
     # for fix_param_name, fix_param_val in zip(fixed_params_names, fixed_params_vals):
     #     print(fix_param_name, "=", fix_param_val)
 
-    # Asymmetric learning-rate gating: orthogonal to model identity.
-    # The two explicit ``uses_asym_*`` flags (set by the CLI / GUI /
-    # caller) are the only source. They're combined with the
-    # auto-detected ``include_Q`` / ``include_RewardRate`` so a flag
-    # against an incompatible model surfaces as a no-op here — the
-    # CLI pre-flight in model_runner.py is the friendly error layer.
-    include_Q_asym = include_Q and uses_asym_q
-    include_RewardRate_asym = include_RewardRate and uses_asym_rr
-
     # Declarative per-param gating table — the single place that says
     # "this param enters the fit vector iff <flag>". Params for which
     # the gate fires False get appended to ``manually_passed_params``,
-    # so _makeOneRunWrapper passes the documented sentinel
-    # (NaN for ALPHA/BETA, None for the *_UNREWARDED pair) to makeOneRun.
-    # Adding a new flag-gated param is one entry here, no new if-block.
+    # so _makeOneRunWrapper passes the documented NaN sentinel to
+    # makeOneRun. Adding a new flag-gated param is one entry here, no new
+    # if-block.
     _PARAM_FIT_GATES = {
         "ALPHA":            include_Q,
         "BETA":             include_RewardRate,
-        "ALPHA_UNREWARDED": include_Q_asym,
-        "BETA_UNREWARDED":  include_RewardRate_asym,
     }
     manually_passed_params = ["driftFn_kwargs", "noiseFn_kwargs",
                               "biasFn_kwargs", "is_loss_no_dir"]
@@ -889,8 +861,8 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
     used_fix_idxs = (set(logicFn_fix_idxs) | set(driftFn_fix_idxs) |
                      set(noiseFn_fix_idxs) | set(biasFn_fix_idxs))
     unused_fix_idxs = list(set(range(len(fixed_params_names))) - used_fix_idxs)
-    # Flag-gated params (ALPHA, BETA, ALPHA_UNREWARDED, BETA_UNREWARDED)
-    # have defaults on makeOneRun, so when the gate is False they never
+    # Flag-gated params (ALPHA, BETA) have defaults on makeOneRun, so when
+    # the gate is False they never
     # appear in either x or fixed_params — they're just absent. Pad the
     # unused-count with sentinels so the assert below still balances out
     # against ``len(manually_passed_params)``.
@@ -946,16 +918,10 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
     print("Skipping:", [subject for subject in all_subjects
                        if subject not in remaining_subjects])
 
-    # When multiple dict keys map to the same function object (e.g. the
-    # "-asym" aliases in BIAS_FN_DICT / DRIFT_FN_DICT point to the same
-    # ``_biasQVal`` / ``_noiseGainRewardRate``), a plain comprehension
-    # keeps the LAST key seen — which silently picks the asymmetric
-    # alias and enables the asymmetric LR for callers that thought they
-    # were fitting the legacy variant. Iterating in reverse means the
-    # FIRST (canonical) key wins, so the default reverse-lookup behavior
-    # is the safe symmetric one. Callers who actually want the
-    # asymmetric variant must pass it through the new ``bias_fn_str`` /
-    # ``drift_fn_str`` kwargs (overridden below).
+    # Should two dict keys ever map to the same function object, a plain
+    # comprehension keeps the LAST key seen; iterating in reverse makes the
+    # FIRST (canonical) key win. Callers can always pin the name through
+    # ``bias_fn_str`` / ``drift_fn_str`` (overridden below).
     reverse_DriftLookup = {v: k for k, v in reversed(DRIFT_FN_DICT.items())}
     reverse_BiasLookup = {v: k for k, v in reversed(BIAS_FN_DICT.items())}
     reverse_NoiseLookup = {v: k for k, v in reversed(NOISE_FN_DICT.items())}
@@ -1014,35 +980,15 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
             mle_choice_norm=mle_choice_norm,
             # Outer joint-loss weights (--mle-mle-weight / --mle-chi2-weight).
             # Default (1.0, 0.0) ⇒ pure MLE; mle_chi2_weight > 0 switches
-            # _processSubject to the joint MLE+Chi² driver. Also NOT reflected
-            # in the filename (evolveFP doesn't see these), so A/B tests
-            # overwrite the same pickle.
+            # _processSubject to the joint MLE+Chi² driver. evolveFP adds a
+            # _mleW{m}_chi2W{c} suffix for joint fits.
             mle_mle_weight=float(mle_mle_weight),
             mle_chi2_weight=float(mle_chi2_weight),
-            # The flag-gated asymmetric-LR contract on MLEModelConfig
-            # (see mle.py:_compute_latent_arrays). True ⇒ ALPHA_UNREWARDED
-            # / BETA_UNREWARDED MUST be in the params dict at eval time —
-            # strict access, KeyError on miss.
-            uses_asymmetric_alpha=include_Q_asym,
-            uses_asymmetric_beta=include_RewardRate_asym,
             uses_per_trial_bound=uses_per_trial_bound,
             uses_scaled_bound=scale_bound,
         )
-        # Pre-flight: the gate table + fit-param list must agree, else
-        # the MLE objective hits KeyError mid-DE rather than failing
-        # loudly here.
-        if model_config.uses_asymmetric_alpha:
-            assert "ALPHA_UNREWARDED" in fit_params_names, (
-                "uses_asymmetric_alpha=True but ALPHA_UNREWARDED is not in "
-                "fit_params_names; check _PARAM_FIT_GATES and bias_fn_str")
-        if model_config.uses_asymmetric_beta:
-            assert "BETA_UNREWARDED" in fit_params_names, (
-                "uses_asymmetric_beta=True but BETA_UNREWARDED is not in "
-                "fit_params_names; check _PARAM_FIT_GATES and drift_fn_str")
     evolve_dump_FP = evolveFP(driftFn_str, biasFn_str, noiseFn_str, t_dur, dt,
                               is_loss_no_dir, fit_mode,
-                              uses_asym_q=uses_asym_q,
-                              uses_asym_rr=uses_asym_rr,
                               uses_scaled_bound=scale_bound,
                               mle_mle_weight=mle_mle_weight,
                               mle_chi2_weight=mle_chi2_weight)
@@ -1053,11 +999,9 @@ def simulateDDM(df, bounds_and_defaults, dt, t_dur, biasFn, driftFn, noiseFn,
     # mle_chi2_weight>0.
     ref_mle_FP = evolveFP(driftFn_str, biasFn_str, noiseFn_str, t_dur, dt,
                           is_loss_no_dir, "mle",
-                          uses_asym_q=uses_asym_q, uses_asym_rr=uses_asym_rr,
                           uses_scaled_bound=scale_bound)  # chi2_weight=0 → canonical
     ref_chi2_FP = evolveFP(driftFn_str, biasFn_str, noiseFn_str, t_dur, dt,
                            is_loss_no_dir, "chisq",
-                           uses_asym_q=uses_asym_q, uses_asym_rr=uses_asym_rr,
                            uses_scaled_bound=scale_bound)
 
     is_gpu_mle = fit_mode == "mle" and model_config.requires_gpu

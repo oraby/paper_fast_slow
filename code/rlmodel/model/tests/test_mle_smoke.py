@@ -65,7 +65,7 @@ def _two_session_padded_df():
     return pd.DataFrame(rows)
 
 
-def _params_for(include_q, include_reward_rate, decay_q=False, q_bias=False):
+def _params_for(include_q, include_reward_rate, q_bias=False):
     params = {
         "DRIFT_COEF": 1.0,
         "NOISE_SIGMA": 1.0,
@@ -79,16 +79,12 @@ def _params_for(include_q, include_reward_rate, decay_q=False, q_bias=False):
     if q_bias:
         params["BIAS_COEF"] = 0.5
         params["Q_VAL_OFFSET"] = 0.0
-    if decay_q:
-        params["Q_VAL_DECAY_RATE"] = 1.0
-        params["Q_VAL_COEF"] = 0.5
-        params.setdefault("Q_VAL_OFFSET", 0.0)
     return params
 
 
 def _payload_for_variant(drift_name, bias_name, noise_name, include_q,
-                         include_reward_rate, decay_q=False, q_bias=False):
-    params = _params_for(include_q, include_reward_rate, decay_q, q_bias)
+                         include_reward_rate, q_bias=False):
+    params = _params_for(include_q, include_reward_rate, q_bias)
     params_names = np.asarray(list(params.keys()))
     params_init = np.asarray(list(params.values()), dtype=float)
     params_bounds = np.asarray([(0.0, 2.0)] * len(params_names), dtype=float)
@@ -114,17 +110,15 @@ def _payload_for_variant(drift_name, bias_name, noise_name, include_q,
 
 def test_mle_smoke_named_variants_have_finite_loss_and_latents():
     variants = [
-        ("Classic", "None_", "Normal(0, 1)", False, False, False, False),
-        ("Classic", "Q-Val", "Normal(0, 1)", True, False, False, True),
-        ("NoiseGain-RewardRate", "None_", "Normal(0, 1)", False, True, False, False),
-        ("NoiseGain-RewardRate", "Q-Val", "Normal(0, 1)", True, True, False, True),
-        ("Decay Q", "None_", "Normal(0, 1)", True, False, True, False),
-        ("Classic", "None_", "Decaying Q-Val", True, False, True, False),
+        ("Classic", "None_", "Normal(0, 1)", False, False, False),
+        ("Classic", "Q-Val (Offset)", "Normal(0, 1)", True, False, True),
+        ("NoiseGain-RewardRate", "None_", "Normal(0, 1)", False, True, False),
+        ("NoiseGain-RewardRate", "Q-Val (Offset)", "Normal(0, 1)", True, True, True),
     ]
 
-    for drift_name, bias_name, noise_name, include_q, include_rr, decay_q, q_bias in variants:
+    for drift_name, bias_name, noise_name, include_q, include_rr, q_bias in variants:
         payload = _payload_for_variant(
-            drift_name, bias_name, noise_name, include_q, include_rr, decay_q, q_bias)
+            drift_name, bias_name, noise_name, include_q, include_rr, q_bias)
         assert payload["fit_mode"] == "mle"
         assert payload["mle_observation_model"] == "choice_rt"
         assert np.isfinite(payload["neg_loglik"])
@@ -277,7 +271,7 @@ def test_objective_from_population_matches_per_candidate_objective():
 def test_objective_from_population_matches_per_candidate_with_padded_sessions():
     config = MLEModelConfig(
         drift_fn_str="Classic",
-        bias_fn_str="Q-Val",
+        bias_fn_str="Q-Val (Offset)",
         noise_fn_str="Normal(0, 1)",
         include_Q=True,
         include_RewardRate=False,

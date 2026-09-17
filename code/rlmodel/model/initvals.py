@@ -2,22 +2,6 @@ from dataclasses import dataclass, asdict
 from typing import NamedTuple
 import os
 
-# init_vals = {
-#     "DRIFT_COEF": (0, 3, 1),
-#     "NOISE_SIGMA": (0, 40, 15),
-#     "BOUND": (1, 1, 1),
-#     "BIAS_COEF": (0, 1, .95),
-#     "Bias Fixed": (-1, 1, 0),
-#     "ALPHA": (0, 1, .3),
-#     "BETA": (0, 1, .3),
-#     # "Drift RR Coef": (0, .3, .1),
-#     "Bias mu": (-1, 1, 0),
-#     "Bias sigma": (0, 1, .1),
-#     "NON_DECISION_TIME": (0, .6, .3),
-#     "Q_VAL_DECAY_RATE": (.1, 4, 1),
-#     "Q_VAL_COEF": (1, 20, 5), #.1, .03),#1, .5),
-# }
-
 
 class InitVal(NamedTuple):
     Min : float
@@ -58,16 +42,9 @@ class InitVals:
     BOUND : InitVal             = InitVal(0.3, 5.0, 1.0)
     _BOUND_FIXED : InitVal      = InitVal(1.0, 1.0, 1.0)
     BIAS_COEF : InitVal         = InitVal(0, 1, .95)
-    BIAS_FIXED : InitVal        = InitVal(-1, 1, 0)
     ALPHA : InitVal             = InitVal(0, 1, .3)
-    ALPHA_UNREWARDED : InitVal  = InitVal(0, 1, .3)
     BETA : InitVal              = InitVal(0, 1, .3)
-    BETA_UNREWARDED : InitVal   = InitVal(0, 1, .3)
-    BIAS_MU : InitVal           = InitVal(-1, 1, 0)
-    BIAS_SIGMA : InitVal        = InitVal(0, 1, .1)
     NON_DECISION_TIME : InitVal = InitVal(0, 1, .3)
-    Q_VAL_DECAY_RATE : InitVal  = InitVal(.1, 60, 1)
-    Q_VAL_COEF : InitVal        = InitVal(1, 100, 5)
     Q_VAL_OFFSET : InitVal      = InitVal(-1, 1, 0)
     # MLE-only contamination / lapse mixture. λ ∈ [0, 1). Per-trial likelihood
     # becomes (1-λ)·L_DDM + λ/(2·T_max). Default initial 0.02 floors per-trial

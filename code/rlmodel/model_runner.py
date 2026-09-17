@@ -217,52 +217,19 @@ def _resolve_drift_alias_args(args):
     """Resolve ``--drift RewardRate*`` into the canonical
     ``DRIFT_FN_DICT`` key based on ``--use-drift-rr`` / ``--drift-rr-map``
     and ``--scale-bound``. Mutates ``args.drift`` in place. No-op for
-    non-alias drifts (e.g. ``Classic``, ``Decay Q``).
+    non-alias drifts (``Classic``).
 
     ``--use-drift-rr`` takes precedence over ``--scale-bound`` when
     choosing the reward-rate channel; see ``drift.resolve_drift_alias``.
     Both new attributes are read with ``getattr`` defaults so namespaces
     built by other callers (and the alias unit tests) stay valid.
 
-    Must run before any code that touches ``args.drift`` — in
-    particular before ``_expand_asym_shorthand``'s column-based
-    detection, so the substring scan sees the canonical name.
+    Must run before any code that touches ``args.drift``.
     """
     args.drift = resolve_drift_alias(
         args.drift, args.scale_bound,
         use_drift_rr=getattr(args, "use_drift_rr", False),
         drift_rr_map=getattr(args, "drift_rr_map", DEFAULT_RR_DRIFT_MAP))
-
-
-def _expand_asym_shorthand(args):
-    """Resolve ``--asym`` into the canonical ``--asym-q`` / ``--asym-rr``
-    flags based on whether the chosen drift / bias / noise functions
-    actually learn Q-values or a reward rate. Also returns the two
-    detection booleans so the caller can reuse them for downstream
-    validation without re-extracting the column sets.
-
-    The column-dependency derivation matches the
-    ``include_Q`` / ``include_RewardRate`` logic in
-    ``fit.simulateDDM``, so a model that the fitter ignores Q on is
-    likewise a no-op for the shorthand. OR-folds with explicit
-    ``--asym-q`` / ``--asym-rr``; passing both is harmless.
-
-    Mutates ``args.asym_q`` / ``args.asym_rr`` in place. Returns
-    ``(learns_q, learns_rr)``.
-    """
-    from .model.util import (
-        biasFnColsAndKwargs, driftFnColsAndKwargs, noiseFnColsAndKwargs)
-    bias_cols, _ = biasFnColsAndKwargs(BIAS_FN_DICT[args.bias])
-    drift_cols, _ = driftFnColsAndKwargs(DRIFT_FN_DICT[args.drift])
-    noise_cols, _ = noiseFnColsAndKwargs(NOISE_FN_DICT[args.noise])
-    learns_q = ("Q_val" in bias_cols or "Q_val" in drift_cols
-                or "Q_val" in noise_cols)
-    learns_rr = ("RewardRate" in bias_cols or "RewardRate" in drift_cols
-                 or "RewardRate" in noise_cols)
-    if args.asym:
-        args.asym_q = args.asym_q or learns_q
-        args.asym_rr = args.asym_rr or learns_rr
-    return learns_q, learns_rr
 
 
 def runModel(df, bias_fn_str, drift_fn_str, noise_fn_str, is_loss_no_dir,
@@ -276,7 +243,6 @@ def runModel(df, bias_fn_str, drift_fn_str, noise_fn_str, is_loss_no_dir,
              mle_choice_norm="conditional",
              mle_mle_weight=1.0, mle_chi2_weight=0.0,
              init_val_overrides=None,
-             uses_asym_q=False, uses_asym_rr=False,
              scale_bound=False):
     biasFn = BIAS_FN_DICT[bias_fn_str]
     driftFn = DRIFT_FN_DICT[drift_fn_str]
@@ -318,8 +284,6 @@ def runModel(df, bias_fn_str, drift_fn_str, noise_fn_str, is_loss_no_dir,
                                      mle_chi2_weight=mle_chi2_weight,
                                      bias_fn_str=bias_fn_str,
                                      drift_fn_str=drift_fn_str,
-                                     uses_asym_q=uses_asym_q,
-                                     uses_asym_rr=uses_asym_rr,
                                      scale_bound=scale_bound)
     evolve_res.update(evolve_res_res)
     return evolve_res
@@ -466,28 +430,6 @@ def main():
             "different weights coexist with each other and with the pure-MLE "
             "reference."))
     parser.add_argument(
-        "--asym-q", action="store_true", default=False,
-        help=(
-            "Fit a separate ALPHA_UNREWARDED rate for Q-value updates on "
-            "unrewarded / no-choice trials. Requires the selected model to "
-            "actually learn Q-values (Q-Val bias or Decay-Q drift); the "
-            "runner fails fast at startup otherwise."))
-    parser.add_argument(
-        "--asym-rr", action="store_true", default=False,
-        help=(
-            "Fit a separate BETA_UNREWARDED rate for reward-rate updates on "
-            "unrewarded trials. Requires the model to actually learn a "
-            "reward rate (RewardRate drift family)."))
-    parser.add_argument(
-        "--asym", action="store_true", default=False,
-        help=(
-            "Shorthand: enable --asym-q if the model learns Q-values "
-            "(Q-Val bias / Decay-Q drift / Decaying Q-Val noise) AND/OR "
-            "--asym-rr if it learns a reward rate (RewardRate drift "
-            "family). No-op for models that learn neither. Composes "
-            "with explicit --asym-q / --asym-rr via OR — passing both "
-            "is harmless."))
-    parser.add_argument(
         "--scale-bound", action="store_true", default=False,
         help=(
             "Swap which of (BOUND, NOISE_SIGMA) is the fitted scale axis. "
@@ -509,7 +451,7 @@ def main():
             "both left flat. OVERRIDES the default reward-rate behavior "
             "(NoiseGain's sigma *= r_t without --scale-bound, "
             "Bound-RewardRate's b_t = BOUND*(2-r_t) with it). Requires an "
-            "R-learning model, i.e. --drift RewardRate[ Decay Q[ (Offset)]]. "
+            "R-learning model, i.e. --drift RewardRate. "
             "Composes freely with --scale-bound, which then only picks which "
             "of (BOUND, NOISE_SIGMA) is the fitted scale axis. Saved fits are "
             "named after the resolved DriftGain-* drift, so they never "
@@ -586,8 +528,7 @@ def main():
         parser.error(
             f"--use-drift-rr routes the learned reward rate to the drift, so "
             f"it requires an R-learning model; got --drift {args.drift!r}. "
-            f"Use one of: 'RewardRate', 'RewardRate Decay Q', "
-            f"'RewardRate Decay Q (Offset)'.")
+            f"Use --drift 'RewardRate'.")
     if args.drift_rr_map != DEFAULT_RR_DRIFT_MAP and not args.use_drift_rr:
         parser.error(
             f"--drift-rr-map {args.drift_rr_map!r} only applies to the drift "
@@ -595,33 +536,12 @@ def main():
             f"rate modulates the noise or the threshold and the mapping is "
             f"unused).")
     # Resolve the RewardRate drift alias into the canonical DRIFT_FN_DICT
-    # key. Must run before _expand_asym_shorthand so its column-based
-    # detection sees the resolved name.
+    # key.
     _resolve_drift_alias_args(args)
     if args.use_drift_rr:
         print(f"--use-drift-rr: reward rate modulates the DRIFT "
               f"(g(r) = {args.drift_rr_map}); noise and threshold stay flat. "
               f"Resolved drift: {args.drift!r}")
-    # Pre-flight on --asym / --asym-q / --asym-rr: --asym is a
-    # shorthand that expands to the canonical flags based on what the
-    # model actually learns; the explicit flags require the underlying
-    # learning quantity to exist. Both branches share the same
-    # column-based detection inside _expand_asym_shorthand, which
-    # matches fit.simulateDDM's include_Q / include_RewardRate.
-    if args.asym_q or args.asym_rr or args.asym:
-        learns_q, learns_rr = _expand_asym_shorthand(args)
-        if args.asym_q and not learns_q:
-            parser.error(
-                f"--asym-q requires a model that learns Q-values "
-                f"(Q-Val bias or Decay-Q drift); got "
-                f"bias={args.bias!r}, drift={args.drift!r}, "
-                f"noise={args.noise!r}.")
-        if args.asym_rr and not learns_rr:
-            parser.error(
-                f"--asym-rr requires a model that learns a reward rate "
-                f"(RewardRate drift family); got "
-                f"bias={args.bias!r}, drift={args.drift!r}, "
-                f"noise={args.noise!r}.")
     try:
         init_val_overrides = _parse_init_val_overrides(args.init_val)
     except ValueError as exc:
@@ -689,8 +609,6 @@ def main():
                                       t_dur=T_dur, dt=DT,
                                       is_loss_no_dir=args.loss_no_dir,
                                       fit_mode=args.fit_mode,
-                                      uses_asym_q=args.asym_q,
-                                      uses_asym_rr=args.asym_rr,
                                       uses_scaled_bound=args.scale_bound,
                                       mle_mle_weight=args.mle_mle_weight,
                                       mle_chi2_weight=args.mle_chi2_weight)
@@ -725,8 +643,6 @@ def main():
              mle_mle_weight=args.mle_mle_weight,
              mle_chi2_weight=args.mle_chi2_weight,
              init_val_overrides=init_val_overrides,
-             uses_asym_q=args.asym_q,
-             uses_asym_rr=args.asym_rr,
              scale_bound=args.scale_bound)
 
 

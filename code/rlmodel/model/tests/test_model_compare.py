@@ -66,13 +66,10 @@ def test_mle_scaledb_and_joint_scaledb_skipped():
         parse_fit_filename(f"mle_{_BASE}_scaledB_mleW1_chi2W0.5.pkl")) is None
 
 
-def test_asym_is_a_separate_model():
-    sym = parse_fit_filename(f"mle_{_BASE}.pkl")
-    asym = parse_fit_filename(f"mle_{_BASE}_asymQRR.pkl")
-    assert sym.model_key != asym.model_key
-    assert "asymQRR" in asym.model_key
-    # asym is still a normal column within its own model
-    assert classify_column(asym)[1] == "MLE"
+def test_model_key_keeps_the_trailing_sym_for_the_metrics_caches():
+    """The metrics caches are keyed on model_key strings (aggregate._spec_key),
+    so the ``|sym`` left by the removed asymmetric-rate variants must stay."""
+    assert parse_fit_filename(f"mle_{_BASE}.pkl").model_key.endswith("|sym")
 
 
 # --------------------------------------------------------------------------
@@ -84,8 +81,9 @@ def test_discover_groups_columns_in_order(tmp_path):
         f"chisq_{_BASE}.pkl": {"S1": _payload()},
         "chisq_Bound-RewardRate_biasQ-Val (Offset)_Normal(0, 1)_4.8s_dt0.005_scaledB.pkl":
             {"S1": _payload()},
-        # asym → its own model entry
-        f"mle_{_BASE}_asymQRR.pkl": {"S1": _payload()},
+        # a different model → its own entry
+        "mle_Classic_biasQ-Val (Offset)_Normal(0, 1)_4.8s_dt0.005.pkl":
+            {"S1": _payload()},
         # unrelated / skipped
         "loss_summary.pkl": {"not": "a fit"},
     }
@@ -94,7 +92,7 @@ def test_discover_groups_columns_in_order(tmp_path):
             pickle.dump(obj, f)
 
     fits = discover_fits(tmp_path, verbose=False)
-    # two models: the symmetric RewardRate model and its asymQRR sibling
+    # two models: the RewardRate model and the Classic one
     assert len(fits) == 2
     sym_key = parse_fit_filename(f"mle_{_BASE}.pkl").model_key
     entry = fits[sym_key]

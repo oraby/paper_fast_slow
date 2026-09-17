@@ -37,10 +37,9 @@ from .drift import display_alias_for_drift
 # Filename parsing
 # --------------------------------------------------------------------------
 # Suffixes that fit.evolveFP appends after ``dt{dt}``, in order:
-#   {asym}{scaledB}{weights}  — asymQ/asymRR/asymQRR, then _scaledB, then
-#   _mleW{m}_chi2W{c}. We peel them off in reverse.
+#   {scaledB}{weights}  — _scaledB, then _mleW{m}_chi2W{c}. We peel them off
+#   in reverse.
 _WEIGHT_SUFFIX_RE = re.compile(r"_mleW(?P<m>[-+0-9.eE]+)_chi2W(?P<c>[-+0-9.eE]+)$")
-_ASYM_SUFFIX_RE = re.compile(r"_asym(Q|RR|QRR)$")
 
 
 @dataclass(frozen=True)
@@ -64,7 +63,6 @@ class FitFileId:
     noise: str             # NOISE_FN_DICT key, e.g. "Normal(0, 1)"
     t_dur: float
     dt: float
-    asym_variant: str      # "" | "Q" | "RR" | "QRR"
     scaled_bound: bool     # True when the _scaledB suffix is present
     mle_weight: float      # joint outer MLE weight (1.0 when absent)
     chi2_weight: float     # joint outer Chi² weight (0.0 when absent → pure)
@@ -72,22 +70,26 @@ class FitFileId:
     @property
     def model_key(self) -> str:
         """Identity of the abstract model (one model_compare dropdown
-        entry): drift ALIAS + bias + noise + timing + asym variant.
+        entry): drift ALIAS + bias + noise + timing.
         ``scaled_bound`` and the joint weights are *column* axes, not
-        identity, so they're intentionally excluded."""
-        asym = f"asym{self.asym_variant}" if self.asym_variant else "sym"
+        identity, so they're intentionally excluded.
+
+        The trailing ``|sym`` is a leftover of the removed asymmetric-rate
+        variants. It stays because the metrics caches in
+        ``data/RLModel/metrics/`` are keyed on these strings
+        (``aggregate._spec_key``); dropping it would silently invalidate
+        hours of cached simulation."""
         return (f"{self.drift_alias}|{self.bias}|{self.noise}"
-                f"|{self.t_dur:g}|{self.dt:g}|{asym}")
+                f"|{self.t_dur:g}|{self.dt:g}|sym")
 
     @property
     def model_label(self) -> str:
-        base = f"{self.drift_alias} · {self.bias} · {self.noise} · {self.t_dur:g}s"
-        return f"{base} [asym{self.asym_variant}]" if self.asym_variant else base
+        return f"{self.drift_alias} · {self.bias} · {self.noise} · {self.t_dur:g}s"
 
     @property
     def variant_suffix(self) -> str:
         """The filename suffix these orthogonal opt-ins compose to, in
-        ``fit.evolveFP`` order: asym, then scaledB, then joint weights.
+        ``fit.evolveFP`` order: scaledB, then joint weights.
 
         Round-trips what ``parse_fit_filename`` peeled off. Consumers that
         key saved fits by variant (``model_interactive``'s
@@ -101,11 +103,10 @@ class FitFileId:
         the drift name (``NoiseGain-`` / ``Bound-`` / ``DriftGain-``), not
         in a suffix.
         """
-        asym = f"_asym{self.asym_variant}" if self.asym_variant else ""
         scaled = "_scaledB" if self.scaled_bound else ""
         weights = ("" if self.chi2_weight <= 0.0 else
                    f"_mleW{self.mle_weight:g}_chi2W{self.chi2_weight:g}")
-        return f"{asym}{scaled}{weights}"
+        return f"{scaled}{weights}"
 
 
 def parse_fit_filename(filename: str) -> FitFileId:
@@ -114,7 +115,7 @@ def parse_fit_filename(filename: str) -> FitFileId:
     Mirrors ``fit.evolveFP``'s composition::
 
         {fit_mode}_{drift}_bias{bias}_{noise}{loss_no_dir}_{t_dur}s_dt{dt}
-        {asym}{scaledB}{weights}.pkl
+        {scaledB}{weights}.pkl
     """
     stem = filename[:-4] if filename.endswith(".pkl") else filename
     fit_mode, rest = stem.split("_", 1)
@@ -138,7 +139,7 @@ def parse_fit_filename(filename: str) -> FitFileId:
             f"loss_no_dir fits are not supported by model_compare: {filename}")
     parsed_t_dur, rest = rest.split("s_", 1)
     dt_segment = rest.split("dt", 1)[1]
-    # Peel suffixes in reverse evolveFP order: weights, scaledB, asym.
+    # Peel suffixes in reverse evolveFP order: weights, then scaledB.
     mle_weight, chi2_weight = 1.0, 0.0
     w = _WEIGHT_SUFFIX_RE.search(dt_segment)
     if w:
@@ -147,11 +148,6 @@ def parse_fit_filename(filename: str) -> FitFileId:
     scaled_bound = dt_segment.endswith("_scaledB")
     if scaled_bound:
         dt_segment = dt_segment[:-len("_scaledB")]
-    asym_variant = ""
-    a = _ASYM_SUFFIX_RE.search(dt_segment)
-    if a:
-        asym_variant = a.group(1)
-        dt_segment = dt_segment[:a.start()]
     return FitFileId(
         fit_mode=fit_mode,
         drift=drift_fn,
@@ -160,7 +156,6 @@ def parse_fit_filename(filename: str) -> FitFileId:
         noise=noise_fn,
         t_dur=float(parsed_t_dur),
         dt=float(dt_segment),
-        asym_variant=asym_variant,
         scaled_bound=scaled_bound,
         mle_weight=mle_weight,
         chi2_weight=chi2_weight,
@@ -188,9 +183,9 @@ def build_mle_config(fid: FitFileId, *, include_Q, include_RewardRate,
                      mle_terminal_c=MLE_TERMINAL_C.Default) -> MLEModelConfig:
     """Build the ``MLEModelConfig`` for re-evaluating a fit under MLE.
 
-    The scale-axis / asymmetric-LR / per-trial-bound flags are derived from
-    the parsed filename so a Chi²-Bound (``Bound-RewardRate`` + ``_scaledB``)
-    or asymmetric fit is re-evaluated with the same model structure it was
+    The scale-axis / per-trial-bound flags are derived from the parsed
+    filename so a Chi²-Bound (``Bound-RewardRate`` + ``_scaledB``) fit is
+    re-evaluated with the same model structure it was
     fit under. ``uses_per_trial_bound`` follows ``fit.simulateDDM``'s rule
     (any ``Bound-RewardRate*`` drift).
     """
@@ -205,8 +200,6 @@ def build_mle_config(fid: FitFileId, *, include_Q, include_RewardRate,
         mle_terminal_c=float(mle_terminal_c),
         uses_scaled_bound=bool(fid.scaled_bound),
         uses_per_trial_bound="Bound-RewardRate" in fid.drift,
-        uses_asymmetric_alpha=bool(include_Q) and fid.asym_variant in ("Q", "QRR"),
-        uses_asymmetric_beta=bool(include_RewardRate) and fid.asym_variant in ("RR", "QRR"),
     )
 
 

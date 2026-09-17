@@ -90,14 +90,6 @@ def test_load_mle_population_results_and_flatten(tmp_path):
     assert loaded[0].model_name == "test_model"
     assert flat.shape[0] == 3
     assert {"mle_model_name", "mle_subject"}.issubset(flat.columns)
-    # Asymmetric-LR flag columns surface alongside mle_terminal_c so
-    # the population explorer can filter cross-fit by asym variant.
-    # The test fixture's MLEModelConfig leaves them at the dataclass
-    # default (False) — they still appear as a column, not as NaN.
-    assert {"mle_uses_asymmetric_alpha",
-            "mle_uses_asymmetric_beta"}.issubset(flat.columns)
-    assert (flat["mle_uses_asymmetric_alpha"] == False).all()
-    assert (flat["mle_uses_asymmetric_beta"] == False).all()
 
 
 def test_histogram_filter_stack_query_and_undo():

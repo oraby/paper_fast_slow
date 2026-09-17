@@ -292,7 +292,7 @@ def debug_one_trial_mle_flow(
         rr_channel=model_config.sigma_rr_channel,
     )
     mu = _compute_mu(
-        float(trial["DV"]), params, model_config, q_rel_before, sigma,
+        float(trial["DV"]), params,
         drift_scale=drift_scale_for_config(
             state_before.reward_rate, model_config))
     bound = _param(params, "BOUND", 1.0)

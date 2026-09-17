@@ -22,9 +22,8 @@ from ..state_updates import compute_starting_point_z
 
 
 def test_evolveFP_suffix_grammar():
-    """``_scaledB`` follows ``_asymQ/_asymRR/_asymQRR`` (or stands alone).
-
-    Symmetric / fixed-bound fits keep the legacy filename format —
+    """``_scaledB`` is appended after ``dt``; fixed-bound fits keep the legacy
+    filename format —
     every existing pickle on disk loads under the same path.
     """
     base = dict(drift_fn_str="Classic", bias_fn_str="None_",
@@ -36,17 +35,9 @@ def test_evolveFP_suffix_grammar():
     scaled_b = str(evolveFP(**base, uses_scaled_bound=True))
     assert scaled_b.endswith("_3s_dt0.005_scaledB.pkl"), scaled_b
 
-    asym_q   = str(evolveFP(**base, uses_asym_q=True))
-    assert asym_q.endswith("_3s_dt0.005_asymQ.pkl"), asym_q
-
-    composed = str(evolveFP(**base, uses_asym_q=True,
-                             uses_scaled_bound=True))
-    assert composed.endswith("_3s_dt0.005_asymQ_scaledB.pkl"), composed
-
-    composed_qrr = str(evolveFP(**base, uses_asym_q=True, uses_asym_rr=True,
-                                 uses_scaled_bound=True))
-    assert composed_qrr.endswith("_3s_dt0.005_asymQRR_scaledB.pkl"), (
-        composed_qrr)
+    composed = str(evolveFP(**base, uses_scaled_bound=True,
+                            mle_chi2_weight=0.5))
+    assert composed.endswith("_3s_dt0.005_scaledB_mleW1_chi2W0.5.pkl"), composed
 
 
 def test_init_val_fields_describe_scale_pair_contract():

@@ -210,7 +210,7 @@ def build_ddm_trial_buffer(
     # therefore has to re-apply the DriftGain gain (None for every other
     # model, leaving mu untouched).
     mu = _compute_mu(
-        float(row["DV"]), params, model_config, q_rel, sigma,
+        float(row["DV"]), params,
         drift_scale=drift_scale_for_config(
             float(row["mle_reward_rate_before"]), model_config))
     z = float(row["mle_z"])

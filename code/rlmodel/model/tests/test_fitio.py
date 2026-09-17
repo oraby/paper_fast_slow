@@ -168,3 +168,20 @@ def test_a_partial_with_different_bindings_does_not_match():
     a = DRIFT_FN_DICT["DriftGain-RewardRate"]        # RR_DRIFT_MAP="2-r"
     b = DRIFT_FN_DICT["DriftGain(1+r)-RewardRate"]   # RR_DRIFT_MAP="1+r"
     assert not _sameCallable(a, b)
+
+
+def test_a_saved_config_from_before_the_asymmetric_rates_were_removed_loads():
+    """Every shipped MLE fit stores ``uses_asymmetric_alpha/beta = False``."""
+    stored = toStorable(_payload(with_config=True))
+    stored["model_config"] = {**stored["model_config"],
+                              "uses_asymmetric_alpha": False,
+                              "uses_asymmetric_beta": False}
+    assert isinstance(fromStorable(stored)["model_config"], MLEModelConfig)
+
+
+def test_a_fit_that_used_the_asymmetric_rates_is_refused():
+    stored = toStorable(_payload(with_config=True))
+    stored["model_config"] = {**stored["model_config"],
+                              "uses_asymmetric_alpha": True}
+    with pytest.raises(ValueError, match="asymmetric"):
+        fromStorable(stored)

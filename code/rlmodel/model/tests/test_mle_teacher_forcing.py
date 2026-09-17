@@ -29,7 +29,7 @@ def test_mle_q_update_uses_observed_choice_not_model_direction():
     }
     config = MLEModelConfig(
         drift_fn_str="Classic",
-        bias_fn_str="Q-Val",
+        bias_fn_str="Q-Val (Offset)",
         noise_fn_str="Normal(0, 1)",
         include_Q=True,
         include_RewardRate=False,

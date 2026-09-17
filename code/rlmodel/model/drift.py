@@ -1,10 +1,9 @@
-from .util import decayingQ, partialWithNames
+from .util import partialWithNames
 from .state_updates import (DEFAULT_RR_DRIFT_MAP, RR_DRIFT_MAPS,
                             bound_scale_from_reward_rate,
                             drift_scale_from_reward_rate)
 import numpy as np
 import numpy.typing as npt
-from scipy import ndimage
 
 run_logger = None
 
@@ -37,106 +36,6 @@ def _driftClassic(starting_point : npt.NDArray,
         run_logger.drift = drift
         run_logger.noise_amped = noise
         run_logger.isolated_drifts = isolated_drifts
-    return dx
-
-
-def _decayQ(starting_point : npt.NDArray,
-            nondectime : float,
-            noise : npt.NDArray,
-            drift_coef : float,
-            dvs : npt.NDArray,
-            dt : float,
-            noise_sigma : float,
-            Q_val : npt.NDArray,
-            Q_VAL_DECAY_RATE : float,
-            Q_VAL_COEF : float,
-            Q_VAL_OFFSET : float,
-            nondectime_Q : bool = True,
-            ):
-    global run_logger
-
-    drift = drift_coef * dvs * dt
-    non_decsision_dt = int(nondectime / dt)
-    noise *= noise_sigma
-    noise[:, :non_decsision_dt] = 0
-    drift = np.repeat(drift, noise.shape[1]).reshape(-1, noise.shape[1])
-    drift[:, :non_decsision_dt] = 0
-
-    Q_val = np.clip(Q_val + Q_VAL_OFFSET, -1, 1)
-    indices = np.arange(noise.shape[1])
-    Q_val_decay_form = (1 - indices / noise.shape[1]) ** Q_VAL_DECAY_RATE
-    Q_val_noise = Q_val[:, np.newaxis] * Q_val_decay_form
-    Q_val_noise *= Q_VAL_COEF * dt
-    if not nondectime_Q:
-        Q_val_noise = ndimage.shift(Q_val_noise, non_decsision_dt, cval=0)
-
-    isolated_drifts = drift + noise + Q_val_noise
-    isolated_drifts[:,0] = starting_point
-    dx = np.cumsum(isolated_drifts, axis=1)
-
-    isolated_drifts = drift # np.asarray(isolated_drifts).reshape(-1, dx.shape[1])
-    # print("Drift shape:", drift.shape, "Isolated drifts shape:", isolated_drifts.shape,
-    #       "Noise shape:", noise.shape, "dx shape:", dx.shape)
-    if run_logger is not None:
-        run_logger.drift = drift
-        run_logger.noise_amped = noise
-        run_logger.isolated_drifts = isolated_drifts
-        run_logger.Q_val_decay_form = Q_val_decay_form
-        run_logger.Q_val_noise = Q_val_noise
-        # run_logger.drift_decaying_Q = decaying_Q
-    return dx
-
-
-
-def _noiseGainDecayingQ(starting_point: npt.NDArray,
-                        nondectime: float,
-                        noise: npt.NDArray,
-                        drift_coef: float,
-                        dvs: npt.NDArray,
-                        dt: float,
-                        noise_sigma: float,
-                        Q_val: npt.NDArray,
-                        Q_VAL_DECAY_RATE: float,
-                        Q_VAL_COEF: float,
-                        Q_VAL_OFFSET: float,
-                        RewardRate: npt.NDArray,
-                        nondectime_Q: bool = True):
-    global run_logger
-
-    non_decsision_dt = int(nondectime / dt)
-
-    noise *= noise_sigma
-    noise *= RewardRate[:, np.newaxis]
-    noise[:, :non_decsision_dt] = 0
-
-    drift = drift_coef * dvs * dt
-    drift = np.repeat(drift, noise.shape[1]).reshape(-1, noise.shape[1])
-    drift[:, :non_decsision_dt] = 0
-
-    Q_val = np.clip(Q_val + Q_VAL_OFFSET, -1, 1)
-    indices = np.arange(noise.shape[1])
-    Q_val_decay_form = (1 - indices / noise.shape[1]) ** Q_VAL_DECAY_RATE
-
-    Q_val_noise = Q_val[:, np.newaxis] * Q_val_decay_form
-    Q_val_noise *= Q_VAL_COEF * dt
-
-    if not nondectime_Q:
-        Q_val_noise = ndimage.shift(Q_val_noise, non_decsision_dt, cval=0)
-
-    # Combine and integrate
-    isolated_drifts = drift + noise + Q_val_noise
-    isolated_drifts[:, 0] = starting_point
-    dx = np.cumsum(isolated_drifts, axis=1)
-
-    # Logging (match your existing convention)
-    isolated_drifts = drift
-    if run_logger is not None:
-        run_logger.drift = drift
-        run_logger.noise_amped = noise
-        run_logger.isolated_drifts = isolated_drifts
-        run_logger.Q_val_decay_form = Q_val_decay_form
-        run_logger.Q_val_noise = Q_val_noise
-
     return dx
 
 
@@ -192,63 +91,6 @@ def _boundGainRewardRate(starting_point : npt.NDArray,
     return dx
 
 
-def _boundGainDecayingQ(starting_point: npt.NDArray,
-                        nondectime: float,
-                        noise: npt.NDArray,
-                        drift_coef: float,
-                        dvs: npt.NDArray,
-                        dt: float,
-                        noise_sigma: float,
-                        Q_val: npt.NDArray,
-                        Q_VAL_DECAY_RATE: float,
-                        Q_VAL_COEF: float,
-                        Q_VAL_OFFSET: float,
-                        RewardRate: npt.NDArray,
-                        nondectime_Q: bool = True):
-    """Bound-RewardRate Decay Q variant. Same rescaling rule as
-    ``_boundGainRewardRate`` applied to the drift + Q-decay noise.
-    """
-    global run_logger
-
-    # Per-trial bound scale s_t = 2 - r_t (see _boundGainRewardRate /
-    # bound_scale_from_reward_rate): b_t = BOUND * (2 - r_t), with drift +
-    # Q-decay noise all divided by s_t. s_t in [1, 2] so 1/s_t is always
-    # finite; NaN-padded slots propagate (2 - NaN = NaN).
-    inv_scale = 1.0 / bound_scale_from_reward_rate(RewardRate)[:, np.newaxis]
-    non_decsision_dt = int(nondectime / dt)
-    noise *= noise_sigma
-    noise *= inv_scale
-    noise[:, :non_decsision_dt] = 0
-
-    drift = drift_coef * dvs * dt
-    drift = np.repeat(drift, noise.shape[1]).reshape(-1, noise.shape[1])
-    drift *= inv_scale
-    drift[:, :non_decsision_dt] = 0
-
-    Q_val = np.clip(Q_val + Q_VAL_OFFSET, -1, 1)
-    indices = np.arange(noise.shape[1])
-    Q_val_decay_form = (1 - indices / noise.shape[1]) ** Q_VAL_DECAY_RATE
-    Q_val_noise = Q_val[:, np.newaxis] * Q_val_decay_form
-    Q_val_noise *= Q_VAL_COEF * dt
-    Q_val_noise *= inv_scale     # Q-decay drift also rescales
-
-    if not nondectime_Q:
-        Q_val_noise = ndimage.shift(Q_val_noise, non_decsision_dt, cval=0)
-
-    isolated_drifts = drift + noise + Q_val_noise
-    isolated_drifts[:, 0] = starting_point
-    dx = np.cumsum(isolated_drifts, axis=1)
-
-    isolated_drifts = drift
-    if run_logger is not None:
-        run_logger.drift = drift
-        run_logger.noise_amped = noise
-        run_logger.isolated_drifts = isolated_drifts
-        run_logger.Q_val_decay_form = Q_val_decay_form
-        run_logger.Q_val_noise = Q_val_noise
-    return dx
-
-
 def _noiseGainRewardRate(starting_point : npt.NDArray,
                          nondectime : float,
                          noise : npt.NDArray,
@@ -278,7 +120,6 @@ def _noiseGainRewardRate(starting_point : npt.NDArray,
         run_logger.drift = drift
         run_logger.noise_amped = noise
         run_logger.isolated_drifts = isolated_drifts
-        # run_logger.drift_decaying_Q = decaying_Q
     return dx
 
 
@@ -335,64 +176,6 @@ def _driftGainRewardRate(starting_point : npt.NDArray,
     return dx
 
 
-def _driftGainDecayingQ(starting_point: npt.NDArray,
-                        nondectime: float,
-                        noise: npt.NDArray,
-                        drift_coef: float,
-                        dvs: npt.NDArray,
-                        dt: float,
-                        noise_sigma: float,
-                        Q_val: npt.NDArray,
-                        Q_VAL_DECAY_RATE: float,
-                        Q_VAL_COEF: float,
-                        Q_VAL_OFFSET: float,
-                        RewardRate: npt.NDArray,
-                        nondectime_Q: bool = True,
-                        RR_DRIFT_MAP: str = DEFAULT_RR_DRIFT_MAP):
-    """DriftGain-RewardRate Decay Q variant.
-
-    ``g(r_t)`` multiplies the COHERENCE drift term only. The decaying-Q
-    drift term (``Q_val_noise``) is left unscaled — deliberately different
-    from ``_boundGainDecayingQ``, which divides its Q term by ``s_t`` too
-    because there the scaling is a whole-diffusion rescaling identity.
-    Here the reward rate modulates evidence gain specifically, so the
-    Q-value contribution to the drift is untouched.
-    """
-    global run_logger
-
-    non_decsision_dt = int(nondectime / dt)
-    noise *= noise_sigma          # sigma is FLAT: no reward-rate gain
-    noise[:, :non_decsision_dt] = 0
-
-    drift_scale = drift_scale_from_reward_rate(RewardRate, RR_DRIFT_MAP)
-    drift = drift_coef * dvs * drift_scale * dt
-    drift = np.repeat(drift, noise.shape[1]).reshape(-1, noise.shape[1])
-    drift[:, :non_decsision_dt] = 0
-
-    Q_val = np.clip(Q_val + Q_VAL_OFFSET, -1, 1)
-    indices = np.arange(noise.shape[1])
-    Q_val_decay_form = (1 - indices / noise.shape[1]) ** Q_VAL_DECAY_RATE
-    Q_val_noise = Q_val[:, np.newaxis] * Q_val_decay_form
-    Q_val_noise *= Q_VAL_COEF * dt
-    # NOTE: Q_val_noise is intentionally NOT scaled by drift_scale.
-
-    if not nondectime_Q:
-        Q_val_noise = ndimage.shift(Q_val_noise, non_decsision_dt, cval=0)
-
-    isolated_drifts = drift + noise + Q_val_noise
-    isolated_drifts[:, 0] = starting_point
-    dx = np.cumsum(isolated_drifts, axis=1)
-
-    isolated_drifts = drift
-    if run_logger is not None:
-        run_logger.drift = drift
-        run_logger.noise_amped = noise
-        run_logger.isolated_drifts = isolated_drifts
-        run_logger.Q_val_decay_form = Q_val_decay_form
-        run_logger.Q_val_noise = Q_val_noise
-    return dx
-
-
 DRIFT_FN_DICT = {
     "Classic": _driftClassic,
     "NoiseGain-RewardRate": _noiseGainRewardRate,
@@ -404,12 +187,6 @@ DRIFT_FN_DICT = {
     # The math is genuinely different from NoiseGain (sigma * r_t),
     # so these are separate Python functions, not aliases.
     "Bound-RewardRate": _boundGainRewardRate,
-    "Decay Q": partialWithNames(_decayQ, nondectime_Q=True, Q_VAL_OFFSET=0),
-    "Decay Q (Offset)": partialWithNames(_decayQ, nondectime_Q=True),
-    "NoiseGain-RewardRate Decay Q": partialWithNames(_noiseGainDecayingQ, nondectime_Q=True, Q_VAL_OFFSET=0),
-    "NoiseGain-RewardRate Decay Q (Offset)": partialWithNames(_noiseGainDecayingQ, nondectime_Q=True),
-    "Bound-RewardRate Decay Q":             partialWithNames(_boundGainDecayingQ, nondectime_Q=True, Q_VAL_OFFSET=0),
-    "Bound-RewardRate Decay Q (Offset)":    partialWithNames(_boundGainDecayingQ, nondectime_Q=True),
     # DriftGain-RewardRate: the reward rate modulates the coherence DRIFT
     # (mu *= g(r_t)) with sigma and the bound both flat — a third channel,
     # NOT a rescaling of either of the two above. ``RR_DRIFT_MAP`` picks the
@@ -419,11 +196,7 @@ DRIFT_FN_DICT = {
     #   g(r) = 2 - r  ("DriftGain-*"):        high reward rate => slower
     #   g(r) = 1 + r  ("DriftGain(1+r)-*"):   high reward rate => faster
     "DriftGain-RewardRate":                 partialWithNames(_driftGainRewardRate, RR_DRIFT_MAP="2-r"),
-    "DriftGain-RewardRate Decay Q":         partialWithNames(_driftGainDecayingQ, nondectime_Q=True, Q_VAL_OFFSET=0, RR_DRIFT_MAP="2-r"),
-    "DriftGain-RewardRate Decay Q (Offset)": partialWithNames(_driftGainDecayingQ, nondectime_Q=True, RR_DRIFT_MAP="2-r"),
     "DriftGain(1+r)-RewardRate":             partialWithNames(_driftGainRewardRate, RR_DRIFT_MAP="1+r"),
-    "DriftGain(1+r)-RewardRate Decay Q":     partialWithNames(_driftGainDecayingQ, nondectime_Q=True, Q_VAL_OFFSET=0, RR_DRIFT_MAP="1+r"),
-    "DriftGain(1+r)-RewardRate Decay Q (Offset)": partialWithNames(_driftGainDecayingQ, nondectime_Q=True, RR_DRIFT_MAP="1+r"),
 }
 
 
@@ -454,18 +227,6 @@ _REWARDRATE_ALIASES = {
         RR_CHANNEL_BOUND:     "Bound-RewardRate",
         RR_CHANNEL_DRIFT_2_R: "DriftGain-RewardRate",
         RR_CHANNEL_DRIFT_1_R: "DriftGain(1+r)-RewardRate",
-    },
-    "RewardRate Decay Q": {
-        RR_CHANNEL_NOISE:     "NoiseGain-RewardRate Decay Q",
-        RR_CHANNEL_BOUND:     "Bound-RewardRate Decay Q",
-        RR_CHANNEL_DRIFT_2_R: "DriftGain-RewardRate Decay Q",
-        RR_CHANNEL_DRIFT_1_R: "DriftGain(1+r)-RewardRate Decay Q",
-    },
-    "RewardRate Decay Q (Offset)": {
-        RR_CHANNEL_NOISE:     "NoiseGain-RewardRate Decay Q (Offset)",
-        RR_CHANNEL_BOUND:     "Bound-RewardRate Decay Q (Offset)",
-        RR_CHANNEL_DRIFT_2_R: "DriftGain-RewardRate Decay Q (Offset)",
-        RR_CHANNEL_DRIFT_1_R: "DriftGain(1+r)-RewardRate Decay Q (Offset)",
     },
 }
 
@@ -503,7 +264,7 @@ def display_alias_for_drift(drift_str):
     are the same abstract model fitted on different scale axes, so they
     belong in one model_compare row with two criterion columns).
     DriftGain- gets its own ``RewardRate (Drift[ 1+r])`` label because it is
-    a genuinely different model. Non-alias drifts (``Classic``, ``Decay Q``)
+    a genuinely different model. Non-alias drifts (``Classic``)
     pass through unchanged.
     """
     if drift_str in _REWARDRATE_ALIAS_FOR_INTERNAL:
@@ -558,8 +319,7 @@ def user_facing_drift_keys():
 def resolve_drift_alias(drift_str, scale_bound, use_drift_rr=False,
                         drift_rr_map=DEFAULT_RR_DRIFT_MAP):
     """Resolve a ``RewardRate*`` alias to its canonical ``DRIFT_FN_DICT``
-    registry key. No-op for non-alias drifts (e.g. ``Classic``,
-    ``Decay Q``).
+    registry key. No-op for non-alias drifts (``Classic``).
 
     ``use_drift_rr`` (``--use-drift-rr`` / the GUI checkbox) WINS over
     ``scale_bound``: routing the reward rate to the drift overrides the

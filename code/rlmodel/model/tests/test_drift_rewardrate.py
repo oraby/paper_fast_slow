@@ -9,8 +9,8 @@ with the noise sigma and the bound both FLAT. Unlike the Bound channel this
 is not a rescaling of an equivalent model, so there is no analytic identity
 to lean on — what these tests pin instead is that
 
-1. the gain lands on the coherence drift and nowhere else (sigma untouched,
-   Decay-Q's Q-drift term untouched), and
+1. the gain lands on the coherence drift and nowhere else (sigma untouched),
+   and
 2. the three MLE compute paths (rowwise reference, batched, population/DE)
    all apply it identically, which is the failure mode that would otherwise
    make DE optimize a different model than the final eval scores.
@@ -43,12 +43,7 @@ from ..state_updates import drift_scale_from_reward_rate
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[4]
 
-_DRIFT_KEYS = ("DriftGain-RewardRate",
-               "DriftGain-RewardRate Decay Q",
-               "DriftGain-RewardRate Decay Q (Offset)",
-               "DriftGain(1+r)-RewardRate",
-               "DriftGain(1+r)-RewardRate Decay Q",
-               "DriftGain(1+r)-RewardRate Decay Q (Offset)")
+_DRIFT_KEYS = ("DriftGain-RewardRate", "DriftGain(1+r)-RewardRate")
 
 
 # ---------------------------------------------------------------------------
@@ -151,38 +146,6 @@ def test_chisq_drift_1_plus_r_uses_the_other_mapping():
     np.testing.assert_allclose(a, b, atol=1e-15)
 
 
-def test_chisq_decay_q_scales_coherence_only():
-    """The Decay-Q sibling must leave the decaying-Q drift term unscaled
-    — deliberately different from ``_boundGainDecayingQ``, which divides
-    its Q term by s_t too. Compare against the NoiseGain Decay-Q variant
-    at r=1 (where its sigma gain is the identity), so any difference
-    between the two is entirely the coherence-drift gain.
-    """
-    dvs, noise = _chisq_inputs()
-    ones = np.ones(len(dvs))
-    common = dict(starting_point=np.zeros(len(dvs)), nondectime=0.0,
-                  drift_coef=1.3, dvs=dvs, dt=0.005, noise_sigma=1.5,
-                  Q_val=np.array([-0.6, -0.2, 0.2, 0.6])[:len(dvs)],
-                  Q_VAL_DECAY_RATE=1.0, Q_VAL_COEF=0.7, RewardRate=ones)
-    noise_gain = DRIFT_FN_DICT["NoiseGain-RewardRate Decay Q (Offset)"]
-    drift_gain = DRIFT_FN_DICT["DriftGain-RewardRate Decay Q (Offset)"]
-    dx_ref = noise_gain(noise=noise.copy(), Q_VAL_OFFSET=0.0, **common)
-    dx_drift = drift_gain(noise=noise.copy(), Q_VAL_OFFSET=0.0, **common)
-    # g(1) = 1 => identical. If the Q term were also scaled this would
-    # still hold, so the r != 1 case below is what discriminates.
-    np.testing.assert_allclose(dx_drift, dx_ref, atol=1e-12)
-
-    # At r = 0 the gain is 2: the coherence drift doubles, the Q term must
-    # not move. NoiseGain at r=0 zeroes its noise, so build the reference
-    # difference analytically instead.
-    zeros = np.zeros(len(dvs))
-    dx_r0 = drift_gain(noise=noise.copy(), Q_VAL_OFFSET=0.0,
-                       **{**common, "RewardRate": zeros})
-    steps = np.arange(noise.shape[1])[None, :]
-    extra = (2.0 - 1.0) * 1.3 * dvs[:, None] * 0.005 * steps
-    np.testing.assert_allclose(dx_r0 - dx_ref, extra, atol=1e-12)
-
-
 # ---------------------------------------------------------------------------
 # Registry / alias layer
 # ---------------------------------------------------------------------------
@@ -217,11 +180,8 @@ def test_resolve_drift_alias_rejects_unknown_map():
 
 def test_is_rewardrate_alias_gates_the_drift_channel():
     """The shared CLI / GUI gate: only R-learning aliases may enable it."""
-    for alias in ("RewardRate", "RewardRate Decay Q",
-                  "RewardRate Decay Q (Offset)"):
-        assert is_rewardrate_alias(alias)
-    for other in ("Classic", "Decay Q", "Decay Q (Offset)",
-                  "NoiseGain-RewardRate", "DriftGain-RewardRate"):
+    assert is_rewardrate_alias("RewardRate")
+    for other in ("Classic", "NoiseGain-RewardRate", "DriftGain-RewardRate"):
         assert not is_rewardrate_alias(other)
 
 
@@ -234,8 +194,6 @@ def test_display_alias_keeps_drift_channel_distinct():
     assert display_alias_for_drift("DriftGain-RewardRate") == "RewardRate (Drift)"
     assert (display_alias_for_drift("DriftGain(1+r)-RewardRate")
             == "RewardRate (Drift 1+r)")
-    assert (display_alias_for_drift("DriftGain-RewardRate Decay Q (Offset)")
-            == "RewardRate (Drift) Decay Q (Offset)")
     assert display_alias_for_drift("Classic") == "Classic"
 
 
@@ -287,9 +245,7 @@ def test_every_channel_gets_a_distinct_filename():
 def test_parse_fit_filename_round_trips_the_drift_channel():
     for drift, expected_alias in (
             ("DriftGain-RewardRate", "RewardRate (Drift)"),
-            ("DriftGain(1+r)-RewardRate", "RewardRate (Drift 1+r)"),
-            ("DriftGain-RewardRate Decay Q (Offset)",
-             "RewardRate (Drift) Decay Q (Offset)")):
+            ("DriftGain(1+r)-RewardRate", "RewardRate (Drift 1+r)")):
         for scaled_bound in (False, True):
             fid = parse_fit_filename(_fp(drift, scaled_bound))
             assert fid.drift == drift
@@ -355,17 +311,16 @@ def test_variant_suffix_round_trips_evolve_fp():
     appended. ``model_interactive``'s ``subjects_defaults`` keys its
     entries ``f"{fit_mode}{variant_suffix}"``, so a wrong composition
     silently hides fits that are on disk."""
-    for aq, ar in ((False, False), (True, False), (False, True), (True, True)):
-        for sb in (False, True):
-            for w in (0.0, 0.5):
-                name = evolveFP(
-                    "DriftGain-RewardRate", "Q-Val (Offset)", "Normal(0, 1)",
-                    4.8, 0.005, False, "mle", uses_asym_q=aq, uses_asym_rr=ar,
-                    uses_scaled_bound=sb, mle_chi2_weight=w).name
-                fid = parse_fit_filename(name)
-                # The suffix is everything evolveFP put after "dt0.005".
-                expected = name[name.index("dt0.005") + len("dt0.005"):-len(".pkl")]
-                assert fid.variant_suffix == expected, name
+    for sb in (False, True):
+        for w in (0.0, 0.5):
+            name = evolveFP(
+                "DriftGain-RewardRate", "Q-Val (Offset)", "Normal(0, 1)",
+                4.8, 0.005, False, "mle",
+                uses_scaled_bound=sb, mle_chi2_weight=w).name
+            fid = parse_fit_filename(name)
+            # The suffix is everything evolveFP put after "dt0.005".
+            expected = name[name.index("dt0.005") + len("dt0.005"):-len(".pkl")]
+            assert fid.variant_suffix == expected, name
 
 
 def test_variant_suffix_agrees_with_the_gui_composition():
@@ -434,7 +389,6 @@ _PARAMS = {
     "NON_DECISION_TIME": 0.04, "ALPHA": 0.3,
     "BETA": 0.4,                     # reward rate actually moves
     "BIAS_COEF": 0.0, "Q_VAL_OFFSET": 0.0, "LAPSE_RATE": 0.0,
-    "Q_VAL_DECAY_RATE": 1.0, "Q_VAL_COEF": 0.5,
 }
 
 
@@ -449,8 +403,7 @@ def _config(drift, *, include_Q=False, batched=True, scaled_bound=False):
 
 def test_config_derives_the_channel_and_mapping_from_the_drift_name():
     for drift, expected_map in (("DriftGain-RewardRate", "2-r"),
-                                ("DriftGain(1+r)-RewardRate", "1+r"),
-                                ("DriftGain-RewardRate Decay Q (Offset)", "2-r")):
+                                ("DriftGain(1+r)-RewardRate", "1+r")):
         cfg = _config(drift)
         assert cfg.uses_per_trial_drift is True
         assert cfg.rr_drift_map == expected_map
@@ -480,35 +433,16 @@ def test_latents_put_the_gain_on_mu_and_leave_sigma_flat():
         assert "bound_per_trial" not in latents
 
 
-def test_decay_q_latents_scale_the_coherence_term_only():
-    """Same coherence-only rule as the Chi2 drift fn, on the MLE side:
-    the mu difference between the drift and noise channels must be
-    exactly the coherence gain, with the Q-drift term identical."""
-    df = _build_fixture()
-    data = prepare_mle_data(df)
-    params = dict(_PARAMS)
-    params["BETA"] = 0.0            # freeze r at 0.5 => g = 1.5 exactly
-    drift_cfg = _config("DriftGain-RewardRate Decay Q (Offset)", include_Q=True)
-    noise_cfg = _config("NoiseGain-RewardRate Decay Q (Offset)", include_Q=True)
-    mu_drift = _compute_latent_arrays(data, params, drift_cfg)["mu"]
-    mu_noise = _compute_latent_arrays(data, params, noise_cfg)["mu"]
-    base = params["DRIFT_COEF"] * np.asarray(data.dv)[:, None]
-    # Peel the coherence term off each; what is left is the Q-drift term.
-    np.testing.assert_allclose(mu_drift - 1.5 * base, mu_noise - base,
-                               atol=1e-12)
-
-
 @pytest.mark.parametrize("drift,include_Q", [
     ("DriftGain-RewardRate", False),
     ("DriftGain(1+r)-RewardRate", False),
-    ("DriftGain-RewardRate Decay Q (Offset)", True),
+    ("DriftGain-RewardRate", True),
 ])
 @pytest.mark.parametrize("scaled_bound", [False, True])
 def test_rowwise_batched_and_population_agree(drift, include_Q, scaled_bound):
     """The three compute paths must produce the same loss. The population
     path is the one DE actually optimizes, so a divergence here means DE
-    fits a different model than the final eval scores — exactly the bug
-    the Bound- channel hit when its Decay-Q drift term missed its rescale.
+    fits a different model than the final eval scores.
 
     Also covers --scale-bound composition: the per-candidate 1/B rescale
     applies on top of the per-trial gain.
@@ -529,7 +463,7 @@ def test_rowwise_batched_and_population_agree(drift, include_Q, scaled_bound):
     # Single candidate => the population path builds the same latents and
     # makes the same solver call as the batched reference, so this is a
     # machine-precision comparison (measured ~0). A tight tolerance is what
-    # makes it sensitive to a missing gain in the factored-mu rebuild.
+    # makes it sensitive to a missing gain in the population path.
     assert abs(population - batched) < 1e-6, (population, batched)
 
 
@@ -630,15 +564,12 @@ class _FakeWidget:
 
 def _widgets(drift="RewardRate", scale_how="Noise", rr_as_drift=False,
              rr_map="2-r"):
-    """Minimal widget dict. Bias/Noise Fn are needed by
-    ``_include_flags_for_current_model`` (reached via ``_variant_suffix``)."""
+    """Minimal widget dict for ``_variant_suffix`` and the drift resolution."""
     return {"Drift Fn": _FakeWidget(drift),
             "Bias Fn": _FakeWidget("None_"),
             "Noise Fn": _FakeWidget("Normal(0, 1)"),
             "Scale-How": _FakeWidget(scale_how),
             "Joint Wt": _FakeWidget(""),
-            "Asymmetric Q-update": _FakeWidget(False),
-            "Asymmetric RR-update": _FakeWidget(False),
             "RR as Drift": _FakeWidget(rr_as_drift),
             "RR-Drift Map": _FakeWidget(rr_map)}
 
@@ -728,7 +659,7 @@ def test_create_widget_places_every_new_widget(monkeypatch):
 
 def test_gui_variant_suffix_unchanged_by_the_drift_channel():
     """The channel lives in the drift NAME, not in a filename suffix, so
-    ``_variant_suffix`` (asym + scaledB + joint weights) must not gain a
+    ``_variant_suffix`` (scaledB + joint weights) must not gain a
     component — otherwise saved-fit lookups would miss."""
     from ..visualize import _variant_suffix
     base = _widgets()

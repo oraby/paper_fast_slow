@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from ..mle import MLEModelConfig, estimate_population_settings, evaluate_neg_loglik
 from ..mle_batch import (
@@ -37,20 +38,19 @@ def test_batched_numpy_matches_rowwise_for_constant_mu_q_bias():
     params = _params_for(
         include_q=True,
         include_reward_rate=False,
-        decay_q=False,
         q_bias=True,
     )
     rowwise = evaluate_neg_loglik(
         params,
         _small_df(),
-        _config("Classic", "Q-Val", "Normal(0, 1)", True, False,
+        _config("Classic", "Q-Val (Offset)", "Normal(0, 1)", True, False,
                 batched=False),
         return_df=True,
     )
     batched = evaluate_neg_loglik(
         params,
         _small_df(),
-        _config("Classic", "Q-Val", "Normal(0, 1)", True, False,
+        _config("Classic", "Q-Val (Offset)", "Normal(0, 1)", True, False,
                 batched=True),
         return_df=True,
     )
@@ -67,49 +67,22 @@ def test_batched_numpy_matches_rowwise_for_constant_mu_q_bias():
     )
 
 
-def test_batched_numpy_matches_rowwise_for_time_varying_mu():
-    params = _params_for(
-        include_q=True,
-        include_reward_rate=False,
-        decay_q=True,
-        q_bias=False,
-    )
-    rowwise = evaluate_neg_loglik(
-        params,
-        _small_df(),
-        _config("Decay Q", "None_", "Normal(0, 1)", True, False,
-                batched=False),
-        return_df=True,
-    )
-    batched = evaluate_neg_loglik(
-        params,
-        _small_df(),
-        _config("Decay Q", "None_", "Normal(0, 1)", True, False,
-                batched=True),
-        return_df=True,
-    )
-
-    np.testing.assert_allclose(
-        batched.neg_loglik, rowwise.neg_loglik, rtol=1e-8, atol=1e-10)
-    np.testing.assert_allclose(
-        batched.mle_df.mle_loglik,
-        rowwise.mle_df.mle_loglik,
-        rtol=1e-8,
-        atol=1e-10,
-    )
-
-
 def test_prepare_mu_keeps_constant_mu_1d():
     mu = np.array([0.2, 0.4, 0.4])
 
-    prepared, is_constant = _prepare_mu(mu, n_trials=3, n_t=5)
+    prepared = _prepare_mu(mu, n_trials=3)
 
-    assert is_constant
     assert prepared.shape == (3,)
     np.testing.assert_allclose(prepared, mu)
 
 
-def test_constant_mu_fast_path_matches_explicit_time_matrix():
+def test_prepare_mu_refuses_a_time_varying_drift():
+    """Only the removed Decay-Q variants produced a per-timestep drift."""
+    with pytest.raises(ValueError, match="mu shape"):
+        _prepare_mu(np.zeros((3, 5)), n_trials=3)
+
+
+def test_constant_mu_buckets_trials_sharing_mu_and_sigma():
     observed_choice_left = np.array([1.0, 0.0, np.nan, 1.0])
     observed_rt = np.array([0.08, 0.10, np.nan, 0.16])
     no_choice = np.array([False, False, True, False])
@@ -123,27 +96,12 @@ def test_constant_mu_fast_path_matches_explicit_time_matrix():
         observed_choice_left, observed_rt, no_choice, valid_for_loss,
         z, mu, sigma, 1.0, non_decision_time, 0.01, 0.1, 0.2,
     )
-    time_matrix = batched_choice_rt_loglik(
-        observed_choice_left, observed_rt, no_choice, valid_for_loss,
-        z, np.repeat(mu[:, None], 20, axis=1), sigma, 1.0,
-        non_decision_time, 0.01, 0.1, 0.2,
-    )
 
     assert constant.metadata["mu_is_constant"]
-    assert not time_matrix.metadata["mu_is_constant"]
     assert constant.metadata["bucket_count"] == 2 * 20
     assert constant.metadata["kernel_cache_count"] == 2
     assert constant.metadata["kernel_cache_hits"] == 2 * 20
-    assert time_matrix.metadata["kernel_cache_count"] == 0
-    assert time_matrix.metadata["kernel_cache_hits"] == 0
-    np.testing.assert_allclose(
-        constant.loglik, time_matrix.loglik, rtol=1e-10, atol=1e-12)
-    np.testing.assert_allclose(
-        constant.choice_prob_or_density,
-        time_matrix.choice_prob_or_density,
-        rtol=1e-10,
-        atol=1e-12,
-    )
+    assert np.all(np.isfinite(constant.loglik[valid_for_loss & ~no_choice]))
 
 
 def test_constant_mu_bucket_building_does_not_use_numpy_unique(monkeypatch):

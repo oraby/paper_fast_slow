@@ -146,114 +146,17 @@ def test_stored_mle_loss_from_fit_entry_walks_preferred_modes_chain():
 
 
 def test_stored_mle_loss_from_fit_entry_falls_back_when_preferred_missing():
-    """A user with Asym-Q checked may not have a saved ``mle_asymQ``
-    fit yet; the chain falls back to symmetric ``mle`` so the title
-    still shows something useful instead of None."""
+    """A variant with no saved fit yet (here ``mle_scaledB``) falls back
+    along the chain to ``mle`` so the title still shows something useful
+    instead of None."""
     fit_entry = {"mle": {"result": {"neg_loglik": 100.0}}}
-    asym_q_chain = ("mle_asymQ", "mle", "chisq")
+    scaled_chain = ("mle_scaledB", "mle", "chisq")
     assert visualize._stored_mle_loss_from_fit_entry(
-        fit_entry, asym_q_chain) == 100.0
+        fit_entry, scaled_chain) == 100.0
     # When NOTHING in the chain has a saved loss → None.
-    asym_only_chain = ("mle_asymQ", "mle_asymRR")
+    missing_chain = ("mle_scaledB", "mle_mleW1_chi2W0.5")
     assert visualize._stored_mle_loss_from_fit_entry(
-        fit_entry, asym_only_chain) is None
-
-
-def test_asym_mode_suffix_ignores_asym_q_when_active_model_lacks_q_value():
-    """Regression: after selecting a Q-learning model and checking
-    ``Asymmetric Q-update``, switching to a model with no Q-learning
-    (``Classic``) leaves the checkbox checked-but-disabled — its
-    ``value`` stays True even though it's irrelevant. The variant-suffix
-    lookup must IGNORE that stale tick, otherwise the preferred-mode
-    chain leads with ``mle_asymQ`` which the new model can't possibly
-    have on disk, and the Reset-MLE button (gated on the chain's first
-    element) stays disabled even when the symmetric ``mle`` fit exists.
-    """
-    class _W:
-        def __init__(self, value=None):
-            self.value = value
-            self.disabled = False
-
-    # User-facing scenario: Asym-Q ticked, but active model is Classic
-    # (no Q-learning) → suffix should drop _asymQ.
-    classic_widgets = {
-        "Bias Fn":              _W("None_"),
-        "Drift Fn":             _W("Classic"),
-        "Noise Fn":             _W("Normal(0, 1)"),
-        "Scale-How":            _W("Noise"),
-        "Asymmetric Q-update":  _W(True),   # stale tick from previous model
-        "Asymmetric RR-update": _W(False),
-    }
-    assert visualize._asym_mode_suffix(classic_widgets) == ""
-
-    # Sanity: the SAME tick on an actually-Q-learning model keeps _asymQ.
-    q_widgets = {
-        "Bias Fn":              _W("None_"),
-        "Drift Fn":             _W("NoiseGain-RewardRate Decay Q"),
-        "Noise Fn":             _W("Normal(0, 1)"),
-        "Scale-How":            _W("Noise"),
-        "Asymmetric Q-update":  _W(True),
-        "Asymmetric RR-update": _W(False),
-    }
-    assert visualize._asym_mode_suffix(q_widgets) == "_asymQ"
-
-
-def test_asym_mode_suffix_ignores_asym_rr_when_active_model_lacks_reward_rate():
-    """Symmetric to the Q-value regression: a stale Asym-RR tick on a
-    model that doesn't learn a reward rate (``Classic``) must drop the
-    ``_asymRR`` suffix."""
-    class _W:
-        def __init__(self, value=None):
-            self.value = value
-            self.disabled = False
-
-    classic_widgets = {
-        "Bias Fn":              _W("None_"),
-        "Drift Fn":             _W("Classic"),
-        "Noise Fn":             _W("Normal(0, 1)"),
-        "Scale-How":            _W("Noise"),
-        "Asymmetric Q-update":  _W(False),
-        "Asymmetric RR-update": _W(True),   # stale tick
-    }
-    assert visualize._asym_mode_suffix(classic_widgets) == ""
-
-    # And on a RewardRate-learning model the tick survives.
-    rr_widgets = {
-        "Bias Fn":              _W("None_"),
-        "Drift Fn":             _W("NoiseGain-RewardRate"),
-        "Noise Fn":             _W("Normal(0, 1)"),
-        "Scale-How":            _W("Noise"),
-        "Asymmetric Q-update":  _W(False),
-        "Asymmetric RR-update": _W(True),
-    }
-    assert visualize._asym_mode_suffix(rr_widgets) == "_asymRR"
-
-
-def test_preferred_modes_chain_drops_asym_for_q_less_model():
-    """End-to-end regression: when both asym ticks are stale (carried
-    over from a Q+RR model) but the active model is ``Classic``, the
-    preferred-mode chain reduces to the plain symmetric ``mle``.
-    Without this fix the chain would lead with a composed ``mle_asymQRR``
-    key that can't exist for Classic, and the Reset-MLE button gate
-    would stay disabled even when ``mle`` IS on disk for the subject.
-    """
-    class _W:
-        def __init__(self, value=None):
-            self.value = value
-            self.disabled = False
-
-    classic_widgets = {
-        "Bias Fn":              _W("None_"),
-        "Drift Fn":             _W("Classic"),
-        "Noise Fn":             _W("Normal(0, 1)"),
-        "Scale-How":            _W("Noise"),
-        "Asymmetric Q-update":  _W(True),
-        "Asymmetric RR-update": _W(True),
-    }
-    chain = visualize._preferred_modes_for("mle", classic_widgets)
-    # Strict matching: a single-element tuple with the exact variant —
-    # no spurious _asym* prefix, no chisq last-resort fallback.
-    assert chain == ("mle",), chain
+        fit_entry, missing_chain) is None
 
 
 def test_preferred_modes_for_is_strict_single_element():
@@ -263,11 +166,10 @@ def test_preferred_modes_for_is_strict_single_element():
     paths all see strict-or-nothing.
 
     Previously the function returned multi-element chains like
-    ``("mle_asymQ_scaledB", "mle_asymQ", "mle_scaledB", "mle",
-    "chisq")`` so callers could silently load *something* even when the
-    exact variant hadn't been fit. That hid surprises (the user would
-    see a fit's params but it was the symmetric variant, not the asym
-    one they were toggling). New policy: strict, with sliders / title
+    ``("mle_scaledB", "mle", "chisq")`` so callers could silently load
+    *something* even when the exact variant hadn't been fit. That hid
+    surprises (the user would see a fit's params but not of the variant
+    they had selected). New policy: strict, with sliders / title
     holding their previous state when the exact match is missing.
     """
     class _W:
@@ -277,31 +179,16 @@ def test_preferred_modes_for_is_strict_single_element():
 
     base_widgets = {
         "Bias Fn":              _W("None_"),
-        "Drift Fn":             _W("NoiseGain-RewardRate Decay Q"),
+        "Drift Fn":             _W("NoiseGain-RewardRate"),
         "Noise Fn":             _W("Normal(0, 1)"),
         "Scale-How":            _W("Noise"),
-        "Asymmetric Q-update":  _W(False),
-        "Asymmetric RR-update": _W(False),
     }
-    # Plain symmetric noise-scaled.
+    # Plain noise-scaled.
     assert visualize._preferred_modes_for("mle",   base_widgets) == ("mle",)
     assert visualize._preferred_modes_for("chisq", base_widgets) == ("chisq",)
 
-    # Asym-Q only on a Q-learning model.
-    base_widgets["Asymmetric Q-update"].value = True
-    assert visualize._preferred_modes_for("mle", base_widgets) == ("mle_asymQ",)
-
-    # Asym-Q + Asym-RR + Scale-Bound composed suffix, all on a model
-    # that supports both.
-    base_widgets["Asymmetric RR-update"].value = True
+    # Scale-Bound gives the bare scaledB key.
     base_widgets["Scale-How"].value = "Bound"
-    assert visualize._preferred_modes_for("mle", base_widgets) == (
-        "mle_asymQRR_scaledB",)
-
-    # Switching to a Q-less model with stale ticks collapses the
-    # composed suffix back to the bare scaledB key — Asym-Q / Asym-RR
-    # become irrelevant per ``_asym_mode_suffix``'s gating.
-    base_widgets["Drift Fn"].value = "Classic"
     assert visualize._preferred_modes_for("mle", base_widgets) == (
         "mle_scaledB",)
 
@@ -316,8 +203,6 @@ def test_preferred_modes_for_includes_joint_weight_suffix():
         "Drift Fn": _W("Classic"),
         "Noise Fn": _W("Normal(0, 1)"),
         "Scale-How": _W("Noise"),
-        "Asymmetric Q-update": _W(False),
-        "Asymmetric RR-update": _W(False),
         "Joint Wt": _W(""),   # "None" / pure
     }
     # Pure (Joint Wt = None) leaves the key unchanged → back-compatible.
@@ -326,7 +211,7 @@ def test_preferred_modes_for_includes_joint_weight_suffix():
     widgets_["Joint Wt"].value = "_mleW1_chi2W0.5"
     assert visualize._preferred_modes_for("mle", widgets_) == (
         "mle_mleW1_chi2W0.5",)
-    # Composes after scaledB (evolveFP order: asym, scaledB, then weights).
+    # Composes after scaledB (evolveFP order: scaledB, then weights).
     widgets_["Scale-How"].value = "Bound"
     assert visualize._preferred_modes_for("mle", widgets_) == (
         "mle_scaledB_mleW1_chi2W0.5",)
@@ -348,7 +233,7 @@ def test_discover_weight_suffixes():
         "mle": {"result": {}, "params": {}},
         "chisq": {"result": {}, "params": {}},
         "mle_mleW1_chi2W0.5": {"result": {}, "params": {}},
-        "mle_asymQ_mleW1_chi2W0.25": {"result": {}, "params": {}},
+        "mle_scaledB_mleW1_chi2W0.25": {"result": {}, "params": {}},
     }}}}}}
     opts = visualize._discover_weight_suffixes(cache)
     assert opts[0] == ("None", "")  # pure option leads
@@ -441,8 +326,6 @@ def test_preferred_modes_for_no_mle_to_chisq_fallback():
         "Drift Fn":             _W("Classic"),
         "Noise Fn":             _W("Normal(0, 1)"),
         "Scale-How":            _W("Noise"),
-        "Asymmetric Q-update":  _W(False),
-        "Asymmetric RR-update": _W(False),
     }
     assert "chisq" not in visualize._preferred_modes_for("mle", widgets)
 
@@ -470,26 +353,19 @@ def test_auto_apply_chain_includes_chisq_fallback():
         "Drift Fn":             _W("Classic"),
         "Noise Fn":             _W("Normal(0, 1)"),
         "Scale-How":            _W("Noise"),
-        "Asymmetric Q-update":  _W(False),
-        "Asymmetric RR-update": _W(False),
     }
     auto_apply_chain = (
         visualize._preferred_modes_for("mle", widgets)
         + visualize._preferred_modes_for("chisq", widgets))
     assert auto_apply_chain == ("mle", "chisq")
 
-    # Composed variant on a model that supports both flags: the chisq
-    # fallback also gets the same suffix — strict on the suffix, not
-    # bare ``chisq``.
-    widgets["Drift Fn"].value = "NoiseGain-RewardRate Decay Q"
-    widgets["Asymmetric Q-update"].value = True
-    widgets["Asymmetric RR-update"].value = True
+    # A variant: the chisq fallback also gets the same suffix — strict on
+    # the suffix, not bare ``chisq``.
     widgets["Scale-How"].value = "Bound"
     auto_apply_chain = (
         visualize._preferred_modes_for("mle", widgets)
         + visualize._preferred_modes_for("chisq", widgets))
-    assert auto_apply_chain == (
-        "mle_asymQRR_scaledB", "chisq_asymQRR_scaledB")
+    assert auto_apply_chain == ("mle_scaledB", "chisq_scaledB")
 
 
 def test_variant_suffix_drives_both_mode_key_and_auto_apply_detector():
@@ -516,8 +392,6 @@ def test_variant_suffix_drives_both_mode_key_and_auto_apply_detector():
         "Drift Fn":             _W("Classic"),
         "Noise Fn":             _W("Normal(0, 1)"),
         "Scale-How":            _W("Noise"),
-        "Asymmetric Q-update":  _W(False),
-        "Asymmetric RR-update": _W(False),
         "Joint Wt":             _W(""),
     }
     # (1) Mode key is base + the shared suffix — no independent concatenation.
@@ -533,124 +407,9 @@ def test_variant_suffix_drives_both_mode_key_and_auto_apply_detector():
     after = visualize._variant_suffix(widgets)
     assert before != after
     assert after.endswith("_mleW1_chi2W0.5")
-    # The weight axis composes AFTER asym + scaledB, matching fit.evolveFP.
-    # (asym only fires on a model that actually learns Q — Classic doesn't.)
-    widgets["Drift Fn"].value = "NoiseGain-RewardRate Decay Q"
-    widgets["Asymmetric Q-update"].value = True
+    # The weight axis composes AFTER scaledB, matching fit.evolveFP.
     widgets["Scale-How"].value = "Bound"
-    assert visualize._variant_suffix(widgets) == "_asymQ_scaledB_mleW1_chi2W0.5"
-
-
-def test_asym_both_excluded_from_auto_observed_set():
-    """'Asym: Both' must NOT be in all_widgets_wo_btns.
-
-    interactive_output observes all_widgets_wo_btns. If 'Asym: Both' were in
-    that set, setting the two individual checkboxes from its callback would
-    trigger 3 outHandler calls instead of 1, and every updateGUI-internal sync
-    of 'Asym: Both' (which sets its .value) would trigger another re-render.
-    Pin this at the source level via the AST so the exclusion can't be
-    accidentally removed.
-    """
-    import ast
-
-    src = Path(visualize.__file__).read_text(encoding="utf-8")
-    tree = ast.parse(src)
-    fn = next(n for n in ast.walk(tree)
-              if isinstance(n, ast.FunctionDef) and n.name == "createWidget")
-
-    # Find the all_widgets_wo_btns assignment — it must reference "Asym: Both"
-    # in a negative test (i.e. the string literal must appear in the node that
-    # builds all_widgets_wo_btns, as an exclusion).
-    found_exclusion = False
-    for node in ast.walk(fn):
-        if (isinstance(node, ast.Assign)
-                and any(isinstance(t, ast.Name) and t.id == "all_widgets_wo_btns"
-                        for t in node.targets)):
-            src_seg = ast.unparse(node)
-            assert "Asym: Both" in src_seg, (
-                "all_widgets_wo_btns assignment must explicitly exclude 'Asym: Both'")
-            found_exclusion = True
-    assert found_exclusion, "all_widgets_wo_btns assignment not found in createWidget"
-
-
-def test_asym_both_suppresses_intermediate_outhandler_calls():
-    """When 'Asym: Both' is toggled, outHandler is called exactly once (from
-    the RR-update write); the Q-update write is suppressed by the counter.
-
-    Also verifies the reverse sync: updateGUI-style direct writes to
-    'Asym: Both' (with the counter held) don't re-enter the callback.
-    """
-
-    calls = []
-
-    # Minimal widget stubs
-    class _W:
-        def __init__(self, value=False, disabled=False):
-            self.value = value
-            self.disabled = disabled
-            self._obs = []
-
-        def observe(self, fn, names='value'):
-            self._obs.append(fn)
-
-        def _fire(self, new_val):
-            old = self.value
-            self.value = new_val
-            if old != new_val:
-                for fn in self._obs:
-                    fn({'new': new_val, 'old': old, 'owner': self})
-
-    q_cb  = _W(False)
-    rr_cb = _W(False)
-    asym_all_cb = _W(False)
-
-    _asym_suppress = [0]
-
-    def outHandler():
-        if _asym_suppress[0] > 0:
-            return
-        calls.append('update')
-
-    # Wire individual boxes to outHandler (simulating interactive_output)
-    q_cb.observe(lambda _: outHandler(), names='value')
-    rr_cb.observe(lambda _: outHandler(), names='value')
-
-    all_widgets = {
-        'Asymmetric Q-update':  q_cb,
-        'Asymmetric RR-update': rr_cb,
-        'Asym: Both':           asym_all_cb,
-    }
-
-    def _on_asym_all_change(change):
-        if _asym_suppress[0] > 0:
-            return
-        new_val = change['new']
-        _asym_suppress[0] += 1
-        all_widgets['Asymmetric Q-update']._fire(new_val)
-        _asym_suppress[0] -= 1
-        all_widgets['Asymmetric RR-update']._fire(new_val)
-
-    asym_all_cb.observe(_on_asym_all_change, names='value')
-
-    # Toggle "Asym: Both" ON → exactly one updateGUI call
-    asym_all_cb._fire(True)
-    assert calls == ['update'], f"Expected 1 call, got {calls}"
-    assert q_cb.value is True
-    assert rr_cb.value is True
-
-    # Simulate updateGUI syncing "Asym: Both" back (suppress prevents cascade)
-    calls.clear()
-    _asym_suppress[0] += 1
-    asym_all_cb._fire(True)   # already True — no _obs fires (same value guard)
-    _asym_suppress[0] -= 1
-    assert calls == []  # no extra update triggered
-
-    # Toggle OFF → exactly one call
-    calls.clear()
-    asym_all_cb._fire(False)
-    assert calls == ['update']
-    assert q_cb.value is False
-    assert rr_cb.value is False
+    assert visualize._variant_suffix(widgets) == "_scaledB_mleW1_chi2W0.5"
 
 
 def test_stored_mle_loss_from_positional_fit_entry_tuple():
@@ -700,31 +459,31 @@ def test_fit_entry_for_mode_supports_positional_tuple_without_mode_names():
 
 def test_fit_entry_for_mode_recognizes_scaledB_and_composed_variants():
     """Regression: ``_fit_entries_by_mode`` used to recognize only
-    ``mle`` / ``chisq`` and ``mle_asym* / chisq_asym*``. ``--scale-bound``
-    fits are keyed as ``mle_scaledB`` / ``chisq_scaledB`` (and the
-    composed ``mle_asymQ_scaledB`` family); those were silently dropped
+    a fixed set of keys. ``--scale-bound`` fits are keyed as
+    ``mle_scaledB`` / ``chisq_scaledB`` (and the composed
+    ``mle_scaledB_mleW1_chi2W0.5`` family); those were silently dropped
     from the recognized set, so the Reset-to-Defaults button stayed
     grayed out even when the saved fit existed on disk.
     """
     mle_scaled = {"params": {"BOUND": 1.5}}
-    mle_asymQ_scaled = {"params": {"BOUND": 2.0}}
+    mle_joint_scaled = {"params": {"BOUND": 2.0}}
     chisq_scaled = {"params": {"BOUND": 0.8}}
     entry = {
         "mle": {"params": {"BOUND": 1.0}},
-        "mle_asymQ": {"params": {"BOUND": 1.1}},
+        "mle_mleW1_chi2W0.5": {"params": {"BOUND": 1.1}},
         "mle_scaledB": mle_scaled,
-        "mle_asymQ_scaledB": mle_asymQ_scaled,
+        "mle_joint_scaledB": mle_joint_scaled,
         "chisq_scaledB": chisq_scaled,
     }
 
     assert visualize._fit_entry_for_mode(entry, "mle_scaledB") is mle_scaled
     assert visualize._fit_entry_for_mode(
-        entry, "mle_asymQ_scaledB") is mle_asymQ_scaled
+        entry, "mle_joint_scaledB") is mle_joint_scaled
     assert visualize._fit_entry_for_mode(
         entry, "chisq_scaledB") is chisq_scaled
     # Existing modes still resolve correctly.
     assert visualize._fit_entry_for_mode(entry, "mle") is entry["mle"]
-    assert visualize._fit_entry_for_mode(entry, "mle_asymQ") is entry["mle_asymQ"]
+    assert visualize._fit_entry_for_mode(entry, "mle_mleW1_chi2W0.5") is entry["mle_mleW1_chi2W0.5"]
 
 
 def test_fit_entry_params_supports_plain_numpy_scalar_param_dict():
@@ -878,42 +637,6 @@ def test_apply_fit_defaults_print_omits_conditions_when_unweighted(capsys):
     out = capsys.readouterr().out
     assert "Wed Jun 17 15:23:45 2026" in out, out
     assert "mle_conditions" not in out, out
-
-
-def test_mle_params_from_widgets_includes_asym_unrewarded_params():
-    """``_compute_latent_arrays`` reads ``ALPHA_UNREWARDED`` /
-    ``BETA_UNREWARDED`` via strict access whenever the matching
-    ``uses_asymmetric_*`` flag is True. The GUI's ``Run MLE`` button
-    builds the params dict from this whitelist; if the unrewarded
-    sliders aren't in the dict the MLE call fails with KeyError —
-    which used to be swallowed and rendered as ``"not run (error)"``.
-    Pin both keys here so a future refactor doesn't drop them again.
-    """
-    class _Slider:
-        def __init__(self, value):
-            self.value = value
-
-    widgets = {
-        "DRIFT_COEF": _Slider(1.0),
-        "NOISE_SIGMA": _Slider(1.0),
-        "BOUND": _Slider(1.0),
-        "NON_DECISION_TIME": _Slider(0.02),
-        "ALPHA": _Slider(0.3),
-        "BETA": _Slider(0.4),
-        "ALPHA_UNREWARDED": _Slider(0.11),
-        "BETA_UNREWARDED": _Slider(0.22),
-        "BIAS_COEF": _Slider(0.5),
-        "Q_VAL_OFFSET": _Slider(0.0),
-        "LAPSE_RATE": _Slider(0.0),
-        "Drift Fn": _Slider("RewardRate"),  # non-param widget, ignored
-    }
-
-    params = visualize._mle_params_from_widgets(widgets)
-
-    assert params["ALPHA_UNREWARDED"] == 0.11
-    assert params["BETA_UNREWARDED"] == 0.22
-    # Non-param widgets stay out.
-    assert "Drift Fn" not in params
 
 
 def test_mle_loss_key_changes_with_params():

@@ -12,16 +12,13 @@ from .initvals import MLE_TERMINAL_C
 from .mle_batch import (
     BatchedLikelihoodResult,
     BatchedDiffusionSolver,
-    TimeVaryingMuFactors,
     batched_choice_rt_loglik,
     estimate_flat_trial_capacity_for_memory,
 )
 from .mle_likelihood import trial_choice_rt_loglik, LOGLIK_FLOOR
 
 
-# Asymmetric ALPHA is not a bias of its own: it is the --asym-q flag
-# (``MLEModelConfig.uses_asymmetric_alpha``) on any of these.
-SUPPORTED_MLE_BIASES = {"None_", "Q-Val", "Q-Val (Offset)"}
+SUPPORTED_MLE_BIASES = {"None_", "Q-Val (Offset)"}
 SUPPORTED_MLE_ARRAY_BACKENDS = {"auto", "numpy", "cupy"}
 SUPPORTED_MLE_CUPY_FALLBACKS = {"numpy", "error"}
 _PREPARED_SESSION_BACKEND_CACHE = {}
@@ -58,14 +55,6 @@ class MLEModelConfig:
     # budget) or up for harder loss landscapes that need more
     # candidates per generation. CLI: ``--mle-min-population``.
     mle_min_population_candidates: int = MIN_POPULATION_CANDIDATES
-    # Asymmetric-LR opt-in flags. When True, the corresponding
-    # ALPHA_UNREWARDED / BETA_UNREWARDED param MUST be in the params
-    # dict at evaluate-time — strict access, KeyError on miss (loud
-    # failure over silent fallback). Defaulted False so old pickles
-    # whose saved MLEModelConfig predates these fields still load and
-    # behave as symmetric (legacy) fits.
-    uses_asymmetric_alpha: bool = False
-    uses_asymmetric_beta: bool = False
     # Bound-RewardRate per-trial bound flag. Set True when the user
     # selects a "Bound-RewardRate*" drift; ``fit.simulateDDM`` derives
     # it from ``drift_fn_str``. The per-trial bound is
@@ -108,8 +97,7 @@ class MLEModelConfig:
     # for back-compat: existing direct-construct tests and old pickles
     # (whose saved config predates this field) keep the legacy
     # objective. The CLI / ``fit.simulateDDM`` default is
-    # ``"conditional"`` (the user-facing recommended form). Same
-    # back-compat pattern as ``uses_asymmetric_alpha``.
+    # ``"conditional"`` (the user-facing recommended form).
     mle_choice_norm: str = "marginal"
     # Outer joint-loss weights (``--mle-mle-weight`` / ``--mle-chi2-weight``).
     # The DE objective becomes
@@ -131,14 +119,6 @@ class MLEModelConfig:
     @property
     def uses_q_bias(self):
         return "Q-Val" in self.bias_fn_str
-
-    @property
-    def uses_decay_q_drift(self):
-        return "Decay Q" in self.drift_fn_str
-
-    @property
-    def uses_decay_q_noise(self):
-        return self.noise_fn_str == "Decaying Q-Val"
 
     @property
     def uses_per_trial_drift(self):
@@ -392,9 +372,6 @@ def objective_from_population(x_matrix, params_names, df, model_config):
     # Phase 1: compute latents for the whole population. Prepared data is
     # padded to equal session length, so we keep only a short Python loop over
     # trial position while updating all candidates and sessions at once.
-    is_time_varying = (model_config.uses_decay_q_drift
-                       or model_config.uses_decay_q_noise)
-    n_t = int(round(model_config.t_dur / model_config.dt))
     backend = resolve_array_backend(
         model_config.mle_array_backend,
         model_config.mle_device_id,
@@ -450,20 +427,7 @@ def objective_from_population(x_matrix, params_names, df, model_config):
     flat_sigma = sigma_stack[valid_cand_idx].reshape(-1)
     flat_valid = valid_stack[valid_cand_idx].reshape(-1)
     flat_no_choice = no_choice_stack[valid_cand_idx].reshape(-1)
-    if isinstance(mu_stack, TimeVaryingMuFactors):
-        # O6: factored time-varying mu — pass the factors object straight
-        # through. In the common case (`valid_cand_idx == arange(n_candidates)`)
-        # no subsetting is needed since the factor arrays were already built
-        # for the full population. If a future caller subsets candidates here,
-        # this branch needs a `select_valid_candidates` helper.
-        assert valid_cand_idx.size == n_candidates, (
-            "factored mu doesn't yet support per-candidate subsetting at this "
-            "level; ensure no candidates were dropped by upstream filters.")
-        flat_mu = mu_stack
-    elif is_time_varying:
-        flat_mu = mu_stack[valid_cand_idx].reshape(-1, n_t)
-    else:
-        flat_mu = mu_stack[valid_cand_idx].reshape(-1)
+    flat_mu = mu_stack[valid_cand_idx].reshape(-1)
 
     # Phase 5: single solver call across the entire flattened population.
     batch_result = batched_choice_rt_loglik(
@@ -861,25 +825,16 @@ def _compute_latent_population_equal_sessions(data, x_matrix, params_names,
     # 1.0 / 0.0 are identity / no-shift settings, not silent fallbacks.
     bounds = _param_population(theta, param_lookup, "BOUND", xp, 1.0)
     nondec = _param_population(theta, param_lookup, "NON_DECISION_TIME", xp, 0.0)
-    # Flag-gated strict access: when include_Q / asymmetric flags are
-    # True, the param MUST exist; KeyError on miss. None propagates to
-    # state_updates.update_q_values which interprets it as "use the
-    # symmetric rate / skip the update". Pre-shape with `[:, None]` so
-    # the population (n_candidates, n_sessions) broadcast happens
-    # naturally inside update_q_values / update_reward_rate.
+    # Flag-gated strict access: when include_Q / include_RewardRate is
+    # True, the param MUST exist; KeyError on miss. Pre-shape with
+    # `[:, None]` so the population (n_candidates, n_sessions) broadcast
+    # happens naturally inside update_q_values / update_reward_rate.
     def _gated(name, gate):
         return theta[param_lookup[name]][:, None] if gate else None
     alpha = _gated("ALPHA", model_config.include_Q)
-    alpha_unrewarded = _gated(
-        "ALPHA_UNREWARDED", model_config.uses_asymmetric_alpha)
     beta = _gated("BETA", model_config.include_RewardRate)
-    beta_unrewarded = _gated(
-        "BETA_UNREWARDED", model_config.uses_asymmetric_beta)
     bias_coef = _param_population(theta, param_lookup, "BIAS_COEF", xp, 0.0)
     q_offset = _param_population(theta, param_lookup, "Q_VAL_OFFSET", xp, 0.0)
-    q_coef = _param_population(theta, param_lookup, "Q_VAL_COEF", xp, 0.0)
-    q_decay_rate = _param_population(
-        theta, param_lookup, "Q_VAL_DECAY_RATE", xp, 1.0)
     # LAPSE_RATE: 0.0 reproduces the no-mixture likelihood exactly.
     lapse_rate = _param_population(
         theta, param_lookup, "LAPSE_RATE", xp, 0.0)
@@ -889,67 +844,7 @@ def _compute_latent_population_equal_sessions(data, x_matrix, params_names,
     reward_rate = xp.full((n_candidates, n_sessions), 0.5, dtype=float)
     z = xp.empty((n_candidates, n_sessions, trials_per_session), dtype=float)
     sigma = xp.empty_like(z)
-    time_varying = model_config.uses_decay_q_drift or model_config.uses_decay_q_noise
-    n_t = int(round(model_config.t_dur / model_config.dt))
-    # Per-candidate decay shapes that don't depend on the Q-state recurrence —
-    # safe to compute up front. Used by O6 factored mu (and also by the
-    # legacy time-varying branch where we still materialize the (..., n_t)
-    # tensor, gated below).
-    decay_form_per_cand = None
-    log_decay_per_cand = None
-    if time_varying:
-        t_idx = xp.arange(n_t, dtype=float)
-        decay_base = 1.0 - t_idx / float(n_t)
-        if model_config.uses_decay_q_drift:
-            decay_form_per_cand = decay_base[None, :] ** q_decay_rate[:, None]
-        if model_config.uses_decay_q_noise:
-            log_decay_per_cand = 1.0 - (
-                q_decay_rate[:, None] * xp.log(t_idx[None, :] + 1.0)
-                / np.log(n_t + 1.0)
-            )
-
-    # O6: for time-varying mu, accumulate ONLY the per-trial factors that the
-    # Q-state recurrence touches. The (n_candidates, n_sessions,
-    # trials_per_session, n_t) mu tensor is gone — it was ~7 GB on a typical
-    # population GPU fit, and per-step mu can be reconstructed cheaply from
-    # the (b,) per-trial scalars and the (n_candidates, n_t) decay shapes
-    # above.
-    if time_varying:
-        mu = None
-        q_drift_coef_pop = (
-            xp.empty((n_candidates, n_sessions, trials_per_session), dtype=float)
-            if model_config.uses_decay_q_drift else None)
-        q_abs_x_qcoef_pop = (
-            xp.empty((n_candidates, n_sessions, trials_per_session), dtype=float)
-            if model_config.uses_decay_q_noise else None)
-        q_sign_pop = (
-            xp.empty((n_candidates, n_sessions, trials_per_session), dtype=float)
-            if model_config.uses_decay_q_noise else None)
-        sigma_for_noise_pop = (
-            xp.empty((n_candidates, n_sessions, trials_per_session), dtype=float)
-            if model_config.uses_decay_q_noise else None)
-    else:
-        mu = xp.empty_like(z)
-        q_drift_coef_pop = None
-        q_abs_x_qcoef_pop = None
-        q_sign_pop = None
-        sigma_for_noise_pop = None
-
-    # Per-trial bound scale s_t = 2 - r_t, stashed per (cand, sess, trial) so the
-    # factored-mu drift terms (base_mu_pop, q_drift_coef_pop) can be divided by
-    # s_t after the loop. Only the time-varying (Decay-Q) path rebuilds those
-    # post-loop; the non-decay path scales base_mu inline. The diffusion sigma/z
-    # and sigma_for_noise_pop are already divided by s_t inline in the loop.
-    bound_scale_pop = (
-        xp.empty((n_candidates, n_sessions, trials_per_session), dtype=float)
-        if (model_config.uses_per_trial_bound and time_varying) else None)
-    # DriftGain-RewardRate counterpart: the per-trial drift gain g(r_t),
-    # stashed for the same reason -- the factored-mu (Decay-Q) path rebuilds
-    # base_mu_pop after the loop, so it needs the per-trial gains kept around.
-    # The non-decay path multiplies base_mu inline instead.
-    drift_scale_pop = (
-        xp.empty((n_candidates, n_sessions, trials_per_session), dtype=float)
-        if (model_config.uses_per_trial_drift and time_varying) else None)
+    mu = xp.empty_like(z)
 
     for trial_pos in range(trials_per_session):
         # Delegate Q-value normalization + starting-point bias to
@@ -965,8 +860,6 @@ def _compute_latent_population_equal_sessions(data, x_matrix, params_names,
         base_mu = drift_coef[:, None] * dv[None, :, trial_pos]
         if model_config.uses_per_trial_bound:
             bound_scale = state_updates.bound_scale_from_reward_rate(reward_rate)
-            if bound_scale_pop is not None:
-                bound_scale_pop[:, :, trial_pos] = bound_scale
             b_t = bounds[:, None] * bound_scale
             if model_config.uses_q_bias:
                 z_abs = xp.clip(
@@ -994,8 +887,6 @@ def _compute_latent_population_equal_sessions(data, x_matrix, params_names,
                 # fraction-of-bound semantic and needs no adjustment.
                 drift_scale = state_updates.drift_scale_from_reward_rate(
                     reward_rate, model_config.rr_drift_map)
-                if drift_scale_pop is not None:
-                    drift_scale_pop[:, :, trial_pos] = drift_scale
                 sigma_t = xp.broadcast_to(noise_sigma[:, None], q_rel.shape)
                 base_mu = base_mu * drift_scale
             else:
@@ -1006,42 +897,18 @@ def _compute_latent_population_equal_sessions(data, x_matrix, params_names,
                 )
         z[:, :, trial_pos] = z_t
         sigma[:, :, trial_pos] = sigma_t
-
-        if time_varying:
-            # O6: store the per-trial Q-state-dependent factors. The (n_t,)
-            # decay shapes are per-candidate constants (computed once above);
-            # mu_t at any timestep is reconstructed cheaply by the solver
-            # from these factors + a column gather from decay_form_per_cand
-            # / log_decay_per_cand.
-            if model_config.uses_decay_q_drift:
-                assert q_drift_coef_pop is not None  # narrow for pyright
-                q_for_drift = xp.clip(q_rel + q_offset[:, None], -1.0, 1.0)
-                q_drift_coef_pop[:, :, trial_pos] = q_for_drift * q_coef[:, None]
-            if model_config.uses_decay_q_noise:
-                assert q_abs_x_qcoef_pop is not None
-                assert q_sign_pop is not None
-                assert sigma_for_noise_pop is not None
-                q_abs_x_qcoef_pop[:, :, trial_pos] = xp.abs(q_rel) * q_coef[:, None]
-                q_sign_pop[:, :, trial_pos] = xp.where(
-                    q_rel < 0.0, -1.0, 1.0)
-                sigma_for_noise_pop[:, :, trial_pos] = sigma_t
-        else:
-            assert mu is not None
-            mu[:, :, trial_pos] = base_mu
+        mu[:, :, trial_pos] = base_mu
 
         valid_t = valid_for_loss_2d[None, :, trial_pos]
         reward_t = xp.nan_to_num(reward_arr[None, :, trial_pos], nan=0.0)
         choice_t = choice[None, :, trial_pos]
-        # Delegate the rewarded/unrewarded branching to state_updates so
-        # the population path uses the same math as the scalar path. The
-        # gated alpha / beta / *_unrewarded above are already pre-shaped
-        # ``[:, None]`` so update_q_values' broadcasts hit
-        # (n_candidates, n_sessions) cleanly. ``alpha_unrewarded=None``
-        # collapses to the symmetric rate inside state_updates.
+        # Delegate the updates to state_updates so the population path uses
+        # the same math as the scalar path. The gated alpha / beta above are
+        # already pre-shaped ``[:, None]`` so update_q_values' broadcasts hit
+        # (n_candidates, n_sessions) cleanly.
         if model_config.include_Q:
             new_q_left, new_q_right = state_updates.update_q_values(
-                q_left, q_right, choice_t, reward_t, alpha,
-                alpha_unrewarded=alpha_unrewarded, xp=xp)
+                q_left, q_right, choice_t, reward_t, alpha, xp=xp)
             # update_q_values doesn't know about per-trial validity;
             # mask invalid positions here so they keep their previous
             # Q-state (matches the scalar path which guards with
@@ -1050,19 +917,8 @@ def _compute_latent_population_equal_sessions(data, x_matrix, params_names,
             q_right = xp.where(valid_t, new_q_right, q_right)
         if model_config.include_RewardRate:
             new_rr = state_updates.update_reward_rate(
-                reward_rate, reward_t, beta,
-                beta_unrewarded=beta_unrewarded, xp=xp)
+                reward_rate, reward_t, beta, xp=xp)
             reward_rate = xp.where(valid_t, new_rr, reward_rate)
-
-    # Bound-RewardRate (per-trial bound), factored-mu drift term: the loop
-    # already divided the diffusion sigma/z and sigma_for_noise_pop by
-    # s_t = 2 - r_t (they are built from sigma_t), but q_drift_coef_pop is the
-    # Decay-Q drift factor built straight from the Q-state, so divide it by the
-    # per-trial s_t here (base_mu_pop is handled where it is built below).
-    # Without this the Decay-Q drift term ignores the per-trial bound during
-    # population (DE) fits and diverges from the rowwise/batched reference.
-    if bound_scale_pop is not None and q_drift_coef_pop is not None:
-        q_drift_coef_pop = q_drift_coef_pop / bound_scale_pop
 
     # --scale-bound: apply the path-D rescaling identity per candidate
     # (mu/B, sigma/B, z/B) so every candidate's effective bound becomes
@@ -1077,20 +933,7 @@ def _compute_latent_population_equal_sessions(data, x_matrix, params_names,
         inv_b_3d = (1.0 / bounds)[:, None, None]
         z = z * inv_b_3d
         sigma = sigma * inv_b_3d
-        if time_varying:
-            # Factored-mu reconstruction: mu_t = base_mu + q_drift_coef *
-            # decay_form + sigma_for_noise * sign * max(...) / dt. Only
-            # the per-trial outer factors need rescaling; the per-candidate
-            # time shapes (decay_form, log_decay) and the q_abs_x_qcoef
-            # inside the max() stay as-is. base_mu_pop is built below in
-            # the time-varying output block; rescaled there via inv_b_3d.
-            if q_drift_coef_pop is not None:
-                q_drift_coef_pop = q_drift_coef_pop * inv_b_3d
-            if sigma_for_noise_pop is not None:
-                sigma_for_noise_pop = sigma_for_noise_pop * inv_b_3d
-        else:
-            assert mu is not None
-            mu = mu * inv_b_3d
+        mu = mu * inv_b_3d
         bounds = xp.ones_like(bounds)
 
     flat_shape = (n_candidates, n_trials)
@@ -1103,59 +946,10 @@ def _compute_latent_population_equal_sessions(data, x_matrix, params_names,
         (n_candidates, n_sessions, trials_per_session),
     ).reshape(flat_shape)
 
-    if time_varying:
-        # O6 factored mu. base_mu is independent of the recurrence so we
-        # build it here in one shot rather than per trial_pos. Per-trial
-        # factor arrays are flattened to (n_candidates * n_trials,) so the
-        # solver can index by valid_idx directly.
-        base_mu_pop = drift_coef[:, None, None] * dv[None, :, :]
-        if bound_scale_pop is not None:
-            base_mu_pop = base_mu_pop / bound_scale_pop    # per-trial bound: μ /= s_t
-        if drift_scale_pop is not None:
-            # DriftGain: μ *= g(r_t), COHERENCE term only. q_drift_coef_pop is
-            # deliberately left alone here (contrast the bound_scale_pop block
-            # above, which does divide it) -- the reward rate modulates
-            # evidence gain, not the Q-value drift contribution.
-            base_mu_pop = base_mu_pop * drift_scale_pop
-        if inv_b_3d is not None:
-            base_mu_pop = base_mu_pop * inv_b_3d
-        flat_n = n_candidates * n_trials
-        candidate_id_flat = np.broadcast_to(
-            np.arange(n_candidates, dtype=np.int64)[:, None],
-            (n_candidates, n_trials),
-        ).reshape(-1).copy()
-        mu_out = TimeVaryingMuFactors(
-            n_trials=int(flat_n),
-            n_t=int(n_t),
-            dt=float(model_config.dt),
-            base_mu=asnumpy(xp, base_mu_pop).reshape(-1).astype(float, copy=False),
-            candidate_id_per_trial=candidate_id_flat,
-            q_drift_coef_per_trial=(
-                None if q_drift_coef_pop is None
-                else asnumpy(xp, q_drift_coef_pop).reshape(-1).astype(float, copy=False)),
-            decay_form_per_cand=(
-                None if decay_form_per_cand is None
-                else asnumpy(xp, decay_form_per_cand).astype(float, copy=False)),
-            q_abs_x_qcoef_per_trial=(
-                None if q_abs_x_qcoef_pop is None
-                else asnumpy(xp, q_abs_x_qcoef_pop).reshape(-1).astype(float, copy=False)),
-            q_sign_per_trial=(
-                None if q_sign_pop is None
-                else asnumpy(xp, q_sign_pop).reshape(-1).astype(float, copy=False)),
-            sigma_per_trial=(
-                None if sigma_for_noise_pop is None
-                else asnumpy(xp, sigma_for_noise_pop).reshape(-1).astype(float, copy=False)),
-            log_decay_per_cand=(
-                None if log_decay_per_cand is None
-                else asnumpy(xp, log_decay_per_cand).astype(float, copy=False)),
-        )
-    else:
-        assert mu is not None
-        mu_out = asnumpy(xp, mu.reshape(flat_shape))
     return {
         "z": asnumpy(xp, z.reshape(flat_shape)),
         "sigma": asnumpy(xp, sigma.reshape(flat_shape)),
-        "mu": mu_out,
+        "mu": asnumpy(xp, mu.reshape(flat_shape)),
         "valid_for_loss": asnumpy(xp, valid_flat).astype(bool),
         "no_choice": asnumpy(xp, no_choice_flat).astype(bool),
         "bounds": asnumpy(xp, bounds),
@@ -1168,18 +962,16 @@ def _compute_latent_arrays(data, params, model_config):
     """Scalar per-trial Q / reward-rate / z / sigma / mu recompute.
 
     Thin orchestration around ``state_updates`` — the actual math (Q
-    update, reward-rate update, asymmetric branching, no-choice
-    handling, Q-value normalization) lives there. This function is the
-    scalar single-subject path; the (n_candidates × n_sessions)
-    vectorized counterpart is ``_compute_latent_population_equal_sessions``,
-    which calls the same ``state_updates`` functions with
-    ``xp=backend.xp``.
+    update, reward-rate update, no-choice handling, Q-value normalization)
+    lives there. This function is the scalar single-subject path; the
+    (n_candidates × n_sessions) vectorized counterpart is
+    ``_compute_latent_population_equal_sessions``, which calls the same
+    ``state_updates`` functions with ``xp=backend.xp``.
 
     Strict access on flag-gated params: if ``model_config.include_Q``
-    is True, ``params["ALPHA"]`` must exist; same for BETA,
-    ALPHA_UNREWARDED, BETA_UNREWARDED. Loud KeyError on miss is the
-    contract per the consolidation plan — silently inventing a
-    fallback rate is exactly what we want to prevent.
+    is True, ``params["ALPHA"]`` must exist; same for BETA. Loud KeyError
+    on miss is the contract per the consolidation plan — silently
+    inventing a fallback rate is exactly what we want to prevent.
     """
     n = data.n_trials
     q_left_before = np.full(n, 0.5, dtype=float)
@@ -1191,16 +983,9 @@ def _compute_latent_arrays(data, params, model_config):
     reward_rate_after = np.full(n, 0.5, dtype=float)
 
     # Strict access when the flag says the param MUST exist. When the
-    # flag is False the rate is unused — pass None into state_updates,
-    # which treats None as "fall back to the symmetric / no-update rate".
+    # flag is False the rate is unused.
     alpha = params["ALPHA"] if model_config.include_Q else None
-    alpha_unrewarded = (
-        params["ALPHA_UNREWARDED"]
-        if model_config.uses_asymmetric_alpha else None)
     beta = params["BETA"] if model_config.include_RewardRate else None
-    beta_unrewarded = (
-        params["BETA_UNREWARDED"]
-        if model_config.uses_asymmetric_beta else None)
 
     valid_for_loss = data.valid & np.isfinite(data.dv)
     for start, stop in data.session_slices:
@@ -1216,16 +1001,14 @@ def _compute_latent_arrays(data, params, model_config):
                 choice_left = data.choice_left[i]
                 if model_config.include_Q:
                     q_left, q_right = state_updates.update_q_values(
-                        q_left, q_right, choice_left, reward, alpha,
-                        alpha_unrewarded=alpha_unrewarded)
+                        q_left, q_right, choice_left, reward, alpha)
                     # update_q_values returns 0-D arrays; downcast so
                     # subsequent loop iterations stay scalar.
                     q_left = float(q_left)
                     q_right = float(q_right)
                 if model_config.include_RewardRate:
                     reward_rate = float(state_updates.update_reward_rate(
-                        reward_rate, reward, beta,
-                        beta_unrewarded=beta_unrewarded))
+                        reward_rate, reward, beta))
             q_left_after[i] = q_left
             q_right_after[i] = q_right
             reward_rate_after[i] = reward_rate
@@ -1244,13 +1027,10 @@ def _compute_latent_arrays(data, params, model_config):
         sigma = np.full_like(
             reward_rate_before, float(_param(params, "NOISE_SIGMA")),
             dtype=float)
-    # DriftGain-RewardRate: mu = DRIFT_COEF * DV * g(r_t). Applied inside
-    # _compute_mu_array to the COHERENCE term only, before the Decay-Q
-    # additions -- the decaying-Q drift term is deliberately left unscaled
-    # (see drift._driftGainDecayingQ).
+    # DriftGain-RewardRate: mu = DRIFT_COEF * DV * g(r_t), applied inside
+    # _compute_mu_array.
     drift_scale = drift_scale_for_config(reward_rate_before, model_config)
-    mu = _compute_mu_array(data.dv, q_rel_before, sigma, params, model_config,
-                           drift_scale=drift_scale)
+    mu = _compute_mu_array(data.dv, params, drift_scale=drift_scale)
     latents = {
         "q_left_before": q_left_before,
         "q_right_before": q_right_before,
@@ -1303,48 +1083,14 @@ def _compute_sigma_array(reward_rate_before, params, model_config):
     return np.full_like(reward_rate_before, base_sigma, dtype=float)
 
 
-def _compute_mu_array(dv, q_rel_before, sigma, params, model_config,
-                      drift_scale=None):
+def _compute_mu_array(dv, params, drift_scale=None):
     """Per-trial drift. ``drift_scale`` (DriftGain-RewardRate's per-trial
-    ``g(r_t)``, or None) multiplies the COHERENCE term only — applied here,
-    before the Decay-Q additions, so the decaying-Q drift term stays
-    unscaled and matches ``drift._driftGainDecayingQ``.
+    ``g(r_t)``, or None) multiplies it.
     """
     base_mu = _param(params, "DRIFT_COEF") * np.asarray(dv, dtype=float)
     if drift_scale is not None:
         base_mu = base_mu * np.asarray(drift_scale, dtype=float)
-    if not model_config.uses_decay_q_drift and not model_config.uses_decay_q_noise:
-        return base_mu
-
-    n_t = int(round(model_config.t_dur / model_config.dt))
-    # Keep scalar and time-varying drift in numeric arrays. Object arrays would
-    # force Python loops in the batched solver and make backend transfers slow.
-    mu = np.repeat(base_mu[:, None], n_t, axis=1)
-    if model_config.uses_decay_q_drift:
-        indices = np.arange(n_t)
-        decay_form = (1 - indices / n_t) ** _param(params, "Q_VAL_DECAY_RATE")
-        q_for_drift = np.clip(
-            q_rel_before + _param(params, "Q_VAL_OFFSET", 0.0), -1, 1)
-        mu += q_for_drift[:, None] * decay_form[None, :] * _param(
-            params, "Q_VAL_COEF")
-    if model_config.uses_decay_q_noise:
-        mu += (
-            sigma[:, None]
-            * _decaying_q_noise_array(q_rel_before, params, n_t)
-            / model_config.dt
-        )
-    return mu
-
-
-def _decaying_q_noise_array(q_rel_before, params, n_t):
-    indices = np.arange(n_t)
-    decay = 1 - (
-        _param(params, "Q_VAL_DECAY_RATE") * np.log(indices + 1)
-        / np.log(n_t + 1)
-    )
-    q_abs = np.abs(q_rel_before)[:, None] * _param(params, "Q_VAL_COEF")
-    decayed = np.maximum(q_abs - decay[None, :], 0)
-    return np.where(q_rel_before[:, None] < 0, -decayed, decayed)
+    return base_mu
 
 
 def estimate_population_settings(model_config, n_trials, n_params, bound=1.0):
@@ -1478,14 +1224,7 @@ def _evaluate_trial_likelihoods_batched(data, latents, params, model_config,
             "uses_per_trial_bound=True but _compute_latent_arrays did not "
             "produce bound_per_trial — check that flag wiring")
         rescale = bound_scalar / np.asarray(bpt, dtype=float)
-        # ``mu`` is per-trial (n_trials,) for constant-drift models but
-        # per-(trial, timestep) (n_trials, n_t) for Decay-Q variants —
-        # numpy aligns trailing axes, so the 2-D case needs ``rescale``
-        # promoted to (n_trials, 1) for the broadcast to land on the
-        # trial axis instead of the time axis.
-        mu_arr = np.asarray(mu_for_solver, dtype=float)
-        mu_for_solver = mu_arr * (rescale[:, None] if mu_arr.ndim == 2
-                                  else rescale)
+        mu_for_solver = np.asarray(mu_for_solver, dtype=float) * rescale
         sigma_for_solver = np.asarray(sigma_for_solver, dtype=float) * rescale
         z_for_solver = np.asarray(z_for_solver, dtype=float) * rescale
     batch_result = batched_choice_rt_loglik(
@@ -1635,39 +1374,12 @@ def _compute_z(state, params, model_config, q_rel_before):
     ))
 
 
-def _compute_mu(coherence, params, model_config, q_rel_before, sigma,
-                drift_scale=None):
+def _compute_mu(coherence, params, drift_scale=None):
     """Scalar counterpart of ``_compute_mu_array``. ``drift_scale``
-    (from ``drift_scale_for_config``) multiplies the COHERENCE term only.
+    (from ``drift_scale_for_config``) multiplies it.
     """
     base_mu = _param(params, "DRIFT_COEF") * coherence
     if drift_scale is not None:
         base_mu = base_mu * float(drift_scale)
-    if not model_config.uses_decay_q_drift and not model_config.uses_decay_q_noise:
-        return base_mu
-
-    n_t = int(round(model_config.t_dur / model_config.dt))
-    mu = np.full(n_t, base_mu, dtype=float)
-    if model_config.uses_decay_q_drift:
-        indices = np.arange(n_t)
-        decay_form = (1 - indices / n_t) ** _param(params, "Q_VAL_DECAY_RATE")
-        q_for_drift = np.clip(q_rel_before + _param(params, "Q_VAL_OFFSET", 0.0),
-                              -1, 1)
-        mu += q_for_drift * decay_form * _param(params, "Q_VAL_COEF")
-    if model_config.uses_decay_q_noise:
-        mu += sigma * _decaying_q_noise(q_rel_before, params, n_t) / model_config.dt
-    return mu
-
-
-def _decaying_q_noise(q_rel_before, params, n_t):
-    indices = np.arange(n_t)
-    decay = 1 - (
-        _param(params, "Q_VAL_DECAY_RATE") * np.log(indices + 1)
-        / np.log(n_t + 1)
-    )
-    q_abs = abs(q_rel_before) * _param(params, "Q_VAL_COEF")
-    decayed = np.maximum(q_abs - decay, 0)
-    if q_rel_before < 0:
-        decayed = -decayed
-    return decayed
+    return base_mu
 

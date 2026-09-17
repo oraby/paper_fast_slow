@@ -34,68 +34,6 @@ from .fitio import loadFit
 _MLE_ONLY_SLIDER_NAMES = {"LAPSE_RATE", "MLE_TERMINAL_C"}
 
 
-def _include_flags_for_current_model(all_widgets):
-    """Whether the active model learns Q-values / RewardRate.
-
-    Source of truth is the Drift/Bias/Noise dropdowns (the *Fn columns
-    each fn declares it needs) — NOT the asym checkboxes' ``disabled``
-    flag. updateGUI sets that disabled flag late in the same callback,
-    so any caller earlier in updateGUI (the auto-apply variant-suffix
-    lookup at the top of updateGUI) would otherwise read a stale value
-    from the previous model.
-    """
-    biasFn  = BIAS_FN_DICT[all_widgets["Bias Fn"].value]
-    driftFn = DRIFT_FN_DICT[_resolved_drift_fn_value(all_widgets)]
-    noiseFn = NOISE_FN_DICT[all_widgets["Noise Fn"].value]
-    biasFn_df_cols,  _ = biasFnColsAndKwargs(biasFn)
-    driftFn_df_cols, _ = driftFnColsAndKwargs(driftFn)
-    noiseFn_df_cols, _ = noiseFnColsAndKwargs(noiseFn)
-    include_Q = (
-        "Q_val" in biasFn_df_cols
-        or "Q_val" in driftFn_df_cols
-        or "Q_val" in noiseFn_df_cols)
-    include_RewardRate = (
-        "RewardRate" in driftFn_df_cols
-        or "RewardRate" in noiseFn_df_cols
-        or "RewardRate" in biasFn_df_cols)
-    return include_Q, include_RewardRate
-
-
-def _asym_mode_suffix(all_widgets):
-    """Return the asym suffix that matches the current checkbox state.
-
-    Matches ``fit.evolveFP``'s filename convention so the GUI can look up
-    ``subjects_defaults[...][subject]["mle_asymQ"]`` etc. when the
-    relevant checkbox is ticked. Returns ``""`` when neither checkbox is
-    set so symmetric fits load as before.
-
-    A ticked checkbox is treated as effectively off when the active
-    model doesn't learn the matching quantity (no Q-learning →
-    ``Asymmetric Q-update`` contributes no suffix). Otherwise a stale
-    tick left over from a previous model would steer the preferred-mode
-    chain (and the Reset-button gating that consults its first element)
-    at a saved-fit key — ``mle_asymQ`` — that can't exist for the new
-    model, hiding the symmetric ``mle`` fit that DOES exist.
-    """
-    include_Q, include_RewardRate = _include_flags_for_current_model(
-        all_widgets)
-    asym_q = (
-        include_Q
-        and "Asymmetric Q-update" in all_widgets
-        and bool(all_widgets["Asymmetric Q-update"].value))
-    asym_rr = (
-        include_RewardRate
-        and "Asymmetric RR-update" in all_widgets
-        and bool(all_widgets["Asymmetric RR-update"].value))
-    if asym_q and asym_rr:
-        return "_asymQRR"
-    if asym_q:
-        return "_asymQ"
-    if asym_rr:
-        return "_asymRR"
-    return ""
-
-
 def _scaled_bound_suffix(all_widgets):
     """Return ``_scaledB`` when the Scale-How dropdown is set to "Bound".
 
@@ -112,7 +50,7 @@ def _weight_mode_suffix(all_widgets):
     """Return the joint-loss weight suffix selected in the "Joint Wt" dropdown
     (e.g. ``_mleW1_chi2W0.5``), or ``""`` for the pure / "None" option.
 
-    A fourth orthogonal variant axis alongside asym / Scale-How: the dropdown
+    A variant axis alongside Scale-How: the dropdown
     value IS the suffix ``fit.evolveFP`` appends to joint MLE+Chi² fits, so the
     GUI looks up the exact weight variant. Appended LAST (after scaledB),
     matching evolveFP's suffix order and the notebook's ``fit_key``.
@@ -123,8 +61,8 @@ def _weight_mode_suffix(all_widgets):
 
 
 def _variant_suffix(all_widgets):
-    """The composed model-variant filename suffix — asym, then scaledB, then
-    joint weights — in ``fit.evolveFP`` order.
+    """The composed model-variant filename suffix — scaledB, then joint
+    weights — in ``fit.evolveFP`` order.
 
     Single source of truth so the two consumers can't drift apart:
     ``_preferred_modes_for`` (which builds the saved-fit mode key for the
@@ -135,8 +73,7 @@ def _variant_suffix(all_widgets):
     the title but never re-triggered the auto-apply — the figure stayed stale
     until a manual Reset.
     """
-    return (_asym_mode_suffix(all_widgets) + _scaled_bound_suffix(all_widgets)
-            + _weight_mode_suffix(all_widgets))
+    return _scaled_bound_suffix(all_widgets) + _weight_mode_suffix(all_widgets)
 
 
 # Joint-loss weight suffix as written by fit.evolveFP (``_mleW{m}_chi2W{c}``).
@@ -207,19 +144,16 @@ def _resolved_drift_fn_value(all_widgets):
 def _preferred_modes_for(base_mode, all_widgets):
     """Build the strict saved-fit mode key for the current checkbox state.
 
-    Each ticked checkbox / dropdown contributes a suffix to the key we look
-    up: ``mle_asymQ`` / ``mle_asymRR`` / ``mle_asymQRR`` for asym + Q/RR,
-    ``_scaledB`` for the BOUND-fitted axis, and ``_mleW{m}_chi2W{c}`` for the
-    "Joint Wt" joint-loss variant. Suffix ordering matches ``fit.evolveFP``:
-    asym, then scaledB, then joint weights.
+    Each dropdown contributes a suffix to the key we look up: ``_scaledB``
+    for the BOUND-fitted axis, and ``_mleW{m}_chi2W{c}`` for the "Joint Wt"
+    joint-loss variant. Suffix ordering matches ``fit.evolveFP``: scaledB,
+    then joint weights.
 
     Returns a SINGLE-ELEMENT tuple by design — strict matching only.
-    Earlier versions returned a fallback chain (``mle_asymQ`` → ``mle``
+    Earlier versions returned a fallback chain (``mle_scaledB`` → ``mle``
     → ``chisq``) so the GUI could silently load *something* even when
-    the exact variant hadn't been fit, but that hid surprises:
-    ticking Asym-Q on a model whose ``mle_asymQ`` didn't exist would
-    silently load the symmetric ``mle`` and the user wouldn't realize
-    they were looking at the wrong variant. Strict policy now: if the
+    the exact variant hadn't been fit, but that hid surprises: the user
+    wouldn't realize they were looking at the wrong variant. Strict policy now: if the
     exact variant has no saved fit the auto-apply / title / Reset paths
     leave the GUI in its previous state (sliders untouched, title
     showing "not run"), making the absence visible.
@@ -288,25 +222,11 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
     # "Joint Wt" dropdown), leading with the pure ("None", "") option.
     weight_suffix_options = _discover_weight_suffixes(subjects_defaults)
 
-    # The two asym checkboxes are orthogonal to the bias / drift / noise
-    # dropdown selection — they enable ALPHA_UNREWARDED / BETA_UNREWARDED
-    # fitting on top of whatever Q-learning / RewardRate-learning the
-    # selected model already does. updateGUI grays them out (via
-    # widget.disabled) when the active model doesn't actually learn
-    # Q-values or a reward rate.
     checkboxes_labels = {
         "Real-time": gui_cache.get("Real-time", True),
-        "Asymmetric Q-update":  gui_cache.get("Asymmetric Q-update", False),
-        "Asymmetric RR-update": gui_cache.get("Asymmetric RR-update", False),
-        # Convenience toggle that sets both Asym checkboxes together.
-        # Excluded from all_widgets_wo_btns (has its own .observe callback
-        # below) to avoid double-firing interactive_output when the two
-        # individual boxes are updated in sequence.
-        "Asym: Both": (gui_cache.get("Asym: Both") or False),
         # Reward-rate CHANNEL override: tick to send the reward rate to the
-        # drift (DriftGain-*) instead of the noise / threshold. Unlike the
-        # asym boxes this changes the resolved drift function, not just a
-        # gating flag — see _resolved_drift_fn_value. Disabled by updateGUI
+        # drift (DriftGain-*) instead of the noise / threshold. This changes
+        # the resolved drift function — see _resolved_drift_fn_value. Disabled by updateGUI
         # when Drift Fn isn't an R-learning alias.
         "RR as Drift": gui_cache.get("RR as Drift", False),
     }
@@ -398,7 +318,7 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
             default_val_idx = options_str.index(DEFAULT_RR_DRIFT_MAP)
         elif label == "Joint Wt":
             # Joint MLE+Chi² weight variant, a fourth orthogonal model axis
-            # (like asym / Scale-How). ``None`` (value "") is the pure fit;
+            # (like Scale-How). ``None`` (value "") is the pure fit;
             # other entries are the ``_mleW{m}_chi2W{c}`` suffixes discovered
             # in the loaded cache. The selected suffix flows into the saved-fit
             # mode key via ``_weight_mode_suffix`` / ``_preferred_modes_for``.
@@ -455,10 +375,6 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
                    **{label:widget for label, widget in zip(buttons_labels, button_widgets_li)}}
     # print("All widgets:", all_widgets)
     # Make three columns: parameters, conditions, and buttons/settings
-    # *_UNREWARDED sliders sit directly under their symmetric siblings,
-    # gated by the matching asym checkbox. Asym is now orthogonal to the
-    # bias / drift / noise selection — any Q-learning model can use
-    # ALPHA_UNREWARDED, any RewardRate model can use BETA_UNREWARDED.
     # First column heads with the Scale-How dropdown so the mode-switch
     # visually drives the four scale-pair sliders directly below it:
     # NOISE_SIGMA + _NOISE_FIXED (the noise axis) and BOUND + _BOUND_FIXED
@@ -478,26 +394,16 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
                  slider_widgets.pop("_BOUND_FIXED"),
                  slider_widgets.pop("NON_DECISION_TIME"),
                  slider_widgets.pop("BETA"),
-                 checkbox_widgets.pop("Asymmetric RR-update"),
-                 slider_widgets.pop("BETA_UNREWARDED"),
                  #slider_widgets.pop("Drift RR Coef"),
                  ]
     second_col = [drop_down_widgets.pop("Bias Fn"),
                   slider_widgets.pop("BIAS_COEF"),
-                  slider_widgets.pop("BIAS_FIXED"),
-                  slider_widgets.pop("BIAS_MU"),
-                  slider_widgets.pop("BIAS_SIGMA"),
-                  slider_widgets.pop("ALPHA"),
-                  checkbox_widgets.pop("Asymmetric Q-update"),
-                  slider_widgets.pop("ALPHA_UNREWARDED"),
-                  checkbox_widgets.pop("Asym: Both"),]
+                  slider_widgets.pop("ALPHA"),]
     third_col = [drop_down_widgets.pop("Subject"),
                  drop_down_widgets.pop("Joint Wt"),
                  drop_down_widgets.pop("DV"),
                  drop_down_widgets.pop("Psychometric"),
                  drop_down_widgets.pop("Noise Fn"),
-                 slider_widgets.pop("Q_VAL_DECAY_RATE"),
-                 slider_widgets.pop("Q_VAL_COEF"),
                  slider_widgets.pop("Q_VAL_OFFSET"),]
     # LAPSE_RATE and MLE_TERMINAL_C are MLE-only knobs (contamination /
     # lapse mixture and terminal-time no-decision-band threshold). The
@@ -523,17 +429,11 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
     include_Q, include_RewardRate = False, False
     checkbox_last_val = all_widgets["Real-time"].value
     fig = None
-    # Suppress counter for the "Asym: Both" batch-checkbox. When > 0,
-    # outHandler skips updateGUI so the two individual-box writes that
-    # "Asym: Both" triggers are coalesced into a single update.
-    # Also used inside updateGUI when syncing "Asym: Both" back, to
-    # prevent the .observe callback from cascading.
-    _asym_suppress = [0]
     last_subject = None
     last_driftFn = None
     last_biasFn = None
     last_noiseFn = None
-    last_variant_suffix = None   # composed asym + Scale-How + Joint-Wt suffix
+    last_variant_suffix = None   # composed Scale-How + Joint-Wt suffix
     last_loss = None
     last_mle_loss = None
     last_mle_loss_source = None
@@ -548,10 +448,9 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
         cur_subject = all_widgets["Subject"].value
         df = all_df[all_df.Name == cur_subject]
         # print("0")
-        # Treat an asym-checkbox or Scale-How toggle as a "load defaults"
-        # trigger — flipping any of them should pull the matching
-        # ``mle_asymQ`` / ``mle_asymRR`` / ``mle_asymQRR`` / ``mle_scaledB``
-        # / composed-suffix fit's params straight into the sliders if
+        # Treat a Scale-How or Joint-Wt change as a "load defaults"
+        # trigger — flipping either should pull the matching
+        # ``mle_scaledB`` / composed-suffix fit's params straight into the sliders if
         # that fit exists for the subject. Strict on the variant suffix,
         # with one cross-mode fallback: try the exact MLE variant first,
         # then the matching chisq variant, then nothing. The chisq
@@ -589,10 +488,8 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
 
         # Continue with the update
         # If Drift Fn is "Classic" then disable RewardRate's BETA
-        # Widget values are now the registry KEY strings (see the widget
-        # setup above) — they uniquely identify the model variant, which
-        # the underlying fn objects don't because the -asym aliases share
-        # them. ``biasFn`` etc. (the actual callables) are looked up
+        # Widget values are the registry KEY strings (see the widget setup
+        # above) — they uniquely identify the model variant. ``biasFn`` etc. (the actual callables) are looked up
         # explicitly when needed below.
         biasFn_str = all_widgets["Bias Fn"].value
         driftFn_str = _resolved_drift_fn_value(all_widgets)
@@ -663,8 +560,7 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
             all_widgets["_BOUND_FIXED"].disabled = True
             all_widgets["BOUND"].disabled        = False
             all_widgets["_NOISE_FIXED"].disabled = False
-        # "RR as Drift" gating. Unlike the asym checkboxes this is keyed off
-        # the RAW dropdown value, not include_RewardRate: include_* is derived
+        # "RR as Drift" gating. This is keyed off the RAW dropdown value, not include_RewardRate: include_* is derived
         # FROM the resolved drift, and the resolution depends on this very
         # checkbox, so gating on it would be circular. Matching the CLI rule
         # (--use-drift-rr requires an R-learning --drift) keeps the two
@@ -675,49 +571,13 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
         rr_drift_cb.disabled = not drift_rr_supported
         all_widgets["RR-Drift Map"].disabled = not (
             drift_rr_supported and rr_drift_cb.value)
-        # Asymmetric-LR gating is now orthogonal to the model identity:
-        # the checkbox is the source of truth. The checkbox itself is
-        # disabled when the active model wouldn't learn the matching
-        # quantity (no Q-learning → no asym Q, no reward-rate → no asym
-        # RR); the *_UNREWARDED slider follows both the checkbox state
-        # and the include_* flag.
-        asym_q_cb  = all_widgets["Asymmetric Q-update"]
-        asym_rr_cb = all_widgets["Asymmetric RR-update"]
-        asym_q_cb.disabled  = not include_Q
-        asym_rr_cb.disabled = not include_RewardRate
-        if not (include_Q and asym_q_cb.value):
-            all_widgets["ALPHA_UNREWARDED"].disabled = True
-        if not (include_RewardRate and asym_rr_cb.value):
-            all_widgets["BETA_UNREWARDED"].disabled = True
-
-        # Sync "Asym: Both": enabled only when both Q and RR are meaningful
-        # for the current model AND both individual boxes agree on their state.
-        # When the two individual boxes differ we gray it out (mixed state).
-        # Setting .value here is safe: "Asym: Both" is not in
-        # all_widgets_wo_btns so interactive_output won't fire; but its own
-        # .observe callback would cascade — suppress that with the counter.
-        asym_all_cb = all_widgets.get("Asym: Both")
-        if asym_all_cb is not None:
-            both_supported = include_Q and include_RewardRate
-            if not both_supported:
-                asym_all_cb.disabled = True
-            else:
-                both_same = asym_q_cb.value == asym_rr_cb.value
-                asym_all_cb.disabled = not both_same
-                if both_same:
-                    _asym_suppress[0] += 1
-                    asym_all_cb.value = asym_q_cb.value
-                    _asym_suppress[0] -= 1
-
         # Gray out the Reset buttons when the EXACT variant for the
-        # current (Asym-Q × Asym-RR × Scale-How) checkbox state has no
-        # saved fit. ``_preferred_modes_for`` is strict — it returns
-        # only the exact variant — so the button is enabled iff that
-        # specific saved fit exists for the subject. Ticking Asym-Q
-        # without a saved ``mle_asymQ`` leaves the button disabled even
-        # when the symmetric ``mle`` exists, making the absence visible
-        # rather than silently loading the wrong variant. Re-evaluated
-        # on every updateGUI pass.
+        # current (Scale-How × Joint Wt) state has no saved fit.
+        # ``_preferred_modes_for`` is strict — it returns only the exact
+        # variant — so the button is enabled iff that specific saved fit
+        # exists for the subject, making an absence visible rather than
+        # silently loading the wrong variant. Re-evaluated on every
+        # updateGUI pass.
         mle_chain = _preferred_modes_for("mle", all_widgets)
         chisq_chain = _preferred_modes_for("chisq", all_widgets)
         all_widgets["Reset to MLE defaults"].disabled = (
@@ -778,9 +638,8 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
             updatePlots_kwargs["BOUND"]       = all_widgets["BOUND"].value
             updatePlots_kwargs["NOISE_SIGMA"] = all_widgets["_NOISE_FIXED"].value
 
-        # Registry-key form of the previous ``"CorrIncorr" in biasFn.__name__``
-        # check — matches "Fixed (Corr/Incorr)" and "μ, σ (Corr/Incorr)".
-        plot_bias_dir = "Corr/Incorr" in biasFn_str
+        # Only the removed "Corr/Incorr" biases were plotted by direction.
+        plot_bias_dir = False
         mle_loss_key = _mle_loss_key(
             subject=cur_subject,
             driftFn_str=driftFn_str,
@@ -795,7 +654,7 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
             driftFn_str, cur_subject)
         # Use the same strict variant key the apply-defaults path uses
         # so the title's "MLE Loss: …" reflects the EXACT variant the
-        # current (Scale-How × Asym-Q × Asym-RR) selection refers to.
+        # current (Scale-How × Joint Wt) selection refers to.
         # No fallback: if no saved fit for the exact variant, this
         # returns None and the title shows "not run" rather than the
         # loss of a different variant.
@@ -836,10 +695,6 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
                     fit_entry=fit_entry,
                     terminal_c_override=float(
                         all_widgets["MLE_TERMINAL_C"].value),
-                    uses_asym_q=bool(
-                        all_widgets["Asymmetric Q-update"].value),
-                    uses_asym_rr=bool(
-                        all_widgets["Asymmetric RR-update"].value),
                     scale_bound=(
                         all_widgets["Scale-How"].value == "Bound"),
                 )
@@ -893,20 +748,13 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
 
 
     # Run the display
-    # "Asym: Both" is excluded from the auto-observed set: it has its own
-    # .observe callback below that batches the two individual-box writes into
-    # one updateGUI call. Including it here would trigger extra calls.
     all_widgets_wo_btns = {k: v for k, v in all_widgets.items()
-                           if not isinstance(v, widgets.Button)
-                           and k != "Asym: Both"}
+                           if not isinstance(v, widgets.Button)}
     def outHandler(*args, **kwargs):
-        if _asym_suppress[0] > 0:
-            return
         updateGUI()
 
-    # The Reset buttons consult the asym checkboxes so the variant the
-    # user is sweeping in the GUI (Q-update / RR-update) gets its own
-    # saved defaults loaded. Strict matching: if the exact variant has
+    # The Reset buttons load the saved defaults of the variant the user has
+    # selected (Scale-How / Joint Wt). Strict matching: if the exact variant has
     # no saved fit the click is a no-op (sliders unchanged) — the
     # button gate above grays it out in that case anyway, so this is
     # mostly belt-and-suspenders.
@@ -921,26 +769,6 @@ def createWidget(init_vals : InitVals, gui_cache : InitVals, df, t_dur, dt,
     all_widgets["Run MLE"].on_click(
         lambda _button: updateGUI(force_update=True, run_mle=True))
     out = widgets.interactive_output(outHandler, all_widgets_wo_btns)
-
-    def _on_asym_all_change(change):
-        """Batch-set both asym checkboxes then trigger exactly one update.
-
-        Suppresses outHandler for the Q-update write (counter > 0) so only the
-        RR-update write fires interactive_output — one updateGUI call total.
-        The suppress also blocks cascade: this callback checks the counter at
-        entry so programmatic value-sets from updateGUI's sync block don't
-        re-enter here.
-        """
-        if _asym_suppress[0] > 0:
-            return
-        new_val = change['new']
-        _asym_suppress[0] += 1
-        all_widgets['Asymmetric Q-update'].value = new_val
-        _asym_suppress[0] -= 1
-        # Counter is 0 again — the RR-update write fires outHandler once.
-        all_widgets['Asymmetric RR-update'].value = new_val
-
-    all_widgets["Asym: Both"].observe(_on_asym_all_change, names='value')
 
     display_widget = display(layout, out)
     if save_figs and subjects_defaults is not None:
@@ -1017,21 +845,8 @@ def _mle_params_from_widgets(all_widgets):
         "NON_DECISION_TIME",
         "BETA",
         "BIAS_COEF",
-        "BIAS_FIXED",
-        "BIAS_MU",
-        "BIAS_SIGMA",
         "ALPHA",
-        "Q_VAL_DECAY_RATE",
-        "Q_VAL_COEF",
         "Q_VAL_OFFSET",
-        # Asymmetric-LR opt-ins. ``_compute_latent_arrays`` reads
-        # these via strict access whenever ``uses_asymmetric_*`` is
-        # True on the model_config (set when the GUI checkbox is
-        # ticked) — KeyError on miss. Pass them through
-        # unconditionally; when asym is off, the model_config flag
-        # is False and these values are ignored.
-        "ALPHA_UNREWARDED",
-        "BETA_UNREWARDED",
         # MLE-only contamination / lapse mixture. Read here so "Run MLE"
         # propagates the slider value into ``evaluate_neg_loglik``; not
         # touched by the chisq simulation path.
@@ -1049,7 +864,7 @@ def _reset_defaults_and_update(all_widgets, subjects_defaults, t_dur,
     """Apply the first available fit from ``preferred_modes``.
 
     Under the strict-matching policy ``_preferred_modes_for`` returns
-    a 1-element tuple (e.g. ``("mle_asymQ",)``) so this collapses to
+    a 1-element tuple (e.g. ``("mle_scaledB",)``) so this collapses to
     "apply the exact variant if it exists; otherwise no-op". The
     chain-walking signature is kept for API stability with the
     underlying ``_try_apply_fit_defaults`` helper. ``required=False``
@@ -1223,7 +1038,7 @@ def _stored_mle_loss_from_fit_entry(fit_entry, preferred_modes=("mle",)):
 
     Under the strict-matching policy ``_preferred_modes_for`` passes a
     1-element tuple here (e.g. ``("mle_scaledB",)``) so the title
-    reflects the EXACT variant the current Scale-How / Asym-Q / Asym-RR
+    reflects the EXACT variant the current Scale-How / Joint Wt
     selection refers to — no silent fallback to a different mode.
 
     The function still iterates over ``preferred_modes`` so legacy
@@ -1336,7 +1151,6 @@ def discover_saved_fits(subject, results_dir="data/RLModel"):
 def _evaluate_mle_loss_for_gui(df, params, driftFn_str, biasFn_str, noiseFn_str,
                                include_Q, include_RewardRate, dt, t_dur,
                                fit_entry=None, terminal_c_override=None,
-                               uses_asym_q=False, uses_asym_rr=False,
                                scale_bound=False):
     fit_config = _fit_entry_mle_config(fit_entry)
     if terminal_c_override is not None:
@@ -1362,13 +1176,6 @@ def _evaluate_mle_loss_for_gui(df, params, driftFn_str, biasFn_str, noiseFn_str,
     mle_choice_weight = getattr(fit_config, "mle_choice_weight", 1.0)
     mle_rt_weight = getattr(fit_config, "mle_rt_weight", 1.0)
     mle_choice_norm = getattr(fit_config, "mle_choice_norm", "marginal")
-    # Mirror fit.py's gating: the explicit asym flags (sourced from
-    # the GUI checkboxes by the caller) are the only signal. Combined
-    # with include_Q / include_RewardRate so a checkbox ticked against
-    # an incompatible model surfaces as a no-op here — the GUI
-    # createWidget loop disables the checkbox itself in that case.
-    uses_asymmetric_alpha = include_Q and uses_asym_q
-    uses_asymmetric_beta  = include_RewardRate and uses_asym_rr
     # Mirror fit.simulateDDM's flag derivation: Bound-RewardRate drift
     # family triggers the per-trial bound rescaling; --scale-bound
     # checkbox triggers the absolute-bias / fitted-BOUND semantic.
@@ -1388,8 +1195,6 @@ def _evaluate_mle_loss_for_gui(df, params, driftFn_str, biasFn_str, noiseFn_str,
         mle_choice_weight=float(mle_choice_weight),
         mle_rt_weight=float(mle_rt_weight),
         mle_choice_norm=str(mle_choice_norm),
-        uses_asymmetric_alpha=uses_asymmetric_alpha,
-        uses_asymmetric_beta=uses_asymmetric_beta,
         uses_per_trial_bound=uses_per_trial_bound,
         uses_scaled_bound=bool(scale_bound),
     )
@@ -1411,10 +1216,9 @@ def _fit_entries_by_mode(entry):
     if entry is None:
         return {}
     if isinstance(entry, dict):
-        # The notebook keys variants as ``mle_asymQ`` / ``mle_asymRR`` /
-        # ``mle_asymQRR`` / ``mle_scaledB`` (and the composed
-        # ``mle_asymQ_scaledB`` etc.), plus the bare ``mle`` / ``chisq``
-        # symmetric fits — and the same set for chisq. Recognize any
+        # The notebook keys variants as ``mle_scaledB`` and the joint-weight
+        # suffixes (and their compositions), plus the bare ``mle`` /
+        # ``chisq`` fits — and the same set for chisq. Recognize any
         # key with one of those base mode prefixes followed by an
         # optional suffix; ``_preferred_modes_for`` decides which
         # specific variant the GUI is asking for.
@@ -1510,8 +1314,7 @@ def _is_params_dict(value):
         return False
     widget_param_names = {
         "DRIFT_COEF", "NOISE_SIGMA", "BOUND", "NON_DECISION_TIME", "BETA",
-        "BIAS_COEF", "BIAS_FIXED", "BIAS_MU", "BIAS_SIGMA", "ALPHA",
-        "Q_VAL_DECAY_RATE", "Q_VAL_COEF", "Q_VAL_OFFSET",
+        "BIAS_COEF", "ALPHA", "Q_VAL_OFFSET",
     }
     return bool(keys & widget_param_names)
 
@@ -1550,8 +1353,6 @@ def _makeModelName(driftFn_str, biasFn_str):
     """
     if biasFn_str == "None_":
         bias_label = "No Bias, z=0"
-    elif biasFn_str == "Q-Val":
-        bias_label = "Init Q-Value"
     elif biasFn_str == "Q-Val (Offset)":
         bias_label = "Init Q-Value (Offset)"
     else:
@@ -1559,12 +1360,8 @@ def _makeModelName(driftFn_str, biasFn_str):
 
     if driftFn_str == "Classic":
         drift_label = "Classic DDM"
-    elif driftFn_str.startswith("Decay Q"):
-        drift_label = f"Classic DDM + Decaying Q ({driftFn_str})"
     elif driftFn_str == "NoiseGain-RewardRate":
         drift_label = "Noise*RewardRate"
-    elif driftFn_str.startswith("NoiseGain-RewardRate"):
-        drift_label = f"Noise*RewardRate + Decaying Q ({driftFn_str})"
     else:
         drift_label = driftFn_str
     return f"{drift_label} + {bias_label}"

@@ -18,7 +18,7 @@ things a static ``.sbatch`` file can't do:
 Usage (run from anywhere; the launcher submits with cwd = project root):
 
     python -m code.rlmodel.slurm.launch mle \
-        --drift "RewardRate" --bias "Q-Val (Offset)" --noise "Normal(0, 1)" --asym
+        --drift "RewardRate" --bias "Q-Val (Offset)" --noise "Normal(0, 1)"
 
     # restrict the fan-out (e.g. quick test on one/few subjects):
     python -m code.rlmodel.slurm.launch chisq \
@@ -29,7 +29,7 @@ Usage (run from anywhere; the launcher submits with cwd = project root):
 
 The first positional (``chisq`` | ``mle``) selects the fit mode and hence the
 script; every other flag is forwarded VERBATIM to the runner (``--noise``,
-``--asym``, ``--scale-bound``, ``--mle-gpu-memory-gb``, ``--mle-mle-weight``,
+``--scale-bound``, ``--mle-gpu-memory-gb``, ``--mle-mle-weight``,
 ``--conda-env``, …). The launcher only interprets ``--only-subject`` (to size /
 select the array) and ``--dry-run``; ``--only-subject`` is NOT forwarded (the
 .sbatch script injects one per array task).
@@ -46,7 +46,7 @@ from ..model.drift import user_facing_drift_keys
 from ..model.state_updates import DEFAULT_RR_DRIFT_MAP, RR_DRIFT_MAPS
 from ..model.initvals import DT, T_dur
 from ..model.noise import NOISE_FN_DICT
-from ..model_runner import _expand_asym_shorthand, _resolve_drift_alias_args
+from ..model_runner import _resolve_drift_alias_args
 
 _SLURM_DIR = pathlib.Path(__file__).resolve().parent
 # code/rlmodel/slurm -> parents: [0]=rlmodel, [1]=code, [2]=paper_fast_slow.
@@ -86,8 +86,7 @@ def _array_spec(subjects, only_subject):
 def _save_name(passthrough, fit_mode):
     """Reproduce the runner's on-disk pickle filename for these flags.
 
-    Reuses the SAME resolution the runner applies (drift-alias then asym
-    shorthand) and ``fit.evolveFP`` so the log dir tracks the fit's save path
+    Reuses the SAME resolution the runner applies (the drift alias) and ``fit.evolveFP`` so the log dir tracks the fit's save path
     exactly. Parses only the filename-affecting flags out of ``passthrough``;
     unknown flags are ignored (they don't change the name).
     """
@@ -97,9 +96,6 @@ def _save_name(passthrough, fit_mode):
     p.add_argument("--noise", default="Normal(0, 1)",
                    choices=list(NOISE_FN_DICT.keys()))
     p.add_argument("--loss-no-dir", action="store_true", default=False)
-    p.add_argument("--asym", action="store_true", default=False)
-    p.add_argument("--asym-q", action="store_true", default=False)
-    p.add_argument("--asym-rr", action="store_true", default=False)
     p.add_argument("--scale-bound", action="store_true", default=False)
     # --use-drift-rr / --drift-rr-map don't add a filename SUFFIX, but they do
     # change which DRIFT_FN_DICT key --drift resolves to (DriftGain-*), and the
@@ -112,12 +108,9 @@ def _save_name(passthrough, fit_mode):
     p.add_argument("--mle-chi2-weight", type=float, default=0.0)
     ns, _ = p.parse_known_args(passthrough)
     _resolve_drift_alias_args(ns)          # RewardRate alias -> canonical key
-    if ns.asym or ns.asym_q or ns.asym_rr:
-        _expand_asym_shorthand(ns)         # --asym -> --asym-q / --asym-rr
     return fit.evolveFP(
         ns.drift, ns.bias, ns.noise, t_dur=T_dur, dt=DT,
         is_loss_no_dir=ns.loss_no_dir, fit_mode=fit_mode,
-        uses_asym_q=ns.asym_q, uses_asym_rr=ns.asym_rr,
         uses_scaled_bound=ns.scale_bound,
         mle_mle_weight=ns.mle_mle_weight,
         mle_chi2_weight=ns.mle_chi2_weight).name

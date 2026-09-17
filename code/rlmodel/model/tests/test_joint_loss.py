@@ -162,8 +162,7 @@ def test_candidate_to_makeOneRun_kwargs_sentinels():
         noiseFn_x_idxs=empty, noiseFn_fix_idxs=empty)
     assert kw["ALPHA"] == 0.7            # include_Q True → kept
     assert np.isnan(kw["BETA"])          # include_RewardRate False → NaN sentinel
-    assert kw["ALPHA_UNREWARDED"] is None
-    assert kw["BETA_UNREWARDED"] is None
+    assert "ALPHA_UNREWARDED" not in kw and "BETA_UNREWARDED" not in kw
     # Nested dispatch kwargs are always present (and empty here).
     assert kw["driftFn_kwargs"] == {} and kw["biasFn_kwargs"] == {}
 
