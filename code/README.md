@@ -228,5 +228,7 @@ shows. Executed copies go to `runs/<timestamp>/` (git-ignored).
 this contract -- a missing tag, a literal `save_figs=True`/`False` in a paper
 cell, or a side flag overriding `SAVE_FIGS`.
 
-`rlmodel/model_to_behavior.ipynb` does not finish on a workstation: its
-Figure 7D cell resamples every session 10,000 times in memory (~320 GiB).
+`rlmodel/model_to_behavior.ipynb` is the long one: Figure 7D resamples each of
+the 272 fitted sessions 1,500 times and simulates every trial, ~48 minutes and
+~30 GiB. `resample_count` in its "Fit data and resample if required" cell is
+the dial -- the busiest bin of the figure's histogram scales linearly with it.

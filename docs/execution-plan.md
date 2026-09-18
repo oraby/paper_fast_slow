@@ -27,7 +27,7 @@ The eight workstreams as stated:
 | **B** | Model trim + docs | **DONE (B1–B3)** (2026-09-17) — `rlmodel/README.md` corrected against the code and then rewritten to carry the model's equations; every registry entry the manuscript does not use is gone, verified fit-for-fit against the shipped pickles |
 | **C** | Behaviour tests | **Done, C1–C8.** Every extracted panel reproduces its committed figure and is tested; `figcode/`, `opto/` and `tracking/` went 0 → 112, 51 and 124 tests. C8 extracted `Tracking.ipynb`'s preprocessing (identical output on all 76,311 frames) and fixed two silent breakages: pandas 3 copy-on-write and a machine-time-zone dependence. S3J–M legend/Methods text is drafted (`methods_model_revision.md` Blocks 10–12); S3K is regenerated choice-normalised next revision; interpolation wording (#13) is open |
 | **D** | 2-photon reorg | **DONE (D0-D4)** — all five 2P notebooks run top to bottom, 0 errors, writing nothing (`SAVE_FIGS`/`SAVE_DATA`); every listed panel is an extracted, tested module, verified figure-for-figure against pre-extraction runs; every load goes through `twop/dataload.py`. Two items are deliberately left for the next revision (unseeded permutation panels; the 15-row difference in the shipped filtered frame) — see [`repo-audit.md`](repo-audit.md) |
-| **E** | Runner / papermill | **done**, one open item — all 11 figure notebooks parameterised, `code/run_notebooks.py`, cells tagged `paper-figure`/`per-subject`; `model_to_behavior.ipynb` still needs ~320 GiB for Figure 7D (see the E section) |
+| **E** | Runner / papermill | **done** — all 11 figure notebooks parameterised and running through `code/run_notebooks.py`, every saving cell tagged `paper-figure`/`per-subject`, and Figure 7D's cell fixed (it asked for ~420 GiB on a resample count ~6x the published figure's own) |
 | **F** | Final cleanup | **not started** — `data/to_delete/` is still 563 MB |
 
 Suite: **1705 passed, 1 skipped, 0 failed**, and green with
@@ -825,13 +825,43 @@ traces and 184 are 6C's, and 381 of TwoPTraces' are 4E's per-neuron traces.
 Pinning those example IDs is what would make `--paper-figures-only` mean the
 manuscript's figures — which is also what F's `results/` pruning needs.
 
-**Open.** `rlmodel/model_to_behavior.ipynb` cannot finish on a workstation.
-Its Figure 7D cell resamples the 272 fitted sessions 10,000 times into one
-frame (~1.1 billion rows, ~320 GiB) and fails with `MemoryError` on a 49 GB
-machine. Before E, the cell was never reached: the notebook loaded a
-`…_3s_dt0.005.pkl` fit that no longer exists (now the chi-squared 4.8 s fit).
-Needs a decision — a cluster run, a smaller `resample_count`, or streaming
-the resamples.
+### E4 — `model_to_behavior.ipynb` could not run at all
+
+Pointing it at a fit that exists (the chi-squared 4.8 s one; the
+`…_3s_dt0.005.pkl` key it carried was deleted long ago) exposed three
+failures, none of them caused by the fit and none reachable before:
+
+- **`loadAll` could not load a fit.** It used a plain `pickle.load`, so the
+  bias/drift/noise functions came back as the registry *names* the portability
+  rewrite stores (`docs/data-portability.md`) and `partial(biasFn, …)` raised
+  `TypeError`. It reads through `model.fitio.loadFit` now, which rebuilds them.
+- **`resample_count` was off by ~6×.** Figure 7D's cell said `10_000`, which
+  needs ~420 GiB — it died with `MemoryError` after two hours. The published
+  figure's own stored output says otherwise: its busiest bin held **2,959,436**
+  observations, and that count is linear in the resample count (runs at
+  1/2/5/10/20 give 4,591 … 41,001, a slope of 1,920 per unit), which puts the
+  run that made the figure at **~1,540**; 10,000 would have left ~19M there.
+  The first commit of the notebook said `1_000`; `28926cf` raised it to
+  `10_000` and the cell was never completed again. Now `1_500`, which
+  reproduces the published bin count to **4.8%** (2,818,051 vs 2,959,436).
+  `t_dur` is not the driver at all — 3 s → 4.8 s only takes the simulator from
+  600 to 960 steps, a flat 1.6× on two transient arrays.
+- **The cell carried what nothing reads.** Each of these leaves the figure's
+  grid bit-identical, checked bin for bin against the unmodified pipeline:
+  `random_dv=True` never resamples trials (`resampleFn` is not called), so the
+  272 × 1,500 pseudo-sessions were 408,000 DataFrame copies — ~50 GiB before a
+  single trial is simulated — and are now one positional take; the four label
+  columns (`SessId`, `SessionNum` — `"Random_<n>"`, an integer as a string —
+  `Name`, `DVstr`) were 63% of the frame and are categories; `calcLoss` ran on
+  every trial and its result was discarded (`skip_loss=True`); and the result
+  kept 21 columns where the figure reads 7. Together 381 → 38 B/row, so the
+  result frame is 6.1 GiB rather than 61 GiB.
+
+It now runs end to end in **47.5 minutes, 0 errors**. Verified in the write
+sandbox like the others, three times: saving (12 files), paper-only (3 — 7D,
+the pooled Q/R scatter and the speed histograms; the nine per-animal scatters
+are bulk and skipped), and every flag off (nothing written, repository
+snapshot unchanged). ~30 GiB peak.
 
 ## F — Final cleanup and publish *(small–medium; last)*
 
