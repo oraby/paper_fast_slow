@@ -104,6 +104,32 @@ def update_reward_rate(reward_rate, observed_reward, beta, group_every=0,
     return new_reward_rate
 
 
+def nudge_q_values(q_left, q_right, observed_choice_left, sd, rng, *, xp=np):
+    """Add N(0, sd) to the side :func:`update_q_values` just wrote, clip to [0,1].
+
+    Only the chosen side moves: the other one is frozen by the update, so
+    nudging it would be a random walk with nothing pulling it back.
+
+    This is a *visualisation* aid for the Q/reward-rate surface (Figure 7D), not
+    part of the fitted model -- the fits assume deterministic updates. It exists
+    because the fitted learning rates are high (median ALPHA 0.83 in the shipped
+    chi-squared fit), so Q collapses onto a few values per subject and the
+    surface's bins alternate between different populations of trial. See
+    ``qrsurface.py`` and ``methods_model_revision.md`` Block 13.
+    """
+    choice = xp.asarray(observed_choice_left, dtype=float)
+    left = xp.where(choice == 1, rng.normal(0, sd, xp.shape(q_left)), 0.0)
+    right = xp.where(choice == 0, rng.normal(0, sd, xp.shape(q_right)), 0.0)
+    return xp.clip(q_left + left, 0, 1), xp.clip(q_right + right, 0, 1)
+
+
+def nudge_reward_rate(reward_rate, sd, rng, *, xp=np):
+    """Add N(0, sd) to the reward rate, clip to [0, 1]. See
+    :func:`nudge_q_values` -- the reward rate is updated every trial, so every
+    trial is nudged."""
+    return xp.clip(reward_rate + rng.normal(0, sd, xp.shape(reward_rate)), 0, 1)
+
+
 def bound_scale_from_reward_rate(reward_rate):
     """Per-trial bound scale for the Bound-RewardRate ("scale-bound") drift.
 

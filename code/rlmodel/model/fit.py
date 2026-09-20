@@ -33,7 +33,10 @@ import pickle
 # vector AND the fixed_params dict against this set. Discovery (not
 # fit-eligibility) is the job here; flag-driven fittability lives in
 # the ``_PARAM_FIT_GATES`` declarative table inside ``simulateDDM``.
-_NON_FITTABLE_MAKEONERUN_PARAMS = {"seed", "skip_loss"}
+_NON_FITTABLE_MAKEONERUN_PARAMS = {"seed", "skip_loss",
+                                   # Figure 7D's surface smoother; never fitted
+                                   # -- the fits assume deterministic updates.
+                                   "latent_nudge_sd", "latent_nudge_seed"}
 _makeOneRun_params_names = inspect.signature(makeOneRun).parameters.keys()
 _makeOneRun_params_names = np.asanyarray([
     p for p in _makeOneRun_params_names

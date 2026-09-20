@@ -144,6 +144,17 @@ The code is organized as follows:
     Reads and writes the saved fits (see
   [Saved results](#saved-results---pickle-file-structure)).
 
+  - [`qrsurface.py`](model/qrsurface.py)
+
+    Figure 7D's surface: resamples each fitted subject into pseudo-sessions
+  with fresh stimulus strengths, simulates them, and bins z-scored sampling
+  time over reward rate × relative Q × difficulty. One subject per worker,
+  returning per-facet sums. Its docstring records why the facets average
+  per-subject means and why the latents carry a small per-trial nudge — both
+  consequences of the fitted learning rates, and both written up for the
+  manuscript in [`methods_model_revision.md`](methods_model_revision.md)
+  Block 13.
+
   - [`bias.py`](model/bias.py), [`drift.py`](model/drift.py) and
     [`noise.py`](model/noise.py)
 

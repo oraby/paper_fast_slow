@@ -31,7 +31,8 @@ def _updateNextRewardRate(cur_outcome, cur_reward_rate, BETA, group_every=0):
 
 def processMultipleSess(mult_sess_df, alpha, beta, include_Q,
                         include_RewardRate, #round_decimals
-                        group_every, callBetweenTrialFn=None):
+                        group_every, callBetweenTrialFn=None,
+                        latent_nudge_sd=0.0, latent_nudge_rng=None):
     min_trial_num = mult_sess_df.TrialNumber.min()
     max_trial_num = mult_sess_df.TrialNumber.max()
     num_sess = mult_sess_df.SessId.unique().shape[0]
@@ -162,6 +163,10 @@ def processMultipleSess(mult_sess_df, alpha, beta, include_Q,
                                                  cur_q_L, cur_q_R, alpha)
             # Make sure that we have no nans
             # print("Trial:", trial_idx, " - next_q_L:", next_q_L[0], " - next_q_R:", next_q_R[0])
+            if latent_nudge_rng is not None and latent_nudge_sd:
+                next_q_L, next_q_R = state_updates.nudge_q_values(
+                    next_q_L, next_q_R, cur_trials_choice_left,
+                    latent_nudge_sd, latent_nudge_rng)
             if DEBUG:
                 assert np.isnan(next_q_L).sum() == 0
                 assert np.isnan(next_q_R).sum() == 0
@@ -173,6 +178,9 @@ def processMultipleSess(mult_sess_df, alpha, beta, include_Q,
                                                      cur_reward_rate,
                                                      beta,
                                                      group_every=group_every)
+            if latent_nudge_rng is not None and latent_nudge_sd:
+                next_reward_rate = state_updates.nudge_reward_rate(
+                    next_reward_rate, latent_nudge_sd, latent_nudge_rng)
             if DEBUG:
                 assert np.isnan(next_reward_rate).sum() == 0
             reward_rate_arr[cur_end_idx:next_trial_end_idx] = next_reward_rate
@@ -356,6 +364,7 @@ def simulateDDMMultipleSess(multi_sess_df, include_Q, include_RewardRate,
                             ALPHA, BETA, biasFn, driftFn, noiseFn,
                             NON_DECISION_TIME,  BOUND,
                             biasFn_df_cols={}, driftFn_df_cols=[], noiseFn_df_cols=[],
+                            latent_nudge_sd=0.0, latent_nudge_rng=None,
                             **ddm_trial_kwargs):
 
     global _last_PrevChoiceLeft, _last_PrevChoiceCorrect, _last_PrevDV
@@ -382,7 +391,9 @@ def simulateDDMMultipleSess(multi_sess_df, include_Q, include_RewardRate,
 
     ret = processMultipleSess(multi_sess_df, alpha=ALPHA, beta=BETA,
                               include_Q=include_Q, include_RewardRate=include_RewardRate,
-                              group_every=0, callBetweenTrialFn=partialBetweenTrialsCb)
+                              group_every=0, callBetweenTrialFn=partialBetweenTrialsCb,
+                              latent_nudge_sd=latent_nudge_sd,
+                              latent_nudge_rng=latent_nudge_rng)
     multi_sess_df, in_place_modified, *_rest = ret
 
     if TRACK_PREV_CHOICE:
@@ -464,7 +475,8 @@ def makeOneRun(df, include_Q, include_RewardRate, biasFn, driftFn,
                is_loss_no_dir=False,
                return_df=False,
                seed=0,
-               skip_loss=False):
+               skip_loss=False,
+               latent_nudge_sd=0.0, latent_nudge_seed=0):
     global np, pd
     global _last_df_name, _last_df
     from . import bias
@@ -550,7 +562,13 @@ def makeOneRun(df, include_Q, include_RewardRate, biasFn, driftFn,
 
     # print("bias df cols:", biasFn_df_cols)
     # time_start = time.time()
-    processed_df = simulateDDMMultipleSess(df, include_Q=include_Q, include_RewardRate=include_RewardRate,
+    # Off unless asked for: with sd 0 no generator is made and the update path
+    # is exactly the one the fits were made with.
+    latent_nudge_rng = (np.random.default_rng(latent_nudge_seed)
+                        if latent_nudge_sd else None)
+    processed_df = simulateDDMMultipleSess(df, latent_nudge_sd=latent_nudge_sd,
+                                           latent_nudge_rng=latent_nudge_rng,
+                                           include_Q=include_Q, include_RewardRate=include_RewardRate,
                                            biasFn=biasFn,   biasFn_df_cols=biasFn_df_cols,
                                            driftFn=driftFn, driftFn_df_cols=driftFn_df_cols,
                                            noiseFn=noiseFn, noiseFn_df_cols=noiseFn_df_cols,

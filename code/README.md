@@ -229,6 +229,7 @@ this contract -- a missing tag, a literal `save_figs=True`/`False` in a paper
 cell, or a side flag overriding `SAVE_FIGS`.
 
 `rlmodel/model_to_behavior.ipynb` is the long one: Figure 7D resamples each of
-the 272 fitted sessions 1,500 times and simulates every trial, ~48 minutes and
-~30 GiB. `resample_count` in its "Fit data and resample if required" cell is
-the dial -- the busiest bin of the figure's histogram scales linearly with it.
+the 272 fitted sessions 1,000 times and simulates every trial, ~10 minutes over
+ten cores. Its parameters cell carries the three knobs -- `RESAMPLE_COUNT`,
+`NUDGE_LATENT_SD` and `SURFACE_WORKERS` (each worker needs ~3-4 GiB) -- and
+`model/qrsurface.py` explains what they do and why the last two exist.

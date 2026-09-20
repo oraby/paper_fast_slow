@@ -574,3 +574,74 @@ would shift; Figures 7A–B and S14E would not, because they correlate
 
 Per the author's decision, the Methods text above states the likelihood form with no
 footnote, since this is a code defect rather than a modelling choice.
+
+---
+
+## BLOCK 13 — INSERT after Block 8 (or as a Figure 7D legend note)
+
+**Figure 7D — the Q/reward-rate surface.** For each of the 22 modelled mice, every
+recorded session was resampled 1,000 times with stimulus strengths redrawn uniformly
+over the coherence range (272,000 pseudo-sessions, 47.8 million simulated trials that
+reached a decision), and each pseudo-session was simulated under that mouse's own
+fitted parameters. Simulated sampling times were z-scored within mouse and averaged
+in a grid of 10 reward-rate x 20 relative-Q bins, separately for the three difficulty
+terciles. Each bin is the mean of the per-mouse means it contains, so no bin is
+dominated by a single animal, and bins holding a single trial are left empty. The
+surface is smoothed along the relative-Q axis with a NaN-conserving Gaussian kernel
+(sigma = 1 bin). During simulation, the Q values and the reward rate each received an
+independent Gaussian perturbation (SD 0.01, clipped to their [0,1] range) on every
+trial.
+
+--- rationale (do not paste) ---
+Three of these are new and need to survive review, so the numbers behind each are
+recorded here.
+
+1. **Resample count (1,000, was 10,000).** Unchanged in substance: the fit this figure
+   was originally built from embedded 20 mice and 40 sessions, so 10,000 resamples per
+   session meant 400,000 pseudo-sessions. The shipped fits embed 22 mice and 272
+   sessions, so the same 400,000 is reached at ~1,470. Independently, the published
+   panel's own stored output (busiest bin = 2,959,436 observations) implies ~1,540,
+   since that count is linear in the resample count (measured: 4,591 / 6,651 / 12,094 /
+   21,825 / 41,001 at 1 / 2 / 5 / 10 / 20). Left at 10,000 against the current fits the
+   cell needs ~420 GiB and cannot run.
+
+2. **The per-trial nudge (SD 0.01).** Needed because of what the fits contain: the
+   chi-squared 4.8 s fits put the Q learning rate at a median ALPHA of 0.826, with 12
+   of 22 mice above 0.8 and 4 at the upper bound (0.95-0.996). At those rates a losing
+   trial collapses the chosen side to ~(1 - ALPHA) while the other stays near 1, so
+   Q_val = log(0.05)/log(100) ~= -0.65 and similar fixed points recur constantly:
+   63.5% of trials fall within +/-0.1 of zero and the remainder sit on a lattice of
+   spacing 0.09-0.13, against a bin width of 0.1. Neighbouring bins therefore hold
+   different populations of trial and the surface steps. That stepping is not sampling
+   noise -- it measures 0.18 (mean |second difference| along Q, beyond the noise floor)
+   and does not fall between 1.0M and 4.8M simulated trials. A 0.01 nudge halves it and
+   0.02 removes it, while the trial-level relationships are untouched: slope of z-scored
+   sampling time on reward rate -3.026 -> -3.027, on relative Q -0.478 -> -0.478,
+   correlation -0.552 -> -0.552, mean simulated RT 1.2419 s -> 1.2421 s, accuracy
+   0.7295 -> 0.7295. The published 3 s fit did not need it: its median ALPHA was 0.604,
+   and its surface is correspondingly smoother (roughness 0.200 vs 0.341 at matched
+   trial counts).
+   It remains a visualisation device, applied after fitting. The principled version --
+   learning noise as a model term, fitted jointly so the parameters and the noise are
+   mutually consistent -- is the revision this should become; it is not claimed here.
+
+3. **Per-mouse bin means (was pooled over trials).** Because each mouse's lattice is
+   its own, a bin can be one animal: at low reward rate the relative-Q -0.7..-0.6
+   column was 97% `Avgat1`, whose z-scored sampling time sits +0.36 above the group on
+   hard trials and ~0.13 below it on medium and easy ones. Pooling over trials therefore
+   printed a trough on the Medium and Easy sheets and nothing on Hard. Averaging
+   per-mouse means first removes it (Easy: -0.09 -> +0.47, against neighbours at +0.44
+   and +0.45) and matches how n = 22 mice is treated elsewhere in the paper.
+
+Also corrected, and not worth manuscript text: the binning used
+`np.digitize(..., right=True) - 1`, which returns -1 at or below the first edge and so
+wrapped onto the last bin -- 1,846 trials per million with relative Q = -1 were drawn
+at +1 -- and the grid was sized by bin edges rather than bins, leaving the reward-rate
+1.0 row, the Q +1.0 column and a whole difficulty plane unreachable. Bin values were
+also plotted at bin edges rather than centres.
+
+Code: `model/qrsurface.py` (surface, binning, per-mouse means),
+`model/state_updates.py::nudge_q_values`/`nudge_reward_rate`,
+`model/logic.py` (`latent_nudge_sd` threaded through `makeOneRun`),
+`model_to_behavior.ipynb` cells 7/9/13/14; tests in
+`model/tests/test_qrsurface.py`.

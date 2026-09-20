@@ -27,7 +27,7 @@ The eight workstreams as stated:
 | **B** | Model trim + docs | **DONE (B1–B3)** (2026-09-17) — `rlmodel/README.md` corrected against the code and then rewritten to carry the model's equations; every registry entry the manuscript does not use is gone, verified fit-for-fit against the shipped pickles |
 | **C** | Behaviour tests | **Done, C1–C8.** Every extracted panel reproduces its committed figure and is tested; `figcode/`, `opto/` and `tracking/` went 0 → 112, 51 and 124 tests. C8 extracted `Tracking.ipynb`'s preprocessing (identical output on all 76,311 frames) and fixed two silent breakages: pandas 3 copy-on-write and a machine-time-zone dependence. S3J–M legend/Methods text is drafted (`methods_model_revision.md` Blocks 10–12); S3K is regenerated choice-normalised next revision; interpolation wording (#13) is open |
 | **D** | 2-photon reorg | **DONE (D0-D4)** — all five 2P notebooks run top to bottom, 0 errors, writing nothing (`SAVE_FIGS`/`SAVE_DATA`); every listed panel is an extracted, tested module, verified figure-for-figure against pre-extraction runs; every load goes through `twop/dataload.py`. Two items are deliberately left for the next revision (unseeded permutation panels; the 15-row difference in the shipped filtered frame) — see [`repo-audit.md`](repo-audit.md) |
-| **E** | Runner / papermill | **done** — all 11 figure notebooks parameterised and running through `code/run_notebooks.py`, every saving cell tagged `paper-figure`/`per-subject`, and Figure 7D's cell fixed (it asked for ~420 GiB on a resample count ~6x the published figure's own) |
+| **E** | Runner / papermill | **done** — all 11 figure notebooks parameterised and running through `code/run_notebooks.py`, every saving cell tagged `paper-figure`/`per-subject`. Figure 7D's cell, which asked for ~420 GiB and could not load its own fit, is now `model/qrsurface.py`: binning fixed, facets averaged per subject, latents nudged, one subject per worker — 1,000 resamples in ~10 min |
 | **F** | Final cleanup | **not started** — `data/to_delete/` is still 563 MB |
 
 Suite: **1705 passed, 1 skipped, 0 failed**, and green with
@@ -857,11 +857,51 @@ failures, none of them caused by the fit and none reachable before:
   kept 21 columns where the figure reads 7. Together 381 → 38 B/row, so the
   result frame is 6.1 GiB rather than 61 GiB.
 
-It now runs end to end in **47.5 minutes, 0 errors**. Verified in the write
-sandbox like the others, three times: saving (12 files), paper-only (3 — 7D,
-the pooled Q/R scatter and the speed histograms; the nine per-animal scatters
-are bulk and skipped), and every flag off (nothing written, repository
-snapshot unchanged). ~30 GiB peak.
+Verified in the write sandbox like the others, three times: saving (12
+files), paper-only (3 — 7D, the pooled Q/R scatter and the speed histograms;
+the nine per-animal scatters are bulk and skipped), and every flag off
+(nothing written, repository snapshot unchanged).
+
+### E5 — What the surface itself was doing
+
+Regenerating 7D showed it was rougher than the published panel, so the cause
+was chased down rather than smoothed over. It is **not** the resample count,
+the fit criterion (χ², as published — the MLE payloads lack
+`fixed_params_names` and cannot drive this figure at all), the smoothing
+kernel (one commit in its history, never changed), the grid size (both SVGs
+have 652 paths), or the DV mode (the trial bootstrap is *rougher*, 0.645 vs
+0.497). Four real defects came out of it, all now fixed and all recorded for
+the manuscript in [`methods_model_revision.md`](../code/rlmodel/methods_model_revision.md)
+Block 13:
+
+- **The binning wrapped.** `np.digitize(…, right=True) - 1` gives −1 at or
+  below the first edge, which indexes the *last* bin: 1,846 trials per million
+  with `Q_relative = −1` were drawn at **+1**. The grid was also sized by bin
+  *edges*, so the reward-rate 1.0 row, the Q +1.0 column and a whole difficulty
+  plane could never fill, and values were drawn at edges rather than centres.
+- **The fitted learning rates leave Q on a lattice.** Median ALPHA is 0.826
+  (12 of 22 subjects above 0.8, four at the bound), so a loss collapses the
+  chosen side to ~(1−ALPHA) and `Q_val` lands on a few fixed points — 63.5% of
+  trials within ±0.1 of zero, the rest spaced 0.09–0.13 against a 0.1 bin. The
+  resulting stepping is *not* sampling noise: it holds at 0.18 from 1.0M to
+  4.8M trials. A 0.01 per-trial nudge halves it; the trial-level gradient
+  (−3.03), RT (1.242 s) and accuracy (0.729) do not move.
+- **A facet could be one animal.** The Q −0.7…−0.6 column at low reward rate
+  was 97% `Avgat1`, which is +0.36 above the group on hard trials and ~0.13
+  below on medium and easy — the trough that showed on two sheets and not the
+  third. Facets are now the mean of per-subject means.
+- **The published 3 s fit is smoother for a reason**: its median ALPHA was
+  0.604. It still exists outside the repo, in
+  `~/Documents/Hatem/data_org/model/evolvs_res_dump/`, and running it through
+  this same pipeline reproduces the published look — which is what identified
+  the fit, not the code, as the difference.
+
+**And `resample_count` finally means something.** Before these fixes, five
+times the data changed roughness by 1% (0.345 at 4.8M vs 0.341 at 1.0M);
+after them it falls 0.400 → 0.110 from 0.29M to 47.8M trials. `model/qrsurface.py`
+runs one subject per worker and returns per-facet sums, so 1,000 resamples
+take **~10 minutes on ten cores** instead of ~47 single-core — and the cell
+that once asked for 420 GiB now needs a few GiB per worker.
 
 ## F — Final cleanup and publish *(small–medium; last)*
 
