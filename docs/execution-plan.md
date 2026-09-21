@@ -986,9 +986,48 @@ under E's contract:
 Both keep a `parameters` cell like every other notebook, and the contract test
 covers them — 135 checks over thirteen notebooks.
 
-**Then the regeneration**: a full `--save-figs` run over all thirteen, after
-which whatever `results/` still holds that the run did not write is staged out
-the same way F1 staged everything else.
+**Then the regeneration** — a full `--save-figs` run over all thirteen, 4.2
+hours, `model_compare` 127 minutes of it. `opto` failed the first time on a
+directory that was never created (see the commit that restores its `mkdir`)
+and ran clean after. `results/` went 3,725 → 6,462 files, because the run
+wrote a second tree beside the old one rather than replacing it.
+
+### F2b — the prune, and what it is allowed to touch
+
+Of 1,455 files the run did not write, **992 were staged out** and **463 were
+left where they are**. The rule for staging something out is that the same
+content is still in `results/` in a current form, or the thing that produced
+it no longer exists:
+
+| files | why it went |
+|---|---|
+| 796 | the same panel, written by the run under another extension |
+| 153 | a legacy PDF in a `neural_correlate` directory the run refilled with SVGs |
+| 23 | `_sorted_to_all_self_rng` — a sort/range pair the notebook no longer asks for, both published ones present |
+| 20 | `fig_model_cmp/*[asymQRR]*` — the asymmetric-learning-rate model B2 deleted |
+
+The other 463 are listed in [`results-not-regenerated.txt`](results-not-regenerated.txt)
+and stay in the repository, because each is a loop or a configuration that
+**stopped running**, which is not the same thing as being obsolete. That
+distinction is not academic: the first such group examined was Figure 5B's
+example neurons, and pruning on the diff alone would have deleted them.
+
+Two of the held groups are worth treating as defects rather than choices:
+
+- **`behavior/rt_by_difficulty/` (21 files) is written by
+  `figcode/stbydifficulty.py::stByDifficulty`, and nothing calls that
+  function** — not a notebook, not a module, anywhere in the repository. The
+  figure map lists the directory among Figure 1H's outputs.
+- **`neural_correlate/**Chi²=0.1/` (295 files)** is a fitting criterion the
+  notebook does not run; only the `Chi²=0.5` fit the manuscript cites is
+  configured. Whether the alternative criterion should still ship is a
+  decision, not a cleanup.
+
+The remainder are per-subject behaviour panels (`st_vs_diff_only`,
+`psych_mice`, `st_vs_diff_fast_slow`, `StaySwitch`, `fm_hf`), a few widefield
+quantile variants, and 14 `SeqWithinDeviation` calibration figures — all in
+directories the run still writes into, so in each case some of the loop
+survives and some does not.
 
 ### F3 — still open
 
