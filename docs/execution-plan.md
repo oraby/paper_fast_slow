@@ -28,7 +28,7 @@ The eight workstreams as stated:
 | **C** | Behaviour tests | **Done, C1–C8.** Every extracted panel reproduces its committed figure and is tested; `figcode/`, `opto/` and `tracking/` went 0 → 112, 51 and 124 tests. C8 extracted `Tracking.ipynb`'s preprocessing (identical output on all 76,311 frames) and fixed two silent breakages: pandas 3 copy-on-write and a machine-time-zone dependence. S3J–M legend/Methods text is drafted (`methods_model_revision.md` Blocks 10–12); S3K is regenerated choice-normalised next revision; interpolation wording (#13) is open |
 | **D** | 2-photon reorg | **DONE (D0-D4)** — all five 2P notebooks run top to bottom, 0 errors, writing nothing (`SAVE_FIGS`/`SAVE_DATA`); every listed panel is an extracted, tested module, verified figure-for-figure against pre-extraction runs; every load goes through `twop/dataload.py`. Two items are deliberately left for the next revision (unseeded permutation panels; the 15-row difference in the shipped filtered frame) — see [`repo-audit.md`](repo-audit.md) |
 | **E** | Runner / papermill | **done** — all 11 figure notebooks parameterised and running through `code/run_notebooks.py`, every saving cell tagged `paper-figure`/`per-subject`. Figure 7D's cell, which asked for ~420 GiB and could not load its own fit, is now `model/qrsurface.py`: binning fixed, facets averaged per subject, latents nudged, one subject per worker — 1,000 resamples in ~10 min |
-| **F** | Final cleanup | **not started** — `data/to_delete/` is still 563 MB |
+| **F** | Final cleanup | **F1 done** (2026-09-21) — 63 files / 583 MB staged out to `../paper_fast_slow_to_delete/`, nothing deleted. **F2 blocked**: `results/` is not a superset of what the code writes (1,925 files a current run produces are absent), so it needs regenerating before it can be pruned — and decision 5 first |
 
 Suite: **1705 passed, 1 skipped, 0 failed**, and green with
 `FutureWarning`/`DeprecationWarning` promoted to errors.
@@ -798,12 +798,22 @@ Two things only a saving run could show, both found in the write sandbox:
   the `pdf` it is handed, and `PdfPages` opens its file only on the first
   `savefig`. The tag is correct in intent and inert in fact; left alone.
 
-The classification is deliberately over-inclusive: a cell is `per-subject`
-only when it is unambiguously bulk. Where a published panel is one example
+The classification was deliberately over-inclusive: a cell was `per-subject`
+only when it was unambiguously bulk. Where a published panel is one example
 drawn from a loop over every session or neuron, and the example's ID is not
-recorded, the whole loop stays `paper-figure`: 4F's fast/slow traces and 6C's
+recorded, the whole loop stayed `paper-figure`: 4F's fast/slow traces and 6C's
 feedback-tuned neuron (2pAnalysis), 4E/S8B's average traces (TwoPTraces),
 2E/2F/S4A's example mouse and Ext. 5a-right (`model_analysis`).
+
+**Reversed in F (2026-09-21).** Those six cells are now `per-subject` and
+gated, so a paper-only run skips them and prints why. The published panel is
+skipped with the rest of its loop — which is the honest state of affairs
+until the IDs are recorded, and it is what makes `--paper-figures-only` write
+a keep-set small enough to prune against. Pinning the IDs turns each loop
+back into a one-file `paper-figure` cell, and nothing else has to change.
+`model_analysis` c22 also read `SAVE_FIGS` for `plt_show`; both now come from
+one local, because gating only the save would have left `plotFitDfs` asserting
+that at least one of the two is on.
 
 **Verified per notebook in a write sandbox** (a headless run whose every write
 is redirected to a mirror, plus a before/after snapshot of the repository).
@@ -906,19 +916,65 @@ that once asked for 420 GiB now needs a few GiB per worker.
 
 ## F — Final cleanup and publish *(small–medium; last)*
 
-- Remove `data/to_delete/`, `rlmodel/model_GUI_cache.pkl`, `rlmodel/run_cmd.txt`.
-- Triage the 15 planning `.md` files in `rlmodel/` — which graduate into `docs/`,
-  which are deleted. `in-code-2panalysis-ipynb-we-use-majestic-stream.md` and
-  `is-the-current-rlmodel-nashaat-oraby-mle-synthetic-fiddle.md` are
-  transcript artifacts that should not ship.
-- Prune `results/` (3,754 files, 3,686 SVG/PDF). **This depends on E**, because
-  the `--paper-figures-only` flag is what defines the keep-set.
-- Decide on stripping notebook outputs (~44 MB across four notebooks).
-- Fix the root `README.md` title — it still says *"The neural mechanisms of fast
-  versus slow decision-making"*; the current title is *"Cortical mechanisms of
-  fast versus slow decision making"*. Fix the notebook list in
-  `code/README.md`, which names `TwoPAnalysis.ipynb` (actual file:
-  `2pAnalysis.ipynb`) and omits six others.
+**Nothing here is deleted.** Everything F removes is *moved*, keeping its
+repository-relative path, into a staging root that leaves the checkout as
+`../paper_fast_slow_to_delete/` with a `MANIFEST.md` saying where each file
+came from and under which rule. Restoring any of it is a move back.
+
+### F1 — done (2026-09-21)
+
+Staged out: **63 files, 583 MiB**.
+
+| what | files | rule |
+|---|---|---|
+| `data/to_delete/` | 19 | the author's holding pen; no notebook reads it |
+| `results/RLModel/**` under three dropped model names | 30 | B2 removed `Classic_DDM`, `Q-value` and `RewardRate + Q-value` from the registry, so no run can write them again |
+| planning `.md` / transcript artifacts | 12 | working notes that nothing shipping cites |
+| `rlmodel/model_GUI_cache.pkl`, `rlmodel/run_cmd.txt` | 2 | working state |
+
+Six of the eighteen planning documents **stayed**, because shipping source
+cites them by name and the citation is the rationale for a piece of the
+model: `mle_optimization_plan.md`, `mle_terminal_c_plan.md` and
+`mle_lapse_rate_plan.md` (cited from `mle_batch.py`, `mle_likelihood.py` and
+their tests), `scale_bound_equivalence_plan.md` (`initvals.py`,
+`scale_bound_equivalence.ipynb`), `nashaat_oraby_mle_fitting_spec.md`
+(`methods_model_revision.md`), and `neural_correlate_significance_methods.md`,
+which is drafted Methods text, not a plan.
+
+The root `README.md` title is fixed. `code/README.md`'s notebook list was
+already corrected in D/E — it names `2pAnalysis.ipynb` and all eleven.
+
+### F2 — `results/` cannot be pruned by diff yet
+
+The intended keep-set was "every path a full `SAVE_FIGS` run writes", measured
+in the write sandbox for all eleven notebooks. Measured, it says the tree on
+disk is not a superset of what the code produces — it is a *different* tree:
+
+| | files |
+|---|---|
+| present in `results/` | 3,755 |
+| a current full run writes | 2,645 |
+| …of those, **absent from `results/`** | **1,925** |
+| in `results/`, written by no current run | 3,035 |
+
+The whole of `2P/FastSlowTraces/` (1,446 files) is absent, and every
+`Sessions/*/` panel is on disk under `sgf_and_not_sgf/…` while the code now
+writes `sgf/…`. So `results/` was never regenerated after the D refactors,
+and the figure map's paths point into the old tree. Pruning against the new
+keep-set today would move out the very files that back the manuscript panels.
+
+Two further notebooks write into `results/` and are **not in the runner's
+list**: `model_neural_correlate.ipynb` (`RLModel/neural_correlate/`, 1,218
+files, backing S14) and `model_compare.ipynb` (`RLModel/fig_model_cmp/`, 120).
+Any keep-set has to account for them.
+
+**So F2 is a regeneration, not a prune**, and it needs decision 5 first (ship
+the paper set or the full per-subject set). Left undone deliberately.
+
+### F3 — still open
+
+- Decide on stripping notebook outputs (~44 MB across four notebooks) —
+  decision 6.
 - Renumber the figure labels in every notebook heading to the current scheme —
   see the drift table in [`README.md`](README.md#numbering-drift).
 

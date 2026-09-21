@@ -374,6 +374,14 @@ notes, not documentation. Fork 1 should decide which of them graduate into
 `model/is-the-current-rlmodel-nashaat-oraby-mle-synthetic-fiddle.md` are
 transcript-style artifacts that should not ship.
 
+**Resolved by F1 (2026-09-21).** Twelve moved out, including both transcript
+artifacts. Six stayed where they are, because shipping source cites them by
+name and the citation carries the rationale: `mle_optimization_plan.md`,
+`mle_terminal_c_plan.md`, `mle_lapse_rate_plan.md`,
+`scale_bound_equivalence_plan.md`, `nashaat_oraby_mle_fitting_spec.md`, and
+`neural_correlate_significance_methods.md` — the last being drafted Methods
+text rather than a plan.
+
 *Forks 1, 6.*
 
 ---
@@ -904,13 +912,14 @@ which will break under a runner invoked from the repo root.
 
 ## Smaller items
 
-- **`data/to_delete/`** is tracked-adjacent (untracked, but present) and holds
-  `df_behavior_full.pkl`, `df_behavior_org.pkl`, `df_opto_all_org.pkl`,
-  `mle_debug_cur.ipynb`, `trial_by_trial_mle_conversation.html`, `uvdeps.txt`
-  and more. Clear before publishing.
+- ~~**`data/to_delete/`**~~ held `df_behavior_full.pkl`, `df_behavior_org.pkl`,
+  `df_opto_all_org.pkl`, `mle_debug_cur.ipynb`,
+  `trial_by_trial_mle_conversation.html`, `uvdeps.txt` and more; **moved out**
+  by F1 to `../paper_fast_slow_to_delete/data/to_delete/`.
 - **`behavior_v2.ipynb`** (12 MB) sits beside `behavior.ipynb` (14 MB) with no
   note on which is current. `code/README.md` names only `behavior.ipynb`.
-- **`rlmodel/model_GUI_cache.pkl`** and `rlmodel/run_cmd.txt` are working state.
+- ~~**`rlmodel/model_GUI_cache.pkl`** and `rlmodel/run_cmd.txt`~~ were working
+  state; **moved out** by F1.
 - **Notebook output size**: `2pAnalysis.ipynb` and `TwoPLoad.ipynb` are ~10 MB
   each with outputs embedded; `behavior.ipynb` 14 MB, `plottraces3.ipynb` 17 MB.
   Stripping outputs before the public push is worth a decision — against it,

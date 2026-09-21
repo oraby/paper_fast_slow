@@ -1,7 +1,7 @@
 
 
-This repository contains the supporting materials for the paper **The neural
-mechanisms of fast versus slow decision-making**.
+This repository contains the supporting materials for the paper **Cortical
+mechanisms of fast versus slow decision making**.
 
 # Repository structure
 
