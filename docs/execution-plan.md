@@ -828,7 +828,7 @@ manuscript's figures — which is also what F's `results/` pruning needs.
 ### E4 — `model_to_behavior.ipynb` could not run at all
 
 Pointing it at a fit that exists (the chi-squared 4.8 s one; the
-`…_3s_dt0.005.pkl` key it carried was deleted long ago) exposed three
+`…_3s_dt0.005.pkl` key it carried refers to a superseded fit) exposed three
 failures, none of them caused by the fit and none reachable before:
 
 - **`loadAll` could not load a fit.** It used a plain `pickle.load`, so the
@@ -890,11 +890,12 @@ Block 13:
   was 97% `Avgat1`, which is +0.36 above the group on hard trials and ~0.13
   below on medium and easy — the trough that showed on two sheets and not the
   third. Facets are now the mean of per-subject means.
-- **The published 3 s fit is smoother for a reason**: its median ALPHA was
-  0.604. It still exists outside the repo, in
-  `~/Documents/Hatem/data_org/model/evolvs_res_dump/`, and running it through
-  this same pipeline reproduces the published look — which is what identified
-  the fit, not the code, as the difference.
+- **The earlier fits were smoother for a reason**: their median ALPHA was
+  0.604 against 0.826 today, so Q moved in smaller steps. Running one of them
+  through this same pipeline reproduced the old look exactly, which is what
+  identified the fit — not the code — as the difference. Those fits are
+  superseded: they are **not shipped**, nothing refers to them as a reference,
+  and `results/RLModel/` now holds the 4.8 s output.
 
 **And `resample_count` finally means something.** Before these fixes, five
 times the data changed roughness by 1% (0.345 at 4.8M vs 0.341 at 1.0M);

@@ -618,9 +618,10 @@ recorded here.
    0.02 removes it, while the trial-level relationships are untouched: slope of z-scored
    sampling time on reward rate -3.026 -> -3.027, on relative Q -0.478 -> -0.478,
    correlation -0.552 -> -0.552, mean simulated RT 1.2419 s -> 1.2421 s, accuracy
-   0.7295 -> 0.7295. The published 3 s fit did not need it: its median ALPHA was 0.604,
-   and its surface is correspondingly smoother (roughness 0.200 vs 0.341 at matched
-   trial counts).
+   0.7295 -> 0.7295. Earlier, superseded fits did not need it: their learning rates
+   were lower (median ALPHA 0.604), so Q moved in smaller steps and the lattice was
+   finer than the bin width. Those fits are not shipped and the panel is not compared
+   against them -- Figure 7D is regenerated from the 4.8 s chi-squared fit.
    It remains a visualisation device, applied after fitting. The principled version --
    learning noise as a model term, fitted jointly so the parameters and the noise are
    mutually consistent -- is the revision this should become; it is not claimed here.
