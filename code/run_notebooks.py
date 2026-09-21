@@ -104,7 +104,7 @@ def declaredParameters(nb: dict) -> dict:
 
 
 def parseExtra(pairs):
-    """``["MFC_LFC_MAP=False"]`` -> ``{"MFC_LFC_MAP": False}``."""
+    """``["MAP=standard"]`` -> ``{"MAP": "standard"}``."""
     extra = {}
     for pair in pairs or []:
         name, sep, value = pair.partition("=")
@@ -169,7 +169,7 @@ def _argParser():
     parser.add_argument("--only", nargs="+", metavar="NAME",
                         help="run just these notebooks, by name without .ipynb")
     parser.add_argument("--param", action="append", metavar="NAME=VALUE",
-                        help="set a notebook-specific parameter, e.g. MFC_LFC_MAP=False")
+                        help="set a notebook-specific parameter, e.g. MAP=standard")
     parser.add_argument("--kernel", default="python3", help="Jupyter kernel name")
     parser.add_argument("--timeout", type=int, default=None,
                         help="per-cell timeout in seconds (default: none)")

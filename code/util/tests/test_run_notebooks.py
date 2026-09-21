@@ -253,8 +253,17 @@ def test_list_mode_runs_nothing(capsys):
 
 def test_list_mode_shows_the_values_a_run_would_use(capsys):
     rn.main(["--list", "--only", "widefield", "--save-figs",
-             "--param", "MFC_LFC_MAP=False"])
+             "--param", "MAP=standard"])
     out = capsys.readouterr().out
     assert "'SAVE_FIGS': True" in out
-    assert "'MFC_LFC_MAP': False" in out
-    assert "'DEFAULT_ALLEN_MAP': False" in out      # not overridden, so its default
+    assert "'MAP': 'standard'" in out
+    assert "'PAPER_FIGURES_ONLY': False" in out     # not overridden, so its default
+
+
+def test_an_unknown_parameter_is_refused(capsys):
+    # MFC_LFC_MAP and DEFAULT_ALLEN_MAP were one three-way choice as two
+    # booleans; two of their four combinations were errors. Asking for either
+    # by its old name now stops the run instead of half-configuring it.
+    for gone in ("MFC_LFC_MAP=False", "DEFAULT_ALLEN_MAP=True"):
+        with pytest.raises(SystemExit, match="No selected notebook declares"):
+            rn.main(["--list", "--only", "widefield", "--param", gone])

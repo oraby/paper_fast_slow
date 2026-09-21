@@ -16,6 +16,29 @@ first — notebook headings use older figure numbers.
 - *not from this repo* — schematic / render / photograph / micrograph.
 - *(inferred)* — matched by panel content plus output filename; the code carries
   no explicit figure label.
+- ⚠ — the `results/` path in that row is written by a **different notebook**
+  than the row names, and which of the two columns is wrong has not been
+  settled. Three rows carry this.
+
+**How the `results/` column was checked (2026-09-21).** Every notebook was run
+under a write guard that records each file it writes, so "which notebook
+produces this path" is now measured rather than inferred. That found sixteen
+wrong entries in this table, and they are corrected here:
+
+| panel | was | is |
+|---|---|---|
+| 1H | `behavior/rt_by_difficulty/` | `behavior/reward_rate5/` — `rt_by_difficulty/` is written by `stbydifficulty.py`, which has nothing to do with reward rate |
+| 3E, 3F, 4B bottom | `WF/…` | `WF/redefined_map/…` — widefield now prefixes its output with the map it used |
+| 4E, 5B | `2P/Sessions/*/…` | `2P/Sessions/*/*/…` — the tree is region/session, two levels |
+| 4F | `2P/Sessions/` | `2P/FastSlowTraces/{MFC,LFC}/` |
+| 4H | `2P/Sequence/` | `2P/Sessions/*/*/summary/` |
+| 4J | `2pAnalysis.ipynb` | `2pSeqWithinDeviation.ipynb` — the section became its own notebook in D |
+| 7D | `posterior_simulate.py`; `optimal_sampling/3d_plot.svg` | `qrsurface.py`; that second artifact was Figure 2B's, and no run writes it |
+
+**`behavior/rt_by_difficulty/` no longer exists.** It was written by
+`figcode/stbydifficulty.py::stByDifficulty`, and nothing calls that function
+anywhere in the repository, so F dropped the directory. If a panel needs it,
+the call site has to come back.
 
 ---
 
@@ -49,7 +72,7 @@ first — notebook headings use older figure numbers.
 | **1E** | Mouse accuracy vs coherence, fast vs slow. n=20; fast 20,864 / slow 20,054 trials. Paired *t*, Holm–Bonferroni: 10% *p*=0.1287, 20% *p*<0.001, 50% *p*=0.003, 100% *p*<0.001 | `behavior.ipynb` "Fig. 1e" | `figcode/psychometric.py::slowFastPsych` (+ vendored `figcode/psychofit/`) | `behavior/psych_mice/`, `behavior/slow_fast_perf.svg` |
 | **1F** | Human speed-context accuracy. n=18; legend gives 8,306 / 8,303 trials, Table 1 gives 6,602 / 6,555 for the test. Paired *t*: 3% *p*=1, 8% *p*=1, 14% *p*=1, 33% *p*=0.0107, 75% *p*=0.0108 | `behavior.ipynb` "Fig. 1f" | `figcode/psychometric.py::slowFastPsych` | `behavior/psych_human/` |
 | **1G** | Mean z-scored sampling time (correct trials) vs difficulty, fast vs slow. Mice n=20, 15,461 trials: fast slope 0.02 (θ=1.08°), slow slope 0.14 (θ=7.83°). Human speed n=18, 8,185 trials: fast slope 0.06 (θ=3.70°), slow slope 0.74 (θ=36.52°) | `behavior.ipynb` "Fig. 1g-right" plus the mice cell above it | `figcode/stbydifficulty.py::stVsDiffOnly`, `::loopstVsDiffOnly` | `behavior/st_vs_diff_fast_slow/`, `behavior/humans_st/` |
-| **1H** | Mean z-scored sampling time vs reward rate (5-trial sliding window). Mice n=20, humans (speed) n=18 | `behavior.ipynb` "Fig. 1h, Ext. Fig. 3c, d" | `behavior/rewardrate.py::calcAvgRewardRate`, `::loopRewardRateAnalysis` | `behavior/rt_by_difficulty/` |
+| **1H** | Mean z-scored sampling time vs reward rate (5-trial sliding window). Mice n=20, humans (speed) n=18 | `behavior.ipynb` "Fig. 1h, Ext. Fig. 3c, d" | `behavior/rewardrate.py::calcAvgRewardRate`, `::loopRewardRateAnalysis` | `behavior/reward_rate5/` |
 | **1I left** | % previous-correct, fast vs slow. **p = 0.007**, paired *t*, n=20 mice (20,864 / 20,054 trials) | `behavior.ipynb` "Fig 1i-left" | `figcode/prevoutcomecurquantile.py::prevOutcomeCurQuantile` | `behavior/prev_choice_by_quantile.svg` |
 | **1I right** | Stay/switch update magnitude (mean of \|win\| and \|lose\| updates), fast vs slow. **p = 0.0046** (Table 1 gives 0.004), paired *t*, n=20 (20,851 / 20,044 trials) | `behavior.ipynb` "Fig. 1i-right" | `behavior/stayswitchupdate.py::calcWinLoseUpdates` + **inline** `plotSubjectsQuantileUpdate` | `behavior/QuantileWinLoseUpdate/` |
 
@@ -81,10 +104,10 @@ first — notebook headings use older figure numbers.
 |---|---|---|---|---|
 | **3A** | Widefield setup schematic | — | *not from this repo* | — |
 | **3B** | Pixel-wise ΔF/F maps in three windows of a typical (1.0–1.2 s) trial, Allen atlas outlines | `widefield.ipynb` §"Plot Normalized Sampling" *(inferred)* | `widefield/pipelineprocessors.py`, `common/plottracesavg.py`, `common/_imaging.py::plotHeatMap` | `WF/standard_map/`, `WF/redefined_map/` |
-| **3C** | Mean ΔF/F per area (V1, PPC, M1, M2), 21 sessions / 6 mice, 1.0–1.2 s trials; inset = example mouse | `widefield.ipynb` "Fig. 2c-big", "Fig. 2c-inset" | `common/plottracesavg.py::plotNormalized` | `WF/standard_map/RDK/ReactionTime/…_Many_Areas_Clrs2_Comb_ZScore.svg` |
+| **3C** | Mean ΔF/F per area (V1, PPC, M1, M2), 21 sessions / 6 mice, 1.0–1.2 s trials; inset = example mouse | `widefield.ipynb` "Fig. 2c-big", "Fig. 2c-inset" | `common/plottracesavg.py::plotNormalized` | `WF/standard_map/RDK/ReactionTime/…_Many_Areas_Clrs2_Comb_ZScore.svg` — **not in `results/`**: the standard (Allen) map is not the default, so a plain run does not write it. `--param MFC_LFC_MAP=False --param DEFAULT_ALLEN_MAP=True` |
 | **3D** | Opto silencing during 1 s fixed sampling. **MFC 28.90% ± 4.5**, **LFC 21.53% ± 6.27** performance drop. Hierarchical bootstrap 10,000 iterations + Holm–Bonferroni: V1 *p*=0.108 (n=7, 1,126 opto / 3,088 control), PPC *p*=0.021 (n=6, 719 / 2,131), MFC *p*<0.001 (n=7, 1,018 / 3,704), LFC *p*=0.01 (n=7, 1,503 / 4,859). Session counts in the Results text: V1 16, PPC 17, MFC 23, LFC 30 | `opto.ipynb` "Fig. 2d" | `opto/optoprocessor.py::plotOptoEffect`, `opto/bootstrap2regions.py::bootstrapSignTestApproach2`, `opto/bootstrapping.py::bootstrapPerf` | `optogenetics/Performance/` |
-| **3E** | MFC/LFC segmentation; heatmaps plus z-scored traces for fast / typical / slow (n=6 mice, 30 sessions); δ arrow at end of sampling | `widefield.ipynb` "Fig. 2e" | `widefield/pipelineprocessors.py`, `common/plottracesavg.py` | `WF/RDK/ReactionTime/…/Q1..Q3_midline_Comb_ZScore.svg` |
-| **3F** | δ (LFC−MFC) at end of sampling: **fast 0.32 ± 0.06, typical 0.56 ± 0.06, slow 0.63 ± 0.06**. RM-ANOVA + Holm–Bonferroni: fast-vs-typical *p*<0.0001, fast-vs-slow *p*<0.0001, typical-vs-slow *p*=0.1245. n=30 sessions / 6 mice | `widefield.ipynb` §"End of Sampling" | `widefield/mfclfcquantiles.py` (`SamplingAnchor.END`) — **covered by tests** (`widefield/tests/test_mfclfcquantiles.py`) | `WF/MFC_LFC_dist_by_session.svg` |
+| **3E** | MFC/LFC segmentation; heatmaps plus z-scored traces for fast / typical / slow (n=6 mice, 30 sessions); δ arrow at end of sampling | `widefield.ipynb` "Fig. 2e" | `widefield/pipelineprocessors.py`, `common/plottracesavg.py` | `WF/redefined_map/RDK/ReactionTime/…/Q1..Q3_midline_Comb_ZScore.svg` |
+| **3F** | δ (LFC−MFC) at end of sampling: **fast 0.32 ± 0.06, typical 0.56 ± 0.06, slow 0.63 ± 0.06**. RM-ANOVA + Holm–Bonferroni: fast-vs-typical *p*<0.0001, fast-vs-slow *p*<0.0001, typical-vs-slow *p*=0.1245. n=30 sessions / 6 mice | `widefield.ipynb` §"End of Sampling" | `widefield/mfclfcquantiles.py` (`SamplingAnchor.END`) — **covered by tests** (`widefield/tests/test_mfclfcquantiles.py`) | `WF/redefined_map/MFC_LFC_dist_by_session.svg` |
 
 ---
 
@@ -97,16 +120,16 @@ first — notebook headings use older figure numbers.
 |---|---|---|---|---|
 | **4A** | Bilateral MFC/LFC inhibition schematic | — | *not from this repo* | — |
 | **4B top** | Early (0–350 ms) / late (650–1000 ms) design over a 1 s fixed sample | — | *not from this repo* | — |
-| **4B bottom** | Widefield MFC/LFC z-scored ΔF/F under fixed 1 s sampling, n=4 mice, 12 sessions | `widefield.ipynb` "Fig. 3b-background" | `common/plottracesavg.py` | `WF/RDK/FixedTime/…_QFixedTime_Comb_ZScore.svg` |
+| **4B bottom** | Widefield MFC/LFC z-scored ΔF/F under fixed 1 s sampling, n=4 mice, 12 sessions | `widefield.ipynb` "Fig. 3b-background" | `common/plottracesavg.py` | `WF/redefined_map/RDK/FixedTime/…_QFixedTime_Comb_ZScore.svg` |
 | **4C** | Early/late inhibition performance drop. Early: **MFC 14.42% ± 1.43** (n=7), **LFC 7.36% ± 4.25** (n=10). Late: **MFC 22.03% ± 5.92** (n=5), **LFC 15.07% ± 3.37** (n=8). Hierarchical bootstrap + Holm–Bonferroni: MFC-early *p*=0.026, LFC-early *p*=0.156, MFC-late *p*=0.0096, LFC-late *p*=0.0096 | `opto.ipynb` "Fig. 3c" (§"Only two areas") | `opto/optoprocessor.py`, `opto/bootstrap2regions.py` | `optogenetics/Performance/opto_effect_All_Mice_MFC_LFC.svg` |
 | **4D** | 2P setup schematic, example micrograph, three example ΔF/F traces. Dataset: n=6 mice, 23 sessions; **837/2,340 active neurons in MFC, 609/1,536 in LFC** | `TwoPTraces.ipynb` (traces only) | schematic and micrograph *not from this repo* | `2P/Sessions/` |
-| **4E** | Mean z-scored L2/3 population activity (solid) with widefield overlay (dashed), MFC/LFC × fast/slow, n=6 mice | `TwoPTraces.ipynb` §"Plot average traces for different combinations"; `plottraces3.ipynb` §"Activity Sum" | `twop/plottracesavg.py::plotNormalized`, `twop/plot/activitysum.py::plotActivitySum` | `2P/Sessions/*/summary/` |
-| **4F** | Single-trial active (green) / inactive (grey) traces plus peak mini-heatmap | `2pAnalysis.ipynb` §"Plot neurons traces in fast vs slow trials" | **inline** | `2P/Sessions/` |
+| **4E** | Mean z-scored L2/3 population activity (solid) with widefield overlay (dashed), MFC/LFC × fast/slow, n=6 mice | `TwoPTraces.ipynb` §"Plot average traces for different combinations"; `plottraces3.ipynb` §"Activity Sum" | `twop/plottracesavg.py::plotNormalized`, `twop/plot/activitysum.py::plotActivitySum` | `2P/Sessions/*/*/summary/`, `2P/activity_sum/` |
+| **4F** | Single-trial active (green) / inactive (grey) traces plus peak mini-heatmap | `2pAnalysis.ipynb` §"Plot neurons traces in fast vs slow trials" | **inline** | `2P/FastSlowTraces/MFC/`, `2P/FastSlowTraces/LFC/` |
 | **4G** | Venn of ≥10%-active neurons: fast, slow, both — MFC (top), LFC (bottom) | `2pAnalysis.ipynb` §"Overlap between Active Impulsive neurons and Deliberate neurons" | **inline** `_fastSlowOverlap` (uses `matplotlib_venn`) | `2P/FastSlowVenn/valid_10%_M2.svg`, `…_ALM.svg` |
-| **4H** | Population heatmaps fast vs slow, ranked on the all-trials peak (example MFC session) | `TwoPTraces.ipynb` "Fig. 3h" | **inline**; `twop/plot/plottracetrialsheatmap.py` implements the same figure but is orphaned (see audit) | `2P/Sequence/` |
+| **4H** | Population heatmaps fast vs slow, ranked on the all-trials peak (example MFC session) | `TwoPTraces.ipynb` "Fig. 3h" | **inline**; `twop/plot/plottracetrialsheatmap.py` implements the same figure but is orphaned (see audit) | `2P/Sessions/*/*/summary/` |
 | **4I** | Schematic of the rank-deviation method | — | *not from this repo* | — |
-| **4J** | Permutation null vs observed rank deviation, 100,000 iterations/session, Holm–Bonferroni. **MFC (n=13):** *p*≤0.001 in 8/13, 0.001<*p*≤0.01 in 1/13, 0.01<*p*≤0.05 in 2/13. **LFC (n=10):** *p*≤0.001 in 8/10, 0.001<*p*≤0.01 in 1/10, 0.01<*p*≤0.05 in 1/10 | `2pAnalysis.ipynb` §"Monte Carlo Simulation / Permutation testing", §"Seq firing deviation" | `twop/seqdeviation.py` (+ `twop/tests/test_seqdeviation.py`) | `2P/SeqWithinDeviation/` |
-| **4K left** | Example "rigid" and "stretching" neurons, traces coloured by sampling duration | `plottraces3.ipynb` §"Correlation between rt and activity on single cell level" | **inline** | `2P/RT_Stats/traces/` |
+| **4J** | Permutation null vs observed rank deviation, 100,000 iterations/session, Holm–Bonferroni. **MFC (n=13):** *p*≤0.001 in 8/13, 0.001<*p*≤0.01 in 1/13, 0.01<*p*≤0.05 in 2/13. **LFC (n=10):** *p*≤0.001 in 8/10, 0.001<*p*≤0.01 in 1/10, 0.01<*p*≤0.05 in 1/10 | `2pSeqWithinDeviation.ipynb` §"Monte Carlo Simulation / Permutation testing", §"Seq firing deviation" | `twop/seqdeviation.py` (+ `twop/tests/test_seqdeviation.py`) | `2P/SeqWithinDeviation/` |
+| **4K left** | Example "rigid" and "stretching" neurons, traces coloured by sampling duration | `plottraces3.ipynb` §"Correlation between rt and activity on single cell level" | **inline** | `2P/RT_Stats/traces/` ⚠ the cited path is written by `2pAnalysis.ipynb`, not by the notebook named here — unresolved |
 | **4K right** | Pie charts: rigid / stretching (peak-timing only) / AUC only / both, per region. Threshold \|r\| > 0.3 | `plottraces3.ipynb` §"Pie-Chart for rigid/streteching neurons", §"MFC vs LFC bars at the same correlation threshold" | **inline** pies; `twop/plot/corrthreshregions.py::plotRegionBars` for the per-session bars (+ tests) | `2P/RT_Stats/` |
 
 ---
@@ -119,9 +142,9 @@ first — notebook headings use older figure numbers.
 | Panel | Content & reported numbers | Notebook | Backend | `results/` |
 |---|---|---|---|---|
 | **5A** | Choice-match / choice-mismatch schematic | — | *not from this repo* | — |
-| **5B** | Example-session heatmap plus three example neurons (#9 left-preferring, #38 non-selective, #46 right-preferring) | `TwoPTraces.ipynb` "Fig. 4b" | `twop/plottracesavg.py`, `twop/plottuning.py` | `2P/Sessions/*/sgf_and_not_sgf/…/Direction/` |
-| **5C** | % choice-selective neurons per session. **MFC 18.06% ± 3.04 SEM** (837 neurons, 13 sessions), **LFC 33.07% ± 3.68 SEM** (609 neurons, 10 sessions). Per-neuron Mann-Whitney U; across-region Student *t*, **p = 0.00478** | `2pAnalysis.ipynb` §"Sgf. Neurons Pie Charts" | `twop/sgfneurons.py` (+ `twop/tests/test_sgfneurons.py`) | `2P/MFC_correlation_pie_chart.pdf`, `2P/LFC_…`, `2P/Both_MFC_LFC_…` |
-| **5D** | Example neuron (#9), matched vs mismatched under slow (top) and fast (bottom) | `2pAnalysis.ipynb` §"Preferred vs anti-preferred - new way" | **inline** | `2P/Sessions/` |
+| **5B** | Example-session heatmap plus three example neurons (#9 left-preferring, #38 non-selective, #46 right-preferring) | `TwoPTraces.ipynb` "Fig. 4b" | `twop/plottracesavg.py`, `twop/plottuning.py` | `2P/Sessions/*/*/sgf_and_not_sgf/…/Direction/` |
+| **5C** | % choice-selective neurons per session. **MFC 18.06% ± 3.04 SEM** (837 neurons, 13 sessions), **LFC 33.07% ± 3.68 SEM** (609 neurons, 10 sessions). Per-neuron Mann-Whitney U; across-region Student *t*, **p = 0.00478** | `2pAnalysis.ipynb` §"Sgf. Neurons Pie Charts" | `twop/sgfneurons.py` (+ `twop/tests/test_sgfneurons.py`) | `2P/MFC_correlation_pie_chart.pdf`, `2P/LFC_…`, `2P/Both_MFC_LFC_…` ⚠ the cited path is written by `plottraces3.ipynb`, not by the notebook named here — unresolved |
+| **5D** | Example neuron (#9), matched vs mismatched under slow (top) and fast (bottom) | `2pAnalysis.ipynb` §"Preferred vs anti-preferred - new way" | **inline** | `2P/Sessions/` ⚠ the cited path is written by `TwoPTraces.ipynb`, not by the notebook named here — unresolved |
 | **5E** | Sequence-ordered population response, matched vs mismatched, slow/fast × MFC/LFC. **MFC 13 sessions / 182 neurons; LFC 10 sessions / 197 neurons.** 7 bin-pairs; first and last excluded when assigning neurons | `2pAnalysis.ipynb` §"Cityscape Figure" | `twop/plottuning.py::TrajectoryTuningPlot` | `2P/Sequence/` |
 | **5F** | Coding efficiency `(Match − Mismatch)/Match` at sampling start and decision, MFC vs LFC × slow/fast | `2pAnalysis.ipynb` "Fig. 5F" — `plotTrajectory(as_weight=True, weight_only_first_last=True)` | `twop/plottuning.py` | `2P/Sequence/` |
 | **5G** | Mid-sampling (0.3–0.9 s) inhibition design plus example-mouse sampling-duration distributions | `opto.ipynb` "Fig. 4g" | `opto/optoreactiontime.py::optoReactionTime` | `optogenetics/DecisionInitiation/` |
@@ -152,7 +175,7 @@ first — notebook headings use older figure numbers.
 | **7A** | % neurons per session correlated (\|r\| ≥ 0.3) with model latents. **Q-value (side bias) 10.38% ± 2.68 SEM; R-value (reward rate) 8.89% ± 2.58 SEM.** n=22 sessions. Significance against a per-neuron activity-shuffled null (1,000 shuffles), Holm–Bonferroni. Fit: joint MLE+χ² with w_MLE=1, w_χ²=0.5 | `rlmodel/model_neural_correlate.ipynb` §"Factor modulation bars" | `rlmodel/model/neural_correlate.py` (+ `tests/test_neural_correlate.py`) | `RLModel/neural_correlate/` |
 | **7B** | DV-correlated neurons, fast vs slow. **Fast 2.07% ± 0.52; slow 4.56% ± 1.1** per session. Two-sided session-paired sign-flip permutation, 1,000 iterations | `rlmodel/model_neural_correlate.ipynb` §"Fast vs slow: drift-correlated neurons" | `rlmodel/model/neural_correlate.py` | `RLModel/neural_correlate/` |
 | **7C** | MFC ("Strategy") → LFC ("Action") schematic | — | *not from this repo* | — |
-| **7D** | 3D landscape: z-scored sampling time vs relative Q-value × reward rate, one surface per difficulty. Pseudo-sessions resampled within session with randomised stimulus strengths; Gaussian smoothing σ=1 bin | `rlmodel/model_to_behavior.ipynb` "Fig. 5f, middle" | **inline** `plotQ_R_Heatmap`; simulation through `rlmodel/model/posterior_simulate.py` | `RLModel/Q_R_Heatmap.svg`, `behavior/optimal_sampling/3d_plot.svg` |
+| **7D** | 3D landscape: z-scored sampling time vs relative Q-value × reward rate, one surface per difficulty. Pseudo-sessions resampled within session with randomised stimulus strengths; Gaussian smoothing σ=1 bin | `rlmodel/model_to_behavior.ipynb` "Fig. 5f, middle" | **inline** `plotQ_R_Heatmap`; simulation through `rlmodel/model/qrsurface.py` | `RLModel/Q_R_Heatmap.svg` |
 | **7E** | Cellular-implementation schematic (slow vs fast) | — | *not from this repo* | — |
 
 ---

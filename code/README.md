@@ -205,7 +205,7 @@ uv run python code/run_notebooks.py --list                   # what would run
 uv run python code/run_notebooks.py                          # everything, writes nothing
 uv run python code/run_notebooks.py --save-figs --paper-figures-only
 uv run python code/run_notebooks.py --save-figs --only behavior opto
-uv run python code/run_notebooks.py --only widefield --param MFC_LFC_MAP=False
+uv run python code/run_notebooks.py --only widefield --param MAP=standard
 ```
 
 Every figure notebook has one cell tagged `parameters` declaring three flags,

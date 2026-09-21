@@ -762,8 +762,7 @@ attempted**, where TwoPTraces alone had been rewriting 92 committed heatmaps.
 like) are out of scope.
 
 **E1 — one `parameters` cell per notebook.** `SAVE_FIGS`, `SAVE_DATA`,
-`PAPER_FIGURES_ONLY`, all `False`; `widefield` adds `MFC_LFC_MAP` and
-`DEFAULT_ALLEN_MAP`. `global_save_figs` was renamed to `SAVE_FIGS` everywhere,
+`PAPER_FIGURES_ONLY`, all `False`; `widefield` adds `MAP`. `global_save_figs` was renamed to `SAVE_FIGS` everywhere,
 Tracking's `True` default is gone, and no call passes `save_figs=True`
 literally. With every flag off, all notebooks but `model_to_behavior` ran top
 to bottom through the runner and a before/after snapshot of the repository
@@ -999,7 +998,7 @@ produces it** — the default full run, or a run with a parameter the runner
 already exposes. Anything that would need someone to edit the code is gone.
 `results/` is now 6,462 → **5,008 files, and all 5,008 are reachable**:
 5,007 from the default `--save-figs` run, one from
-`--param MFC_LFC_MAP=False --param DEFAULT_ALLEN_MAP=True`.
+`--param MAP=standard`.
 
 It was pruned in two passes. The first took the 992 whose content survives in
 a current form; the rule for those was that the same content is still in
@@ -1031,7 +1030,7 @@ not a module, anywhere in the repository. Its output no longer ships. The
 figure map still lists that directory among **Figure 1H**'s outputs, so either
 the row is stale or the call was lost; worth settling before publication.
 
-#### A defect in widefield's parameters, found while measuring reachability
+#### A defect in widefield's parameters — found while measuring reachability, since **fixed**
 
 `MFC_LFC_MAP` and `DEFAULT_ALLEN_MAP` encode one three-way choice as two
 booleans, and two of the four combinations are errors:
@@ -1043,9 +1042,23 @@ booleans, and two of the four combinations are errors:
 | `DEFAULT_ALLEN_MAP=True` alone | `AssertionError: Only one … can be True` |
 | `MFC_LFC_MAP=False` alone | `AssertionError: One … must be specified as True`, then five cells fail on undefined names |
 
-So the two obvious ways to ask for the other map both fail, and only passing
-both together works. Collapsing them into one `MAP=` parameter would remove
-the trap; left alone for now as outside F's scope.
+So the two obvious ways to ask for the other map both failed, and only passing
+both together worked.
+
+**Fixed.** The notebook now declares one `MAP`, and
+[`widefield/referencemap.py`](../code/widefield/referencemap.py) owns the
+choice: a `MapValues` class holding the accepted strings, plus `directory()`,
+`atlas()` and `isRedefined()`, and a `resolve()` that rejects anything else by
+naming what is allowed instead of letting a later cell fail on an undefined
+variable. One parameter cannot contradict itself, so that whole class of
+failure is gone; the old names are now refused outright rather than
+half-configuring a run.
+
+The value is a plain string because papermill injects literals — the
+parameters cell cannot hold an enum member. Verified both ways after the
+change, 0 erroring cells each: `MAP="redefined"` 4.5 min → 13 files under
+`WF/redefined_map/`, `MAP=standard` 0.4 min → 5 files under
+`WF/standard_map/`, the same five the valid two-boolean combination produced.
 
 ### F3 — still open
 
