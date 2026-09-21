@@ -56,18 +56,36 @@ def loopConfig(df, applyFn, min_choice_trials,
 
     return ret
 
+def prepareSaveDir(save_prefix, subject_name):
+    """Make ``{save_prefix}/{subject_name}`` exist, and return it.
+
+    The directory used to be left to whatever happened to be on disk: the
+    ``mkdir`` here was commented out, so a panel saved only where an older run
+    had already created its folder. ``Psychometric/free_sampling/`` never had
+    one, and a full run died there -- after half an hour -- while the
+    ``fixedtime_*`` prefixes beside it went on saving. Verification runs missed
+    it because they went through a write guard that creates parents in its own
+    mirror.
+
+    The assert stays: it catches a mistyped prefix, which ``parents=True``
+    would otherwise turn into a silently created tree.
+    """
+    assert save_prefix is not None, "save_prefix must be specified"
+    save_prefix_path = pathlib.Path(save_prefix)
+    assert save_prefix_path.parent.exists(), (
+                                  f"Directory: {save_prefix} doesn't exist")
+    save_prefix_path /= subject_name
+    save_prefix_path.mkdir(exist_ok=True, parents=True)
+    return save_prefix_path
+
+
 def _processSubject(df, applyFn, min_choice_trials, subject_name, loop_cols,
                     which : Literal["partial", "full", "all"],
                     stim_type : Literal["FT", "RT", "all", "feedback"],
                     process_groups_together=False,
                     save_prefix=None, save_figs=False):
     if save_figs:
-        assert save_prefix is not None, "save_prefix must be specified"
-        save_prefix_path = pathlib.Path(save_prefix)
-        assert save_prefix_path.parent.exists(), (
-                                      f"Directory: {save_prefix} doesn't exist")
-        save_prefix_path /= subject_name
-        # save_prefix_path.mkdir(exist_ok=True, parents=True)
+        prepareSaveDir(save_prefix, subject_name)
 
     feedback_start_states = [MatrixState.WaitForReward,
                              MatrixState.WaitForPunish]
