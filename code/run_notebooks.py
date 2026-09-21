@@ -53,6 +53,8 @@ NOTEBOOKS = [
     "2pSeqWithinDeviation.ipynb",
     "rlmodel/model_analysis.ipynb",
     "rlmodel/model_to_behavior.ipynb",
+    "rlmodel/model_neural_correlate.ipynb",
+    "rlmodel/model_compare.ipynb",
 ]
 
 #: What every notebook's parameters cell declares, and the runner's flags.

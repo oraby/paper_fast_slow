@@ -220,16 +220,24 @@ all cells -- writes nothing:
 
 Each cell that saves a figure is tagged `paper-figure` (saves whenever
 `SAVE_FIGS` is on) or `per-subject` (saves only under
-`SAVE_FIGS and not PAPER_FIGURES_ONLY`). Where a paper panel is one example
-picked from a loop over every session or neuron, the whole loop stays
-`paper-figure`, so a paper-only run can still write more than the manuscript
-shows. Executed copies go to `runs/<timestamp>/` (git-ignored).
-`code/util/tests/test_run_notebooks.py` fails the suite if a notebook breaks
-this contract -- a missing tag, a literal `save_figs=True`/`False` in a paper
-cell, or a side flag overriding `SAVE_FIGS`.
+`SAVE_FIGS and not PAPER_FIGURES_ONLY`). Executed copies go to
+`runs/<timestamp>/` (git-ignored). `code/util/tests/test_run_notebooks.py`
+fails the suite if a notebook breaks this contract -- a missing tag, a literal
+`save_figs=True`/`False` in a paper cell, or a side flag overriding
+`SAVE_FIGS`.
 
-`rlmodel/model_to_behavior.ipynb` is the long one: Figure 7D resamples each of
-the 272 fitted sessions 1,000 times and simulates every trial, ~10 minutes over
-ten cores. Its parameters cell carries the three knobs -- `RESAMPLE_COUNT`,
-`NUDGE_LATENT_SD` and `SURFACE_WORKERS` (each worker needs ~3-4 GiB) -- and
-`model/qrsurface.py` explains what they do and why the last two exist.
+**Six published panels are not written by a paper-only run**: 4F and 6C
+(`2pAnalysis`), 4E/S8B (`TwoPTraces`), and 2E, 2F/S4A and Ext. 5a-right
+(`model_analysis`). Each is one example drawn from a loop over every neuron,
+session or subject, and the example's identity was never recorded, so the loop
+is tagged `per-subject` and skipped whole -- it prints a line saying so. A full
+run writes them along with everything else. Recording those identities is what
+would make `--paper-figures-only` mean exactly the manuscript's figures.
+
+## The long ones
+
+| notebook | cost | why |
+|---|---|---|
+| `rlmodel/model_compare.ipynb` | **~6 hours** | one comparison grid per subject x model, two forward passes per column. Entirely `per-subject`: a paper-only run skips it in seconds |
+| `rlmodel/model_to_behavior.ipynb` | ~10 min over ten cores | Figure 7D resamples each of the 272 fitted sessions 1,000 times and simulates every trial. Its parameters cell carries `RESAMPLE_COUNT`, `NUDGE_LATENT_SD` and `SURFACE_WORKERS` (each worker needs ~3-4 GiB); `model/qrsurface.py` explains what they do |
+| `rlmodel/model_neural_correlate.ipynb` | minutes, but 1,218 files | one figure per tuned neuron, per parameter. The per-neuron cells are `per-subject`; Figures 7A, 7B and S14C are not |

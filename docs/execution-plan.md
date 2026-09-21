@@ -944,7 +944,10 @@ which is drafted Methods text, not a plan.
 The root `README.md` title is fixed. `code/README.md`'s notebook list was
 already corrected in D/E — it names `2pAnalysis.ipynb` and all eleven.
 
-### F2 — `results/` cannot be pruned by diff yet
+### F2 — `results/` is regenerated first, then pruned
+
+**Decided 2026-09-21: regenerate, then prune.** The rest of this section is
+why a straight prune was not possible, and what had to be built first.
 
 The intended keep-set was "every path a full `SAVE_FIGS` run writes", measured
 in the write sandbox for all eleven notebooks. Measured, it says the tree on
@@ -963,13 +966,29 @@ writes `sgf/…`. So `results/` was never regenerated after the D refactors,
 and the figure map's paths point into the old tree. Pruning against the new
 keep-set today would move out the very files that back the manuscript panels.
 
-Two further notebooks write into `results/` and are **not in the runner's
+Two further notebooks write into `results/` and were **not in the runner's
 list**: `model_neural_correlate.ipynb` (`RLModel/neural_correlate/`, 1,218
-files, backing S14) and `model_compare.ipynb` (`RLModel/fig_model_cmp/`, 120).
-Any keep-set has to account for them.
+files — Figures 7A, 7B, S14C and the S14E/F/H example neurons) and
+`model_compare.ipynb` (`RLModel/fig_model_cmp/`, 120 — S14B). Both write
+published panels, so both are now in the runner, which meant bringing them
+under E's contract:
 
-**So F2 is a regeneration, not a prune**, and it needs decision 5 first (ship
-the paper set or the full per-subject set). Left undone deliberately.
+- `model_neural_correlate` carried two save switches of its own,
+  `SAVE_SUMMARY_FIGS` and `SAVE_NEURON_FIGS`, **both defaulting to `True`** —
+  opening the notebook and running it wrote 1,218 files. Gone: the summary
+  bars save under `SAVE_FIGS`, the per-neuron figures under
+  `SAVE_FIGS and not PAPER_FIGURES_ONLY`.
+- `model_compare`'s batch cell saved unconditionally. It is now `per-subject`,
+  which matters more than it sounds: that cell is **~6 hours** (two forward
+  passes per column, 120 grids, measured at ~7 grids in 20 minutes), and a
+  paper-only run now skips it in six seconds.
+
+Both keep a `parameters` cell like every other notebook, and the contract test
+covers them — 135 checks over thirteen notebooks.
+
+**Then the regeneration**: a full `--save-figs` run over all thirteen, after
+which whatever `results/` still holds that the run did not write is staged out
+the same way F1 staged everything else.
 
 ### F3 — still open
 
