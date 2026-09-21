@@ -28,7 +28,7 @@ The eight workstreams as stated:
 | **C** | Behaviour tests | **Done, C1–C8.** Every extracted panel reproduces its committed figure and is tested; `figcode/`, `opto/` and `tracking/` went 0 → 112, 51 and 124 tests. C8 extracted `Tracking.ipynb`'s preprocessing (identical output on all 76,311 frames) and fixed two silent breakages: pandas 3 copy-on-write and a machine-time-zone dependence. S3J–M legend/Methods text is drafted (`methods_model_revision.md` Blocks 10–12); S3K is regenerated choice-normalised next revision; interpolation wording (#13) is open |
 | **D** | 2-photon reorg | **DONE (D0-D4)** — all five 2P notebooks run top to bottom, 0 errors, writing nothing (`SAVE_FIGS`/`SAVE_DATA`); every listed panel is an extracted, tested module, verified figure-for-figure against pre-extraction runs; every load goes through `twop/dataload.py`. Two items are deliberately left for the next revision (unseeded permutation panels; the 15-row difference in the shipped filtered frame) — see [`repo-audit.md`](repo-audit.md) |
 | **E** | Runner / papermill | **done** — all 11 figure notebooks parameterised and running through `code/run_notebooks.py`, every saving cell tagged `paper-figure`/`per-subject`. Figure 7D's cell, which asked for ~420 GiB and could not load its own fit, is now `model/qrsurface.py`: binning fixed, facets averaged per subject, latents nudged, one subject per worker — 1,000 resamples in ~10 min |
-| **F** | Final cleanup | **F1 done** (2026-09-21) — 63 files / 583 MB staged out to `../paper_fast_slow_to_delete/`, nothing deleted. **F2 blocked**: `results/` is not a superset of what the code writes (1,925 files a current run produces are absent), so it needs regenerating before it can be pruned — and decision 5 first |
+| **F** | Final cleanup | **F1, F2 done** (2026-09-21) — 1,520 files / 642 MB staged out to `../paper_fast_slow_to_delete/`, nothing deleted. `results/` regenerated from all thirteen notebooks and pruned to 5,008 files, every one of which a documented run reproduces. **F3 open**: figure-map paths, figure-label renumbering |
 
 Suite: **1705 passed, 1 skipped, 0 failed**, and green with
 `FutureWarning`/`DeprecationWarning` promoted to errors.
@@ -994,10 +994,16 @@ wrote a second tree beside the old one rather than replacing it.
 
 ### F2b — the prune, and what it is allowed to touch
 
-Of 1,455 files the run did not write, **992 were staged out** and **463 were
-left where they are**. The rule for staging something out is that the same
-content is still in `results/` in a current form, or the thing that produced
-it no longer exists:
+**The rule, finally: a file stays only if running the shipped notebooks
+produces it** — the default full run, or a run with a parameter the runner
+already exposes. Anything that would need someone to edit the code is gone.
+`results/` is now 6,462 → **5,008 files, and all 5,008 are reachable**:
+5,007 from the default `--save-figs` run, one from
+`--param MFC_LFC_MAP=False --param DEFAULT_ALLEN_MAP=True`.
+
+It was pruned in two passes. The first took the 992 whose content survives in
+a current form; the rule for those was that the same content is still in
+`results/`, or the thing that produced it no longer exists:
 
 | files | why it went |
 |---|---|
@@ -1006,28 +1012,40 @@ it no longer exists:
 | 23 | `_sorted_to_all_self_rng` — a sort/range pair the notebook no longer asks for, both published ones present |
 | 20 | `fig_model_cmp/*[asymQRR]*` — the asymmetric-learning-rate model B2 deleted |
 
-The other 463 are listed in [`results-not-regenerated.txt`](results-not-regenerated.txt)
-and stay in the repository, because each is a loop or a configuration that
-**stopped running**, which is not the same thing as being obsolete. That
-distinction is not academic: the first such group examined was Figure 5B's
-example neurons, and pruning on the diff alone would have deleted them.
+The second pass took the remaining **462**, held back one round while each
+group was read. They were kept only long enough to be sure none of them was
+another Figure 5B — a published panel whose loop had quietly stopped running.
+None was, so under the rule above they all go:
 
-Two of the held groups are worth treating as defects rather than choices:
+| files | what |
+|---|---|
+| 295 | `neural_correlate/**Chi²=0.1/` — a fitting criterion the notebook does not run; only the `Chi²=0.5` fit the manuscript cites is configured |
+| 21 | `behavior/rt_by_difficulty/` — see below |
+| ~100 | per-subject behaviour panels: `st_vs_diff_only`, `psych_mice`, `st_vs_diff_fast_slow`, `StaySwitch`, `fm_hf` |
+| 14 | `2P/SeqWithinDeviation/` shuffle-calibration figures |
+| 32 | widefield quantile variants and the rest |
 
-- **`behavior/rt_by_difficulty/` (21 files) is written by
-  `figcode/stbydifficulty.py::stByDifficulty`, and nothing calls that
-  function** — not a notebook, not a module, anywhere in the repository. The
-  figure map lists the directory among Figure 1H's outputs.
-- **`neural_correlate/**Chi²=0.1/` (295 files)** is a fitting criterion the
-  notebook does not run; only the `Chi²=0.5` fit the manuscript cites is
-  configured. Whether the alternative criterion should still ship is a
-  decision, not a cleanup.
+**`stByDifficulty` is dead code.** `figcode/stbydifficulty.py::stByDifficulty`
+writes `behavior/rt_by_difficulty/`, and nothing calls it — not a notebook,
+not a module, anywhere in the repository. Its output no longer ships. The
+figure map still lists that directory among **Figure 1H**'s outputs, so either
+the row is stale or the call was lost; worth settling before publication.
 
-The remainder are per-subject behaviour panels (`st_vs_diff_only`,
-`psych_mice`, `st_vs_diff_fast_slow`, `StaySwitch`, `fm_hf`), a few widefield
-quantile variants, and 14 `SeqWithinDeviation` calibration figures — all in
-directories the run still writes into, so in each case some of the loop
-survives and some does not.
+#### A defect in widefield's parameters, found while measuring reachability
+
+`MFC_LFC_MAP` and `DEFAULT_ALLEN_MAP` encode one three-way choice as two
+booleans, and two of the four combinations are errors:
+
+| `--param` | result |
+|---|---|
+| *(default)* `MFC_LFC_MAP=True` | writes `WF/…` |
+| `MFC_LFC_MAP=False DEFAULT_ALLEN_MAP=True` | writes `WF/standard_map/…`, 0 errors |
+| `DEFAULT_ALLEN_MAP=True` alone | `AssertionError: Only one … can be True` |
+| `MFC_LFC_MAP=False` alone | `AssertionError: One … must be specified as True`, then five cells fail on undefined names |
+
+So the two obvious ways to ask for the other map both fail, and only passing
+both together works. Collapsing them into one `MAP=` parameter would remove
+the trap; left alone for now as outside F's scope.
 
 ### F3 — still open
 
