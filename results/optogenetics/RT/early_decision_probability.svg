@@ -1,0 +1,308 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN"
+  "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg xmlns:xlink="http://www.w3.org/1999/xlink" width="405.295586pt" height="311.638758pt" viewBox="0 0 405.295586 311.638758" xmlns="http://www.w3.org/2000/svg" version="1.1">
+ <metadata>
+  <rdf:RDF xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:cc="http://creativecommons.org/ns#" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+   <cc:Work>
+    <dc:type rdf:resource="http://purl.org/dc/dcmitype/StillImage"/>
+    <dc:date>2026-09-21T16:26:43.924750</dc:date>
+    <dc:format>image/svg+xml</dc:format>
+    <dc:creator>
+     <cc:Agent>
+      <dc:title>Matplotlib v3.11.0, https://matplotlib.org/</dc:title>
+     </cc:Agent>
+    </dc:creator>
+   </cc:Work>
+  </rdf:RDF>
+ </metadata>
+ <defs>
+  <style type="text/css">*{stroke-linejoin: round; stroke-linecap: butt}</style>
+ </defs>
+ <g id="figure_1">
+  <g id="patch_1">
+   <path d="M 0 311.638758 
+L 405.295586 311.638758 
+L 405.295586 0 
+L 0 0 
+z
+" style="fill: #ffffff"/>
+  </g>
+  <g id="axes_1">
+   <g id="patch_2">
+    <path d="M 38.706836 288.048328 
+L 395.826836 288.048328 
+L 395.826836 21.936328 
+L 38.706836 21.936328 
+z
+" style="fill: #ffffff"/>
+   </g>
+   <g id="matplotlib.axis_1">
+    <g id="xtick_1">
+     <g id="line2d_1">
+      <defs>
+       <path id="m28de454871" d="M 0 0 
+L 0 3.5 
+" style="stroke: #000000; stroke-width: 0.8"/>
+      </defs>
+      <g>
+       <use xlink:href="#m28de454871" x="89.723979" y="288.048328" style="stroke: #000000; stroke-width: 0.8"/>
+      </g>
+     </g>
+     <g id="text_1">
+      <text style="font-size: 10px; font-family: 'Arial', sans-serif; text-anchor: middle" x="89.723979" y="302.328602" transform="rotate(-0 89.723979 302.328602)">Control</text>
+     </g>
+    </g>
+    <g id="xtick_2">
+     <g id="line2d_2">
+      <g>
+       <use xlink:href="#m28de454871" x="344.809693" y="288.048328" style="stroke: #000000; stroke-width: 0.8"/>
+      </g>
+     </g>
+     <g id="text_2">
+      <text style="font-size: 10px; font-family: 'Arial', sans-serif; text-anchor: middle" x="344.809693" y="302.334266" transform="rotate(-0 344.809693 302.334266)">Opto</text>
+     </g>
+    </g>
+   </g>
+   <g id="matplotlib.axis_2">
+    <g id="ytick_1">
+     <g id="line2d_3">
+      <defs>
+       <path id="mf0e5df8b2e" d="M 0 0 
+L -3.5 0 
+" style="stroke: #000000; stroke-width: 0.8"/>
+      </defs>
+      <g>
+       <use xlink:href="#mf0e5df8b2e" x="38.706836" y="256.380679" style="stroke: #000000; stroke-width: 0.8"/>
+      </g>
+     </g>
+     <g id="text_3">
+      <text style="font-size: 10px; font-family: 'Arial', sans-serif; text-anchor: end" x="31.706836" y="260.020816" transform="rotate(-0 31.706836 260.020816)">10</text>
+     </g>
+    </g>
+    <g id="ytick_2">
+     <g id="line2d_4">
+      <g>
+       <use xlink:href="#mf0e5df8b2e" x="38.706836" y="220.499323" style="stroke: #000000; stroke-width: 0.8"/>
+      </g>
+     </g>
+     <g id="text_4">
+      <text style="font-size: 10px; font-family: 'Arial', sans-serif; text-anchor: end" x="31.706836" y="224.13946" transform="rotate(-0 31.706836 224.13946)">20</text>
+     </g>
+    </g>
+    <g id="ytick_3">
+     <g id="line2d_5">
+      <g>
+       <use xlink:href="#mf0e5df8b2e" x="38.706836" y="184.617967" style="stroke: #000000; stroke-width: 0.8"/>
+      </g>
+     </g>
+     <g id="text_5">
+      <text style="font-size: 10px; font-family: 'Arial', sans-serif; text-anchor: end" x="31.706836" y="188.258103" transform="rotate(-0 31.706836 188.258103)">30</text>
+     </g>
+    </g>
+    <g id="ytick_4">
+     <g id="line2d_6">
+      <g>
+       <use xlink:href="#mf0e5df8b2e" x="38.706836" y="148.73661" style="stroke: #000000; stroke-width: 0.8"/>
+      </g>
+     </g>
+     <g id="text_6">
+      <text style="font-size: 10px; font-family: 'Arial', sans-serif; text-anchor: end" x="31.706836" y="152.376747" transform="rotate(-0 31.706836 152.376747)">40</text>
+     </g>
+    </g>
+    <g id="ytick_5">
+     <g id="line2d_7">
+      <g>
+       <use xlink:href="#mf0e5df8b2e" x="38.706836" y="112.855254" style="stroke: #000000; stroke-width: 0.8"/>
+      </g>
+     </g>
+     <g id="text_7">
+      <text style="font-size: 10px; font-family: 'Arial', sans-serif; text-anchor: end" x="31.706836" y="116.495391" transform="rotate(-0 31.706836 116.495391)">50</text>
+     </g>
+    </g>
+    <g id="ytick_6">
+     <g id="line2d_8">
+      <g>
+       <use xlink:href="#mf0e5df8b2e" x="38.706836" y="76.973897" style="stroke: #000000; stroke-width: 0.8"/>
+      </g>
+     </g>
+     <g id="text_8">
+      <text style="font-size: 10px; font-family: 'Arial', sans-serif; text-anchor: end" x="31.706836" y="80.614034" transform="rotate(-0 31.706836 80.614034)">60</text>
+     </g>
+    </g>
+    <g id="ytick_7">
+     <g id="line2d_9">
+      <g>
+       <use xlink:href="#mf0e5df8b2e" x="38.706836" y="41.092541" style="stroke: #000000; stroke-width: 0.8"/>
+      </g>
+     </g>
+     <g id="text_9">
+      <text style="font-size: 10px; font-family: 'Arial', sans-serif; text-anchor: end" x="31.706836" y="44.732678" transform="rotate(-0 31.706836 44.732678)">70</text>
+     </g>
+    </g>
+    <g id="text_10">
+     <text style="font-size: 10px; font-family: 'Arial', sans-serif; text-anchor: middle" x="14.480273" y="154.992328" transform="rotate(-90 14.480273 154.992328)">Percentage of Trials Performed</text>
+    </g>
+   </g>
+   <g id="line2d_10">
+    <path d="M 89.723979 186.595679 
+L 344.809693 76.973897 
+" clip-path="url(#p4ec98a911d)" style="fill: none; stroke: #ec008c; stroke-opacity: 0.1; stroke-width: 1.5; stroke-linecap: square"/>
+   </g>
+   <g id="line2d_11">
+    <path d="M 89.723979 209.754104 
+L 344.809693 250.482374 
+" clip-path="url(#p4ec98a911d)" style="fill: none; stroke: #27aae1; stroke-opacity: 0.1; stroke-width: 1.5; stroke-linecap: square"/>
+   </g>
+   <g id="line2d_12">
+    <path d="M 89.723979 52.269802 
+L 344.809693 216.456353 
+" clip-path="url(#p4ec98a911d)" style="fill: none; stroke: #ec008c; stroke-opacity: 0.1; stroke-width: 1.5; stroke-linecap: square"/>
+   </g>
+   <g id="line2d_13">
+    <path d="M 89.723979 44.674393 
+L 344.809693 159.55017 
+" clip-path="url(#p4ec98a911d)" style="fill: none; stroke: #27aae1; stroke-opacity: 0.1; stroke-width: 1.5; stroke-linecap: square"/>
+   </g>
+   <g id="line2d_14">
+    <path d="M 89.723979 178.325975 
+L 344.809693 273.377111 
+" clip-path="url(#p4ec98a911d)" style="fill: none; stroke: #ec008c; stroke-opacity: 0.1; stroke-width: 1.5; stroke-linecap: square"/>
+   </g>
+   <g id="line2d_15">
+    <path d="M 89.723979 178.754297 
+L 344.809693 271.155355 
+" clip-path="url(#p4ec98a911d)" style="fill: none; stroke: #27aae1; stroke-opacity: 0.1; stroke-width: 1.5; stroke-linecap: square"/>
+   </g>
+   <g id="line2d_16">
+    <path d="M 89.723979 132.941509 
+L 344.809693 220.033331 
+" clip-path="url(#p4ec98a911d)" style="fill: none; stroke: #ec008c; stroke-opacity: 0.1; stroke-width: 1.5; stroke-linecap: square"/>
+   </g>
+   <g id="line2d_17">
+    <path d="M 89.723979 152.267991 
+L 344.809693 275.952328 
+" clip-path="url(#p4ec98a911d)" style="fill: none; stroke: #27aae1; stroke-opacity: 0.1; stroke-width: 1.5; stroke-linecap: square"/>
+   </g>
+   <g id="line2d_18">
+    <path d="M 89.723979 92.304793 
+L 344.809693 51.169457 
+" clip-path="url(#p4ec98a911d)" style="fill: none; stroke: #ec008c; stroke-opacity: 0.1; stroke-width: 1.5; stroke-linecap: square"/>
+   </g>
+   <g id="line2d_19">
+    <path d="M 89.723979 124.014527 
+L 344.809693 241.40657 
+" clip-path="url(#p4ec98a911d)" style="fill: none; stroke: #27aae1; stroke-opacity: 0.1; stroke-width: 1.5; stroke-linecap: square"/>
+   </g>
+   <g id="line2d_20">
+    <path d="M 89.723979 193.784435 
+L 344.809693 253.697961 
+" clip-path="url(#p4ec98a911d)" style="fill: none; stroke: #ec008c; stroke-opacity: 0.1; stroke-width: 1.5; stroke-linecap: square"/>
+   </g>
+   <g id="line2d_21">
+    <path d="M 89.723979 187.585865 
+L 344.809693 271.937084 
+" clip-path="url(#p4ec98a911d)" style="fill: none; stroke: #27aae1; stroke-opacity: 0.1; stroke-width: 1.5; stroke-linecap: square"/>
+   </g>
+   <g id="line2d_22">
+    <path d="M 89.723979 79.019105 
+L 344.809693 34.032328 
+" clip-path="url(#p4ec98a911d)" style="fill: none; stroke: #ec008c; stroke-opacity: 0.1; stroke-width: 1.5; stroke-linecap: square"/>
+   </g>
+   <g id="line2d_23">
+    <path d="M 89.723979 66.062142 
+L 344.809693 154.198466 
+" clip-path="url(#p4ec98a911d)" style="fill: none; stroke: #27aae1; stroke-opacity: 0.1; stroke-width: 1.5; stroke-linecap: square"/>
+   </g>
+   <g id="LineCollection_1">
+    <path d="M 89.723979 152.391757 
+L 89.723979 109.105757 
+" clip-path="url(#p4ec98a911d)" style="fill: none; stroke: #ec008c; stroke-width: 1.5"/>
+    <path d="M 344.809693 199.557754 
+L 344.809693 122.082372 
+" clip-path="url(#p4ec98a911d)" style="fill: none; stroke: #ec008c; stroke-width: 1.5"/>
+   </g>
+   <g id="LineCollection_2">
+    <path d="M 92.274836 161.267539 
+L 92.274836 113.907695 
+" clip-path="url(#p4ec98a911d)" style="fill: none; stroke: #27aae1; stroke-width: 1.5"/>
+    <path d="M 347.36055 252.092711 
+L 347.36055 212.102246 
+" clip-path="url(#p4ec98a911d)" style="fill: none; stroke: #27aae1; stroke-width: 1.5"/>
+   </g>
+   <g id="line2d_24">
+    <path d="M 89.723979 130.748757 
+L 344.809693 160.820063 
+" clip-path="url(#p4ec98a911d)" style="fill: none; stroke: #ec008c; stroke-width: 1.5; stroke-linecap: square"/>
+   </g>
+   <g id="line2d_25">
+    <path d="M 92.274836 137.587617 
+L 347.36055 232.097478 
+" clip-path="url(#p4ec98a911d)" style="fill: none; stroke: #27aae1; stroke-width: 1.5; stroke-linecap: square"/>
+   </g>
+   <g id="patch_3">
+    <path d="M 38.706836 288.048328 
+L 38.706836 21.936328 
+" style="fill: none; stroke: #000000; stroke-width: 0.8; stroke-linejoin: miter; stroke-linecap: square"/>
+   </g>
+   <g id="patch_4">
+    <path d="M 38.706836 288.048328 
+L 395.826836 288.048328 
+" style="fill: none; stroke: #000000; stroke-width: 0.8; stroke-linejoin: miter; stroke-linecap: square"/>
+   </g>
+   <g id="text_11">
+    <text style="font-size: 12px; font-family: 'Arial', sans-serif; text-anchor: middle" x="217.266836" y="15.936328" transform="rotate(-0 217.266836 15.936328)">All Mice - Med RT - End: Center-Reward - Early Decision Probability</text>
+   </g>
+   <g id="legend_1">
+    <g id="patch_5">
+     <path d="M 45.706836 283.048328 
+L 332.150586 283.048328 
+Q 334.150586 283.048328 334.150586 281.048328 
+L 334.150586 228.490125 
+Q 334.150586 226.490125 332.150586 226.490125 
+L 45.706836 226.490125 
+Q 43.706836 226.490125 43.706836 228.490125 
+L 43.706836 281.048328 
+Q 43.706836 283.048328 45.706836 283.048328 
+z
+" style="fill: #ffffff; opacity: 0.8; stroke: #cccccc; stroke-linejoin: miter"/>
+    </g>
+    <g id="LineCollection_3">
+     <path d="M 57.706836 246.458582 
+L 57.706836 236.458582 
+" style="fill: none; stroke: #ec008c; stroke-width: 1.5"/>
+    </g>
+    <g id="line2d_26">
+     <path d="M 47.706836 241.458582 
+L 67.706836 241.458582 
+" style="fill: none; stroke: #ec008c; stroke-width: 1.5; stroke-linecap: square"/>
+    </g>
+    <g id="line2d_27"/>
+    <g id="text_12">
+     <text style="font-size: 10px; font-family: 'Arial', sans-serif" transform="translate(75.706836 238.525574)">ALM inhibition Cntrl: 45.01% ±6.03- Opto: 36.63% ±10.80</text>
+     <text style="font-size: 10px; font-family: 'Arial', sans-serif" transform="translate(75.706836 249.415027)">7 Subjects (1,943 Opto - 7,477 Control)</text>
+    </g>
+    <g id="LineCollection_4">
+     <path d="M 57.706836 273.237684 
+L 57.706836 263.237684 
+" style="fill: none; stroke: #27aae1; stroke-width: 1.5"/>
+    </g>
+    <g id="line2d_28">
+     <path d="M 47.706836 268.237684 
+L 67.706836 268.237684 
+" style="fill: none; stroke: #27aae1; stroke-width: 1.5; stroke-linecap: square"/>
+    </g>
+    <g id="line2d_29"/>
+    <g id="text_13">
+     <text style="font-size: 10px; font-family: 'Arial', sans-serif" transform="translate(75.706836 265.304676)">M2 inhibition Cntrl: 43.11% ±6.60- Opto: 16.77% ±5.57</text>
+     <text style="font-size: 10px; font-family: 'Arial', sans-serif" transform="translate(75.706836 276.194129)">7 Subjects (1,863 Opto - 7,465 Control)</text>
+    </g>
+   </g>
+  </g>
+ </g>
+ <defs>
+  <clipPath id="p4ec98a911d">
+   <rect x="38.706836" y="21.936328" width="357.12" height="266.112"/>
+  </clipPath>
+ </defs>
+</svg>

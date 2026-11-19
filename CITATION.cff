@@ -1,0 +1,63 @@
+cff-version: 1.2.0
+message: "If you use this code or data, please cite the paper below."
+type: software
+title: "Code and data for: The neural mechanisms of fast versus slow decision-making"
+version: 1.0.0
+license:
+  - MIT
+  - CC-BY-4.0
+repository-code: "https://github.com/oraby/paper_fast_slow"
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.24260552
+    description: "The data: the complete data/ folder and the large two-photon files, archived on Zenodo"
+authors:
+  - given-names: Mostafa
+    family-names: Nashaat
+  - given-names: Hatem
+    family-names: Oraby
+  - given-names: Flutra
+    family-names: Krasniqi
+  - given-names: Sek Teng
+    family-names: Goh-Sauerbier
+  - given-names: Marion
+    family-names: Bosc
+  - given-names: Sandra
+    family-names: Koerner
+  - given-names: Arina
+    family-names: Lobova
+  - given-names: Sedef
+    family-names: Karayel
+  - given-names: Adam
+    family-names: Kepecs
+  - given-names: Matthew E.
+    family-names: Larkum
+preferred-citation:
+  type: article
+  title: "The neural mechanisms of fast versus slow decision-making"
+  journal: Neuron
+  status: advance-online
+  year: 2026
+  month: 11
+  doi: 10.1016/j.neuron.2026.10.024
+  authors:
+    - given-names: Mostafa
+      family-names: Nashaat
+    - given-names: Hatem
+      family-names: Oraby
+    - given-names: Flutra
+      family-names: Krasniqi
+    - given-names: Sek Teng
+      family-names: Goh-Sauerbier
+    - given-names: Marion
+      family-names: Bosc
+    - given-names: Sandra
+      family-names: Koerner
+    - given-names: Arina
+      family-names: Lobova
+    - given-names: Sedef
+      family-names: Karayel
+    - given-names: Adam
+      family-names: Kepecs
+    - given-names: Matthew E.
+      family-names: Larkum

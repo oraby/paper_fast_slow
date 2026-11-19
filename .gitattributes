@@ -1,0 +1,19 @@
+# Line endings. Text files are stored with LF and checked out with the
+# platform's own ending (CRLF on Windows, LF elsewhere); git tells binary
+# files apart by itself.
+* text=auto
+
+# Run by bash on the cluster: LF on every platform.
+*.sh     text eol=lf
+*.sbatch text eol=lf
+
+# Data and figures: never converted, never diffed as text.
+*.pkl binary
+*.npy binary
+*.npz binary
+*.mat binary
+*.h5  binary
+*.png binary
+*.jpg binary
+*.pdf binary
+*.zip binary
