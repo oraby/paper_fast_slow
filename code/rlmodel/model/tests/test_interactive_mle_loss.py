@@ -1,0 +1,660 @@
+import numpy as np
+import pandas as pd
+import json
+from pathlib import Path
+
+from .. import plotter, visualize
+
+
+def test_loss_title_includes_chi_square_and_mle_loss():
+    title = plotter._loss_title(
+        "S1", num_trials=1234, chi_square_loss=12.345, mle_loss=67.89,
+        mle_loss_source="fit")
+
+    assert "Chi-Square Loss: 12.35" in title
+    assert "MLE Loss: 67.89 (fit)" in title
+    assert "1,234 Trials" in title
+
+
+def test_loss_title_marks_missing_mle_loss_as_not_run():
+    title = plotter._loss_title("S1", num_trials=1234, chi_square_loss=12.345)
+
+    assert "Chi-Square Loss: 12.35" in title
+    assert "MLE Loss: not run" in title
+
+
+def test_loss_title_appends_joint_breakdown():
+    info = dict(total_loss=3.0, mle_mle_weight=1.0, mle_chi2_weight=0.5,
+                mle_part_loss=1.0, chi2_part_loss=4.0, ref_mle=120.0,
+                ref_chi2=55.0, ref_mle_time="2026-06-01T10:00:00",
+                ref_chi2_time="2026-06-02T09:00:00")
+    title = plotter._loss_title("S1", num_trials=10, chi_square_loss=1.0,
+                                mle_loss=2.0, mle_loss_source="fit",
+                                joint_info=info)
+    assert "\n" in title  # breakdown is a second title line
+    assert "Joint total 3.00" in title
+    assert "MLE_part 1.00" in title
+    assert "Chi" in title and "_part 4.00" in title  # Chi²_part
+    assert "ref_MLE 120.00 @ 2026-06-01T10:00:00" in title
+    assert "ref_Chi" in title and "55.00 @ 2026-06-02T09:00:00" in title
+
+
+def test_loss_title_no_joint_line_without_info():
+    title = plotter._loss_title("S1", num_trials=10, chi_square_loss=1.0)
+    assert "\n" not in title
+    assert "Joint total" not in title
+
+
+def test_joint_breakdown_from_fit_entry_reads_joint_fields():
+    fit_entry = {"mle": {"result": {
+        "joint_mode": True, "total_loss": 3.0, "mle_mle_weight": 1.0,
+        "mle_chi2_weight": 0.5, "ref_mle": 120.0, "ref_chi2": 55.0,
+        "ref_mle_time": "t1", "ref_chi2_time": "t2",
+        "mle_part_loss": 1.0, "chi2_part_loss": 4.0}}}
+    info = visualize._joint_breakdown_from_fit_entry(fit_entry, ("mle",))
+    assert info["total_loss"] == 3.0
+    assert info["ref_mle"] == 120.0
+    assert info["ref_chi2_time"] == "t2"
+
+
+def test_joint_breakdown_none_for_non_joint_fit():
+    fit_entry = {"mle": {"result": {"neg_loglik": 100.0}}}  # no joint_mode
+    assert visualize._joint_breakdown_from_fit_entry(fit_entry, ("mle",)) is None
+
+
+def test_parse_fit_filename():
+    assert visualize._parse_fit_filename("mle_x_3s_dt0.005") == ("mle", 1.0, 0.0)
+    assert visualize._parse_fit_filename(
+        "mle_x_3s_dt0.005_mleW2_chi2W0.25") == ("mle", 2.0, 0.25)
+    assert visualize._parse_fit_filename("chisq_x_3s_dt0.005") == ("chisq", 1.0, 0.0)
+
+
+def test_discover_saved_fits(tmp_path):
+    import pickle
+    from ..mle import MLEModelConfig
+
+    def _cfg(**ov):
+        base = dict(drift_fn_str="Classic", bias_fn_str="None_",
+                    noise_fn_str="Normal(0, 1)", include_Q=False,
+                    include_RewardRate=False, dt=0.005, t_dur=3.0)
+        base.update(ov)
+        return MLEModelConfig(**base)
+
+    def _w(name, obj):
+        with open(tmp_path / name, "wb") as f:
+            pickle.dump(obj, f)
+
+    _w("mle_Classic_biasNone__Normal(0, 1)_3s_dt0.005.pkl",
+       {"S1": dict(model_config=_cfg(), fit_finish_time="t-mle")})
+    _w("mle_Classic_biasNone__Normal(0, 1)_3s_dt0.005_mleW1_chi2W0.5.pkl",
+       {"S1": dict(model_config=_cfg(mle_mle_weight=1.0, mle_chi2_weight=0.5),
+                   fit_finish_time="t-joint")})
+    _w("chisq_Classic_biasNone__Normal(0, 1)_3s_dt0.005.pkl",
+       {"S2": dict(fit_finish_time="t-chisq")})  # only S2 → excluded for S1
+
+    fits = visualize.discover_saved_fits("S1", tmp_path)
+    assert len(fits) == 2  # the two S1 mle files; the S2-only chisq is excluded
+    joint = [f for f in fits if f["chi2_weight"] == 0.5][0]
+    assert joint["fit_mode"] == "mle"
+    assert joint["drift_fn"] == "Classic"
+    assert joint["mle_weight"] == 1.0
+    assert joint["save_time"] == "t-joint"
+    assert "chi2W=0.5" in joint["label"]
+    # A subject with no saved fits anywhere → empty list.
+    assert visualize.discover_saved_fits("NOPE", tmp_path) == []
+
+
+def test_stored_mle_loss_from_df_reads_attached_fit_loss():
+    df = pd.DataFrame({"mle_fit_neg_loglik": [np.nan, 123.4, 123.4]})
+
+    assert visualize._stored_mle_loss_from_df(df) == 123.4
+
+
+def test_stored_mle_loss_from_fit_entry_reads_mle_result():
+    fit_entry = {"mle": {"result": {"neg_loglik": 456.7}}}
+
+    assert visualize._stored_mle_loss_from_fit_entry(fit_entry) == 456.7
+
+
+def test_stored_mle_loss_from_fit_entry_walks_preferred_modes_chain():
+    """The title's "MLE Loss: …" must reflect the SAME variant the GUI
+    just applied: ``_stored_mle_loss_from_fit_entry`` walks the same
+    preferred-mode chain as ``_apply_fit_defaults``, so with
+    Scale-How=Bound (preferred mode ``mle_scaledB``) the title shows the
+    scaled variant's loss, not the plain ``mle`` entry's.
+    """
+    fit_entry = {
+        "mle":         {"result": {"neg_loglik": 1000.0}},   # plain
+        "mle_scaledB": {"result": {"neg_loglik": 250.0}},    # scaled variant
+    }
+    # Scale-How=Bound preferred chain: walk scaled first, then fall
+    # back to symmetric mle.
+    bound_chain = ("mle_scaledB", "mle", "chisq")
+    assert visualize._stored_mle_loss_from_fit_entry(
+        fit_entry, bound_chain) == 250.0
+    # Scale-How=Noise (default) preferred chain: just mle.
+    noise_chain = ("mle", "chisq")
+    assert visualize._stored_mle_loss_from_fit_entry(
+        fit_entry, noise_chain) == 1000.0
+    # The single-arg call uses the ``("mle",)`` default.
+    assert visualize._stored_mle_loss_from_fit_entry(fit_entry) == 1000.0
+
+
+def test_stored_mle_loss_from_fit_entry_falls_back_when_preferred_missing():
+    """A variant with no saved fit yet (here ``mle_scaledB``) falls back
+    along the chain to ``mle`` so the title still shows something useful
+    instead of None."""
+    fit_entry = {"mle": {"result": {"neg_loglik": 100.0}}}
+    scaled_chain = ("mle_scaledB", "mle", "chisq")
+    assert visualize._stored_mle_loss_from_fit_entry(
+        fit_entry, scaled_chain) == 100.0
+    # When NOTHING in the chain has a saved loss → None.
+    missing_chain = ("mle_scaledB", "mle_mleW1_chi2W0.5")
+    assert visualize._stored_mle_loss_from_fit_entry(
+        fit_entry, missing_chain) is None
+
+
+def test_preferred_modes_for_is_strict_single_element():
+    """The strict-matching policy: ``_preferred_modes_for`` returns a
+    1-element tuple of the exact variant key for the current widget
+    state. No fallback chain — auto-apply, title, and Reset gating
+    paths all see strict-or-nothing.
+
+    A multi-element chain like ``("mle_scaledB", "mle", "chisq")`` would
+    let callers silently load a fit of a different variant than the one
+    selected. With strict matching, sliders / title hold their previous
+    state when the exact match is missing.
+    """
+    class _W:
+        def __init__(self, value=None):
+            self.value = value
+            self.disabled = False
+
+    base_widgets = {
+        "Bias Fn":              _W("None_"),
+        "Drift Fn":             _W("NoiseGain-RewardRate"),
+        "Noise Fn":             _W("Normal(0, 1)"),
+        "Scale-How":            _W("Noise"),
+    }
+    # Plain noise-scaled.
+    assert visualize._preferred_modes_for("mle",   base_widgets) == ("mle",)
+    assert visualize._preferred_modes_for("chisq", base_widgets) == ("chisq",)
+
+    # Scale-Bound gives the bare scaledB key.
+    base_widgets["Scale-How"].value = "Bound"
+    assert visualize._preferred_modes_for("mle", base_widgets) == (
+        "mle_scaledB",)
+
+
+def test_preferred_modes_for_includes_joint_weight_suffix():
+    class _W:
+        def __init__(self, value=None):
+            self.value = value
+            self.disabled = False
+    widgets_ = {
+        "Bias Fn": _W("None_"),
+        "Drift Fn": _W("Classic"),
+        "Noise Fn": _W("Normal(0, 1)"),
+        "Scale-How": _W("Noise"),
+        "Joint Wt": _W(""),   # "None" / pure
+    }
+    # Pure (Joint Wt = None) leaves the key unchanged.
+    assert visualize._preferred_modes_for("mle", widgets_) == ("mle",)
+    # Selecting a joint weight variant appends its suffix LAST.
+    widgets_["Joint Wt"].value = "_mleW1_chi2W0.5"
+    assert visualize._preferred_modes_for("mle", widgets_) == (
+        "mle_mleW1_chi2W0.5",)
+    # Composes after scaledB (evolveFP order: scaledB, then weights).
+    widgets_["Scale-How"].value = "Bound"
+    assert visualize._preferred_modes_for("mle", widgets_) == (
+        "mle_scaledB_mleW1_chi2W0.5",)
+
+
+def test_weight_mode_suffix():
+    class _W:
+        def __init__(self, value):
+            self.value = value
+    assert visualize._weight_mode_suffix(
+        {"Joint Wt": _W("_mleW1_chi2W0.5")}) == "_mleW1_chi2W0.5"
+    assert visualize._weight_mode_suffix({"Joint Wt": _W("")}) == ""
+    assert visualize._weight_mode_suffix({}) == ""  # absent → pure
+
+
+def test_discover_weight_suffixes():
+    # Cache shape: t_dur -> noise -> bias -> drift -> subject -> {fit_key: entry}
+    cache = {3.0: {"Normal(0, 1)": {"None_": {"Classic": {"S1": {
+        "mle": {"result": {}, "params": {}},
+        "chisq": {"result": {}, "params": {}},
+        "mle_mleW1_chi2W0.5": {"result": {}, "params": {}},
+        "mle_scaledB_mleW1_chi2W0.25": {"result": {}, "params": {}},
+    }}}}}}
+    opts = visualize._discover_weight_suffixes(cache)
+    assert opts[0] == ("None", "")  # pure option leads
+    label_for = {suffix: label for label, suffix in opts}
+    assert "_mleW1_chi2W0.5" in label_for
+    assert "_mleW1_chi2W0.25" in label_for
+    # Pure fit_keys (mle / chisq) contribute no weight suffix.
+    assert len([s for _l, s in opts if s]) == 2
+    assert label_for["_mleW1_chi2W0.5"] == "mleW=1 chi2W=0.5"
+
+
+def test_discover_weight_suffixes_empty():
+    assert visualize._discover_weight_suffixes({}) == [("None", "")]
+    assert visualize._discover_weight_suffixes(None) == [("None", "")]
+
+
+def test_joint_wt_dropdown_constructs_and_feeds_suffix():
+    """The actual 'Joint Wt' dropdown construction (the one createWidget path
+    not covered by the pure-logic tests): discovered options build a valid
+    Dropdown whose value flows back through _weight_mode_suffix."""
+    import ipywidgets as widgets
+    opts = visualize._discover_weight_suffixes(
+        {3.0: {"Normal(0, 1)": {"None_": {"Classic": {"S1": {
+            "mle": {"result": {}, "params": {}},
+            "mle_mleW1_chi2W0.5": {"result": {}, "params": {}}}}}}}})
+    dd = widgets.Dropdown(
+        options=list(zip([l for l, _ in opts], [s for _, s in opts])),
+        value=opts[0][1], description="Joint Wt")
+    assert dd.value == ""  # the pure "None" option leads
+    assert visualize._weight_mode_suffix({"Joint Wt": dd}) == ""
+    dd.value = "_mleW1_chi2W0.5"
+    assert visualize._weight_mode_suffix({"Joint Wt": dd}) == "_mleW1_chi2W0.5"
+
+
+def test_every_declared_dropdown_is_placed_in_a_column():
+    """Source-level invariant: every label in createWidget's
+    ``drop_downs_labels`` is ``drop_down_widgets.pop(...)``-ed into exactly one
+    column. createWidget asserts ``not len(drop_down_widgets)`` after building
+    the layout, so a declared-but-unplaced dropdown is a hard runtime crash.
+    The GUI is too heavy to instantiate headlessly, so pin the invariant via the AST
+    instead of running createWidget."""
+    import ast
+
+    src = Path(visualize.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == "createWidget")
+
+    declared = None
+    placed = []
+    for node in ast.walk(fn):
+        if (isinstance(node, ast.Assign)
+                and any(isinstance(t, ast.Name) and t.id == "drop_downs_labels"
+                        for t in node.targets)
+                and isinstance(node.value, ast.List)):
+            declared = [e.value for e in node.value.elts
+                        if isinstance(e, ast.Constant)]
+        if (isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "pop"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "drop_down_widgets"
+                and node.args and isinstance(node.args[0], ast.Constant)):
+            placed.append(node.args[0].value)
+
+    assert declared is not None, "drop_downs_labels list literal not found"
+    # Every declared dropdown is placed exactly once; nothing extra is popped.
+    assert sorted(placed) == sorted(declared), (
+        f"declared={sorted(declared)} vs placed={sorted(placed)}")
+    assert len(placed) == len(set(placed)), f"duplicate pops: {placed}"
+
+
+def test_preferred_modes_for_no_mle_to_chisq_fallback():
+    """Regression pin: ``_preferred_modes_for`` itself stays strict —
+    asking for ``base_mode="mle"`` never returns ``chisq``. The
+    cross-mode mle→chisq fallback lives only at the auto-apply callsite
+    in updateGUI (see ``test_auto_apply_chain_includes_chisq_fallback``)
+    so the Reset-MLE button gating / title's "MLE Loss:" reader (which
+    both also call ``_preferred_modes_for("mle", …)``) stay strictly
+    MLE-or-nothing.
+    """
+    class _W:
+        def __init__(self, value=None):
+            self.value = value
+            self.disabled = False
+
+    widgets = {
+        "Bias Fn":              _W("None_"),
+        "Drift Fn":             _W("Classic"),
+        "Noise Fn":             _W("Normal(0, 1)"),
+        "Scale-How":            _W("Noise"),
+    }
+    assert "chisq" not in visualize._preferred_modes_for("mle", widgets)
+
+
+def test_auto_apply_chain_includes_chisq_fallback():
+    """The auto-apply path (the subject/Drift Fn/checkbox-change
+    trigger in updateGUI) augments the strict MLE chain with the strict
+    chisq chain — so when the exact MLE variant has no saved fit but
+    the matching chisq variant does, the sliders still get loaded
+    (chisq fits tend to be more abundant than MLE re-fits). The chain
+    matches ``mle_<suffix> → chisq_<suffix>`` strictly on the suffix.
+
+    The Reset-MLE button / title's MLE Loss intentionally do NOT
+    include this cross-mode fallback because their UI labels promise
+    MLE; loading a chisq fit under those labels would be misleading.
+    """
+    class _W:
+        def __init__(self, value=None):
+            self.value = value
+            self.disabled = False
+
+    # Plain symmetric noise-scaled: mle → chisq.
+    widgets = {
+        "Bias Fn":              _W("None_"),
+        "Drift Fn":             _W("Classic"),
+        "Noise Fn":             _W("Normal(0, 1)"),
+        "Scale-How":            _W("Noise"),
+    }
+    auto_apply_chain = (
+        visualize._preferred_modes_for("mle", widgets)
+        + visualize._preferred_modes_for("chisq", widgets))
+    assert auto_apply_chain == ("mle", "chisq")
+
+    # A variant: the chisq fallback also gets the same suffix — strict on
+    # the suffix, not bare ``chisq``.
+    widgets["Scale-How"].value = "Bound"
+    auto_apply_chain = (
+        visualize._preferred_modes_for("mle", widgets)
+        + visualize._preferred_modes_for("chisq", widgets))
+    assert auto_apply_chain == ("mle_scaledB", "chisq_scaledB")
+
+
+def test_variant_suffix_drives_both_mode_key_and_auto_apply_detector():
+    """Changing "Joint Wt" updates both the title and the figure.
+
+    The saved-fit mode key (``_preferred_modes_for``) and updateGUI's
+    variant-change detector (which gates the auto-apply that re-pulls a fit's
+    params) must both derive their suffix from the SAME ``_variant_suffix``.
+    Otherwise changing "Joint Wt" could update the title (mode-key path)
+    without firing the auto-apply (detector path), leaving the figure stale
+    until a manual Reset.
+
+    Pin the contract directly: (1) the mode key is exactly
+    ``base + _variant_suffix``, and (2) flipping ONLY "Joint Wt" changes
+    ``_variant_suffix``, so the detector registers it as a variant change.
+    """
+    class _W:
+        def __init__(self, value=None):
+            self.value = value
+            self.disabled = False
+
+    widgets = {
+        "Bias Fn":              _W("None_"),
+        "Drift Fn":             _W("Classic"),
+        "Noise Fn":             _W("Normal(0, 1)"),
+        "Scale-How":            _W("Noise"),
+        "Joint Wt":             _W(""),
+    }
+    # (1) Mode key is base + the shared suffix — no independent concatenation.
+    assert visualize._preferred_modes_for("mle", widgets) == (
+        "mle" + visualize._variant_suffix(widgets),)
+    assert visualize._preferred_modes_for("chisq", widgets) == (
+        "chisq" + visualize._variant_suffix(widgets),)
+
+    # (2) Flipping ONLY the Joint Wt dropdown moves the suffix the detector
+    # compares against — so updateGUI will re-fire the auto-apply.
+    before = visualize._variant_suffix(widgets)
+    widgets["Joint Wt"].value = "_mleW1_chi2W0.5"
+    after = visualize._variant_suffix(widgets)
+    assert before != after
+    assert after.endswith("_mleW1_chi2W0.5")
+    # The weight axis composes AFTER scaledB, matching fit.evolveFP.
+    widgets["Scale-How"].value = "Bound"
+    assert visualize._variant_suffix(widgets) == "_scaledB_mleW1_chi2W0.5"
+
+
+def test_stored_mle_loss_from_positional_fit_entry_tuple():
+    fit_entry = (
+        {"params": {"DRIFT_COEF": 1.0}, "result": {"neg_loglik": 456.7}},
+        {"params": {"DRIFT_COEF": 2.0}, "result": {"OptimRes": object()}},
+    )
+
+    assert visualize._stored_mle_loss_from_fit_entry(fit_entry) == 456.7
+
+
+def test_get_subject_fit_entry_supports_separate_fit_modes():
+    subjects_defaults = {
+        3.0: {
+            "_noiseNormal": {
+                "_biasQVal": {
+                    "_driftClassic": {
+                        "S1": {
+                            "mle": {"params": {"DRIFT_COEF": 1.0}},
+                            "chisq": {"params": {"DRIFT_COEF": 2.0}},
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    entry = visualize._get_subject_fit_entry(
+        subjects_defaults, 3.0, "_noiseNormal", "_biasQVal",
+        "_driftClassic", "S1")
+
+    assert entry["mle"]["params"]["DRIFT_COEF"] == 1.0
+    assert entry["chisq"]["params"]["DRIFT_COEF"] == 2.0
+
+
+def test_fit_entry_for_mode_supports_positional_tuple_without_mode_names():
+    mle_entry = {"params": {"DRIFT_COEF": 1.0}, "result": {"neg_loglik": 10.0}}
+    chisq_entry = {"params": {"DRIFT_COEF": 2.0}, "result": {"OptimRes": object()}}
+    entry = (mle_entry, chisq_entry)
+
+    assert visualize._fit_entry_for_mode(entry, "mle") is mle_entry
+    assert visualize._fit_entry_for_mode(entry, "chisq") is chisq_entry
+    assert visualize._fit_entry_params(
+        visualize._fit_entry_for_mode(entry, "chisq")
+    )["DRIFT_COEF"] == 2.0
+
+
+def test_fit_entry_for_mode_recognizes_scaledB_and_composed_variants():
+    """``_fit_entries_by_mode`` recognizes any ``mle``/``chisq`` key plus a
+    suffix. ``--scale-bound`` fits are keyed as ``mle_scaledB`` /
+    ``chisq_scaledB`` (and the composed ``mle_scaledB_mleW1_chi2W0.5``
+    family); if those were dropped from the recognized set, the
+    Reset-to-Defaults button would stay grayed out even when the saved fit
+    exists on disk.
+    """
+    mle_scaled = {"params": {"BOUND": 1.5}}
+    mle_joint_scaled = {"params": {"BOUND": 2.0}}
+    chisq_scaled = {"params": {"BOUND": 0.8}}
+    entry = {
+        "mle": {"params": {"BOUND": 1.0}},
+        "mle_mleW1_chi2W0.5": {"params": {"BOUND": 1.1}},
+        "mle_scaledB": mle_scaled,
+        "mle_joint_scaledB": mle_joint_scaled,
+        "chisq_scaledB": chisq_scaled,
+    }
+
+    assert visualize._fit_entry_for_mode(entry, "mle_scaledB") is mle_scaled
+    assert visualize._fit_entry_for_mode(
+        entry, "mle_joint_scaledB") is mle_joint_scaled
+    assert visualize._fit_entry_for_mode(
+        entry, "chisq_scaledB") is chisq_scaled
+    # The plain and joint modes resolve too.
+    assert visualize._fit_entry_for_mode(entry, "mle") is entry["mle"]
+    assert visualize._fit_entry_for_mode(entry, "mle_mleW1_chi2W0.5") is entry["mle_mleW1_chi2W0.5"]
+
+
+def test_fit_entry_params_supports_plain_numpy_scalar_param_dict():
+    fit_entry = {
+        np.str_("DRIFT_COEF"): np.float64(1.47),
+        np.str_("BOUND"): np.float64(1.0),
+        np.str_("ALPHA"): np.float64(0.16),
+    }
+
+    params = visualize._fit_entry_params(fit_entry)
+
+    assert params == {
+        "DRIFT_COEF": np.float64(1.47),
+        "BOUND": np.float64(1.0),
+        "ALPHA": np.float64(0.16),
+    }
+
+
+def test_fit_entry_for_mode_supports_positional_plain_param_dicts():
+    mle_params = {np.str_("DRIFT_COEF"): np.float64(1.0)}
+    chisq_params = {np.str_("DRIFT_COEF"): np.float64(2.0)}
+    entry = (mle_params, chisq_params)
+
+    assert visualize._fit_entry_params(
+        visualize._fit_entry_for_mode(entry, "mle")
+    ) == {"DRIFT_COEF": np.float64(1.0)}
+    assert visualize._fit_entry_params(
+        visualize._fit_entry_for_mode(entry, "chisq")
+    ) == {"DRIFT_COEF": np.float64(2.0)}
+
+
+def test_fit_entry_for_mode_ignores_non_fit_tuple_payloads():
+    params = {np.str_("DRIFT_COEF"): np.float64(1.0)}
+    entry = (params, pd.DataFrame({"Name": ["S1"]}))
+
+    assert visualize._fit_entry_params(
+        visualize._fit_entry_for_mode(entry, "mle")
+    ) == {"DRIFT_COEF": np.float64(1.0)}
+    assert visualize._fit_entry_for_mode(entry, "chisq") is None
+
+
+def test_apply_fit_defaults_print_renders_asctime_and_mle_conditions(capsys):
+    """``_apply_fit_defaults`` prints a single line per defaults-load so
+    the user can tell WHICH fit got applied. The line surfaces:
+    1. The fit's finish time, rendered as ``asctime`` (e.g.
+       ``Wed Jun 17 15:23:45 2026``) — much easier to scan than the
+       saved ISO ``2026-06-17T15:23:45``.
+    2. ``mle_condition_columns`` if the fit was condition-balanced —
+       crucial when a pickle has mixed conditions across subjects
+       (``--only-subject`` leaves the other subjects' fits untouched
+       while the re-fit subject uses its own conditions).
+    """
+    from types import SimpleNamespace
+
+    class _W:
+        # Minimal widget stub with the attributes _apply_fit_defaults touches.
+        def __init__(self, value=None):
+            self.value = value
+            self.disabled = False
+            self._trait_notifiers = {"value": {"change": []}}
+
+    all_widgets = {
+        "Noise Fn": _W("Normal(0, 1)"),
+        "Bias Fn": _W("None_"),
+        "Drift Fn": _W("Classic"),
+        # Plus a slider whose value the apply loop will try to set —
+        # the print is what we assert on, not the slider update.
+        "DRIFT_COEF": _W(0.0),
+    }
+    # Fake model_config that carries mle_condition_columns.
+    saved_model_config = SimpleNamespace(
+        mle_condition_columns=("ChoiceCorrect", "ChoiceLeft"),
+        mle_terminal_c=0.5,  # accessed by the apply-defaults follow-up
+        dx=0.02,
+    )
+    # Shape matches what ``assignGUISubjectsDefaults`` produces:
+    # ``{<mode>: {"params": ..., "result": {... model_config ...}}}``.
+    subjects_defaults = {
+        3.0: {"Normal(0, 1)": {"None_": {"Classic": {"S1": {
+            "mle": {
+                "params": {"DRIFT_COEF": 1.23},
+                "result": {
+                    "model_config": saved_model_config,
+                    "neg_loglik": 100.0,
+                    # ``fit_finish_time`` is stored inside the result
+                    # dict by ``mle.result_payload``; the GUI's apply
+                    # path reads it from there. See visualize.py.
+                    "fit_finish_time": "2026-06-17T15:23:45",
+                },
+            },
+        }}}}}}
+
+    # Reset the dedupe key so the print actually fires.
+    if hasattr(visualize._apply_fit_defaults, "_last_log_key"):
+        del visualize._apply_fit_defaults._last_log_key
+
+    visualize._apply_fit_defaults(
+        all_widgets, subjects_defaults, t_dur=3.0, subject="S1",
+        mode="mle", required=True, quiet=False)
+
+    out = capsys.readouterr().out
+    # asctime form has the weekday and the year at the end.
+    assert "Wed Jun 17 15:23:45 2026" in out, out
+    # The ISO form should NOT appear (we reformatted it).
+    assert "2026-06-17T15:23:45" not in out, out
+    # The conditions are surfaced verbatim.
+    assert "mle_conditions=ChoiceCorrect,ChoiceLeft" in out, out
+    # Subject name is still there.
+    assert "S1" in out, out
+
+
+def test_apply_fit_defaults_print_omits_conditions_when_unweighted(capsys):
+    """When the saved fit was the unweighted sum
+    (``mle_condition_columns=()``), the print line carries only the
+    timestamp — no spurious empty ``mle_conditions=`` suffix that
+    would clutter the typical case."""
+    from types import SimpleNamespace
+
+    class _W:
+        def __init__(self, value=None):
+            self.value = value
+            self.disabled = False
+            self._trait_notifiers = {"value": {"change": []}}
+
+    all_widgets = {
+        "Noise Fn": _W("Normal(0, 1)"),
+        "Bias Fn": _W("None_"),
+        "Drift Fn": _W("Classic"),
+        "DRIFT_COEF": _W(0.0),
+    }
+    saved_model_config = SimpleNamespace(
+        mle_condition_columns=(), mle_terminal_c=0.5, dx=0.02)
+    subjects_defaults = {
+        3.0: {"Normal(0, 1)": {"None_": {"Classic": {"S2": {
+            "mle": {
+                "params": {"DRIFT_COEF": 1.0},
+                "result": {
+                    "model_config": saved_model_config,
+                    "neg_loglik": 100.0,
+                    "fit_finish_time": "2026-06-17T15:23:45",
+                },
+            },
+        }}}}}}
+    if hasattr(visualize._apply_fit_defaults, "_last_log_key"):
+        del visualize._apply_fit_defaults._last_log_key
+
+    visualize._apply_fit_defaults(
+        all_widgets, subjects_defaults, t_dur=3.0, subject="S2",
+        mode="mle", required=True, quiet=False)
+
+    out = capsys.readouterr().out
+    assert "Wed Jun 17 15:23:45 2026" in out, out
+    assert "mle_conditions" not in out, out
+
+
+def test_mle_loss_key_changes_with_params():
+    base = dict(
+        subject="S1",
+        driftFn_str="Classic",
+        biasFn_str="Q-Val (Offset)",
+        noiseFn_str="Normal(0, 1)",
+        t_dur=3.0,
+        dt=0.005,
+    )
+
+    key1 = visualize._mle_loss_key(**base, params={"DRIFT_COEF": 1.0})
+    key2 = visualize._mle_loss_key(**base, params={"DRIFT_COEF": 1.1})
+
+    assert key1 != key2
+
+
+def test_interactive_notebook_loads_fit_files_without_posterior_pickles():
+    nb_path = Path(__file__).parents[2] / "rlmodel_interactive.ipynb"
+    nb = json.loads(nb_path.read_text(encoding="utf-8"))
+    source = "\n".join(
+        "".join(cell.get("source", [])) for cell in nb["cells"])
+
+    assert "loadFitResults" in source
+    assert 'FIT_MODES = ("mle", "chisq")' in source
+    assert 'glob(f"{mode}_*.pkl")' in source
+    assert "pp_" not in source
+    assert "df=all_df" in source

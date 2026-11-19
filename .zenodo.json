@@ -1,0 +1,33 @@
+{
+  "title": "Code for: The neural mechanisms of fast versus slow decision-making",
+  "upload_type": "software",
+  "description": "<p>Analysis code, figure notebooks and the figures they produce for Nashaat, M., Oraby, H., et al. (2026). The neural mechanisms of fast versus slow decision-making. Neuron, advance online publication. <a href=\"https://doi.org/10.1016/j.neuron.2026.10.024\">doi:10.1016/j.neuron.2026.10.024</a>.</p><p>The code is under the MIT licence; the data/ and results/ folders are under CC BY 4.0. The complete data, including the large two-photon files, are archived separately at <a href=\"https://doi.org/10.5281/zenodo.24260552\">doi:10.5281/zenodo.24260552</a>; code/data_downloader.ipynb fetches them.</p>",
+  "license": "mit",
+  "creators": [
+    {"name": "Nashaat, Mostafa"},
+    {"name": "Oraby, Hatem"},
+    {"name": "Krasniqi, Flutra"},
+    {"name": "Goh-Sauerbier, Sek Teng"},
+    {"name": "Bosc, Marion"},
+    {"name": "Koerner, Sandra"},
+    {"name": "Lobova, Arina"},
+    {"name": "Karayel, Sedef"},
+    {"name": "Kepecs, Adam"},
+    {"name": "Larkum, Matthew E."}
+  ],
+  "related_identifiers": [
+    {
+      "identifier": "10.1016/j.neuron.2026.10.024",
+      "relation": "isSupplementTo",
+      "resource_type": "publication-article",
+      "scheme": "doi"
+    },
+    {
+      "identifier": "10.5281/zenodo.24260552",
+      "relation": "requires",
+      "resource_type": "dataset",
+      "scheme": "doi"
+    }
+  ],
+  "keywords": ["decision-making", "reaction time", "neuroscience", "two-photon imaging", "widefield imaging", "reinforcement learning"]
+}
