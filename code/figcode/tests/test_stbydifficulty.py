@@ -30,8 +30,8 @@ import pytest
 from matplotlib.container import ErrorbarContainer
 
 from ..stbydifficulty import (DifficultyClr, _handleDifficultyDf,
-                              _rtVsDifficulty, _setupAxes, stDistOnly,
-                              stVsDiffOnly)
+                              _rtVsDifficulty, _setupAxes, loopstVsDiffOnly,
+                              stDistOnly, stVsDiffOnly)
 
 DIFFICULTIES = ("Easy", "Med", "Hard")
 FAST, TYPICAL, SLOW = 1, 2, 3
@@ -439,6 +439,17 @@ def test_the_fast_slow_panel_runs_and_saves(tmp_path):
                  save_figs=True, all_dscrp="All Mice")
     saved = list((tmp_path / "st_vs_diff_fast_slow").iterdir())
     assert len(saved) == 1
+    plt.close("all")
+
+
+def test_the_overall_panel_makes_its_folder_and_saves(tmp_path):
+    loopstVsDiffOnly(cohort(n_animals=2), "Mice", plot_combined_subjects=True,
+                     plot_single_subjects=True, save_prefix=f"{tmp_path}/",
+                     save_figs=True)
+    saved = sorted(p.name for p in (tmp_path / "st_vs_diff_only").iterdir())
+    assert saved == ["overall_Mice_Mice_all_st_vs_diff.svg",
+                     "overall_Mice_m0_all_st_vs_diff.svg",
+                     "overall_Mice_m1_all_st_vs_diff.svg"]
     plt.close("all")
 
 

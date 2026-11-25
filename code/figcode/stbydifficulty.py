@@ -106,9 +106,11 @@ def loopstVsDiffOnly(df, title, plot_combined_subjects=True,
         [ax.spines[_dir].set_visible(False) for _dir in ["left", "right"]]
         if save_figs:
             mid_str = "_all" if sep_corr_incorr else "_corr_incorr"
-            fig.savefig(f"{save_prefix}st_vs_diff_only/"
-                        f"overall_{title}_{subject_name}{mid_str}"
-                        f"_st_vs_diff.svg")
+            save_fp = Path(f"{save_prefix}st_vs_diff_only/"
+                           f"overall_{title}_{subject_name}{mid_str}"
+                           f"_st_vs_diff.svg")
+            save_fp.parent.mkdir(exist_ok=True)
+            fig.savefig(save_fp)
         plt.show()
 
     if plot_combined_subjects:
