@@ -1,6 +1,6 @@
 [project]
 name = "paper-fast-slow"
-version = "1.0.1"
+version = "1.0.2"
 description = "Code for Nashaat, Oraby et al. (2026), The neural mechanisms of fast versus slow decision-making, Neuron. This pyproject only pins the Python environment (managed by uv); the code is imported as paper_fast_slow.code.* and is not installed as a package."
 license = "MIT"
 # Parity with the existing conda env (CPython 3.14), kept as a range so uv can
