@@ -1,5 +1,7 @@
+import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -9,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).parents[3]))
 if "code" in sys.modules and not hasattr(sys.modules["code"], "__path__"):
     del sys.modules["code"]
 
+from code.common.definitions import BrainRegion  # noqa: E402
 from code.twop.sgfneurons import (  # noqa: E402
     BRACKET_TICK,
     CHOICE_DATA_COL,
@@ -216,3 +219,22 @@ def test_format_comparison_mentions_the_label_and_the_gate():
     assert "MFC: 37.50% +/- 12.50% SEM" in text
     assert "Normality (Shapiro-Wilk)" in text
     assert "MannWhitneyU" in text
+
+
+def test_the_notebook_pie_charts_make_their_folder_and_save(tmp_path):
+    import matplotlib.pyplot as plt
+    nb_fp = Path(__file__).parents[2] / "2p_3_choice.ipynb"
+    nb = json.loads(nb_fp.read_text(encoding="utf-8"))
+    cell, = [src for src in map("".join, (c["source"] for c in nb["cells"]))
+             if "def loopPlotPieChart" in src]
+    # The cell as it runs in the notebook, on the synthetic neurons without
+    # the prior-split rows.
+    df = _shortlong_df()
+    df = df[df.prior_data_col.isnull()]
+    exec(compile(cell, "pie_chart_cell", "exec"),
+         {"__package__": "code", "PVAL": PVAL, "BrainRegion": BrainRegion,
+          "SAVE_FIGS": True, "fig_save_prefix": f"{tmp_path}/",
+          "run_data_unnormalized": [SimpleNamespace(shortlong_df=df)]})
+    saved = sorted(p.name for p in (tmp_path / "sgf_tests").iterdir())
+    assert saved == ["Cur. Direction.svg", "OtherTuning.svg"]
+    plt.close("all")
