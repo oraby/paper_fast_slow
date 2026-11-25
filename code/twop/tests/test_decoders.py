@@ -98,4 +98,4 @@ def test_grouping_splits_the_session_into_conditions():
 
 
 def test_the_default_run_count_is_the_published_one():
-    assert DEFAULT_NUM_RUNS == 50
+    assert DEFAULT_NUM_RUNS == 1000

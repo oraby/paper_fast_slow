@@ -127,6 +127,14 @@ def test_neuron_filter_keeps_only_choice_selective(calls, monkeypatch):
     assert fn("neuronal", ["2_S", "20_S", "95_S"], {}) == {"2_S", "95_S"}
 
 
+def test_neuron_filter_leaves_out_the_named_neurons(calls):
+    sh.loopCombinationsTraces("DF", _context(), split_by_quantile=False,
+                              only_sgf=False, save_figs=False,
+                              skip_ids_li=("2_S",))
+    keep = calls[0]["onlyTraceIdsPlotProcessFn"]
+    assert keep("neuronal", ["2_S", "12_S", "2_S2"], {}) == {"12_S", "2_S2"}
+
+
 def test_neuron_filter_skips_groups(calls):
     fn = _filterFn(calls, skip_group_infos={"quantile_idx": 2})
     assert fn("neuronal", ["1_S"], {"quantile_idx": 2}) == set()

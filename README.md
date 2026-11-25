@@ -24,6 +24,9 @@ the paper from the data in [`data/`](data/); the figures they write are in
   files are not in the repository; [`code/data_downloader.ipynb`](code/data_downloader.ipynb)
   fetches them from Zenodo, where the complete `data/` folder is also archived:
   [doi:10.5281/zenodo.24260552](https://doi.org/10.5281/zenodo.24260552).
+  The code is archived at
+  [doi:10.5281/zenodo.24496982](https://doi.org/10.5281/zenodo.24496982), which
+  always points to its latest version.
 - [`results/`](results/) — the figures the notebooks write, including
   per-subject panels.
 - [`docs/`](docs/) — [`manuscript-figure-map.md`](docs/manuscript-figure-map.md)

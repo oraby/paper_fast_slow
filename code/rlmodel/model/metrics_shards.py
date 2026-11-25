@@ -142,11 +142,12 @@ def _atomic_dump(obj, fp):
 def build_workdir(fits, specs, df_behavior, work_dir, *, cache_name,
                   num_evaluations, n_psych_fits=N_PSYCH_FITS,
                   result_dir=compare.DEFAULT_RESULT_DIR, subjects=None,
-                  verbose=True):
+                  exclude=(), verbose=True):
     """Write the manifest, per-subject behavior slices and worklist.
 
     ``subjects`` restricts the fan-out to those names (for a quick test);
-    ``None`` means every subject each spec resolves to.
+    ``None`` means every subject each spec resolves to. ``exclude`` names
+    subjects to leave out either way.
 
     Returns the manifest dict. The heavy inputs (``fits`` — up to ~1.9 GB of
     unpickled fit payloads — and the full ``df_behavior``) are consumed here and
@@ -161,8 +162,8 @@ def build_workdir(fits, specs, df_behavior, work_dir, *, cache_name,
     contexts, items = {}, []
     for spec_idx, spec in enumerate(specs):
         resolved = resolve_spec(fits, spec)
-        chosen = sorted(resolved) if subjects is None else [
-            s for s in sorted(resolved) if s in set(subjects)]
+        chosen = [s for s in sorted(resolved) if s not in set(exclude)
+                  and (subjects is None or s in set(subjects))]
         if subjects is not None and not chosen:
             raise KeyError(
                 f"Spec {spec.label!r} resolves to none of the requested "

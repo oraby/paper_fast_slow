@@ -90,6 +90,16 @@ def test_offender_inside_an_object_array_is_found():
     assert any("_repoFunction" in name for name in findUnportable(arr))
 
 
+def test_pandas_string_column_is_refused():
+    """It opens only under a pandas built the way the writer's was."""
+    df = _frame()
+    assert findUnportable(df.astype({"Name": object})) == {}
+    strings = df.astype({"Name": "string"})
+    for payload in (strings, {"S1": {"subject_df": strings}}, strings.Name,
+                    pd.Index(strings.Name)):
+        assert any("string dtype" in name for name in findUnportable(payload))
+
+
 def test_error_names_the_offender_and_where_it_sits():
     with pytest.raises(NotPortableError) as excinfo:
         assertPortable({"fixed_params_vals": [1.0, _repoFunction]})

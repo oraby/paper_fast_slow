@@ -591,6 +591,12 @@ PORTABLE_ROOTS = frozenset({
 WALK_SAMPLE = 200
 
 
+#: How a pandas ``string`` column is named in the refusal. The class is
+#: pandas' own, but a conda-built and a PyPI-built pandas of the same version
+#: cannot read each other's, so the column must be plain strings (``object``).
+STRING_DTYPE_NAME = "pandas string dtype (use .astype(object))"
+
+
 class NotPortableError(TypeError):
     """A payload names a class that would not resolve on another machine."""
 
@@ -605,13 +611,20 @@ def _moduleRootOf(obj):
 
 
 def findUnportable(obj, *, sample=WALK_SAMPLE):
-    """Every ``module.Qualname`` in ``obj`` that a bare reader could not import.
+    """Every ``module.Qualname`` in ``obj`` that a bare reader could not import,
+    and any pandas ``string`` column.
 
     Walks the object graph the way pickle would. Large containers are sampled
     (see :data:`WALK_SAMPLE`); cycles are handled by identity.
     """
     bad = {}
     seen = set()
+
+    def visitValues(series, path):
+        if isinstance(series.dtype, pd.StringDtype):
+            bad.setdefault(STRING_DTYPE_NAME, path)
+        elif series.dtype == object:
+            visit(series.to_numpy(), path)
 
     def visit(node, path):
         if id(node) in seen:
@@ -645,14 +658,14 @@ def findUnportable(obj, *, sample=WALK_SAMPLE):
         elif isinstance(node, pd.DataFrame):
             visit(node.index, f"{path}.index")
             for col in node.columns:
-                if node[col].dtype == object:
-                    visit(node[col].to_numpy(), f"{path}[{col!r}]")
+                visitValues(node[col], f"{path}[{col!r}]")
         elif isinstance(node, pd.Series):
             visit(node.index, f"{path}.index")
-            if node.dtype == object:
-                visit(node.to_numpy(), path)
+            visitValues(node, path)
         elif isinstance(node, pd.Index):
-            if node.dtype == object:
+            if isinstance(node.dtype, pd.StringDtype):
+                bad.setdefault(STRING_DTYPE_NAME, path)
+            elif node.dtype == object:
                 visit(np.asarray(node), path)
         elif hasattr(node, "__dict__"):
             for k, v in list(vars(node).items())[:sample]:
@@ -670,7 +683,7 @@ def assertPortable(obj, *, sample=WALK_SAMPLE):
     lines = "\n".join(f"    {name}   at {where}" for name, where in
                       sorted(bad.items()))
     raise NotPortableError(
-        "this payload names classes a bare reader could not import:\n"
+        "this payload holds what a bare reader could not open:\n"
         f"{lines}\n"
         "  Store plain data instead (a name string, a dict) and rebuild it at "
         "the load site. See 'Loading and saving data' in code/README.md.")

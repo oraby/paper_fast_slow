@@ -145,7 +145,7 @@ def avg(df, cached_df_avgs, cache_extra_prefix, split_by_quantile,
         restrict_heatmap_sorting_to_epochs=(),
         sgf_data_col: str = None, sgf_prior_data_col: str = None,
         plot_traces: bool = False, only_sgf: bool = None,
-        skip_group_infos=None):
+        skip_group_infos=None, skip_ids_li=()):
     '''Draw one combination as heatmaps (default) or average traces.
 
     only_common_sort_not_common_rng : bool
@@ -177,6 +177,8 @@ def avg(df, cached_df_avgs, cache_extra_prefix, split_by_quantile,
                 return good_set
         if set_name == "neuronal":
             for trace_id in traces_ids:
+                if trace_id in skip_ids_li:
+                    continue
                 if not len(plot_only_ids_li) or any(
                         ((key in trace_id) if not plot_only_ids_exact_match
                          else (key == trace_id)) for key in plot_only_ids_li):
@@ -309,9 +311,11 @@ def loopHeatmapCombinations(df, context, split_by_quantile, save_figs,
 
 
 def loopCombinationsTraces(df, context, split_by_quantile, only_sgf, save_figs,
-                           plot_only_ids_li=(), plot_only_ids_exact_match=False):
+                           plot_only_ids_li=(), plot_only_ids_exact_match=False,
+                           skip_ids_li=()):
     '''Draw the per-neuron left/right average traces of every session, or only
-    of the neurons named in ``plot_only_ids_li`` ("<neuron>_<session>" IDs).'''
+    of the neurons named in ``plot_only_ids_li`` ("<neuron>_<session>" IDs),
+    leaving out those named in ``skip_ids_li``.'''
     local_kargs = dict(context)
     local_kargs.update(dict(resort_heatmaps=False, resort_using_all=False,
                             only_common_sort_not_common_rng=False,
@@ -324,7 +328,8 @@ def loopCombinationsTraces(df, context, split_by_quantile, only_sgf, save_figs,
             combination=combination, sgf_data_col=sgf_data_col,
             sgf_prior_data_col=sgf_prior_data_col, save_figs=save_figs,
             only_sgf=only_sgf, plot_only_ids_li=list(plot_only_ids_li),
-            plot_only_ids_exact_match=plot_only_ids_exact_match)
+            plot_only_ids_exact_match=plot_only_ids_exact_match,
+            skip_ids_li=skip_ids_li)
 
 
 def epochDirectionHeatmaps(df, epoch_name, sessions, save_figs, fig_save_prefix):

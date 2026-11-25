@@ -8,7 +8,7 @@ start and at the end of sampling. ``runCombinations`` repeats that across the
 splits the panel shows -- by strategy (fast/slow), and optionally by difficulty.
 
 **Accuracy is measured over many random splits**, ``num_runs`` of them
-(50 in the notebook), each holding out a share of the trials; the panel plots
+(1,000 in the notebook), each holding out a share of the trials; the panel plots
 the spread across those runs, not a single fit. Sessions are never pooled: a
 decoder never sees two sessions' neurons, because they were not recorded
 together.
@@ -17,8 +17,8 @@ The heavy lifting -- the classifier itself and the label construction -- is in
 :mod:`.classifyplayground` and :mod:`.classifiercreatelabels`.
 
 **The table is cached.** ``data/2p/svm_df.pkl`` holds the result, and the
-notebook loads it rather than re-running: a full run is minutes of fitting, and
-the splits are random and unseeded.
+notebook loads it rather than re-running: a full run is a long fit, and the
+splits are random and unseeded.
 '''
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ from . import classifiercreatelabels
 from .classifyplayground import _runClassifier, test
 
 #: Random train/test splits per decoder, as the paper ran it.
-DEFAULT_NUM_RUNS = 50
+DEFAULT_NUM_RUNS = 1000
 
 # The first few sessions print their feature shape, once per session, as a
 # sanity check on how many neurons went into the decoder.

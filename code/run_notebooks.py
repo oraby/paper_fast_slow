@@ -67,6 +67,10 @@ RUNS = [
 #: Each figure notebook once, in run order.
 NOTEBOOKS = list(dict.fromkeys(relpath for relpath, _ in RUNS))
 
+#: Seconds to wait for a cell's remaining output once it has finished. The
+#: default, 4, is too short for cells that draw many figures.
+IOPUB_TIMEOUT = 180
+
 #: What every notebook's parameters cell declares, and the runner's flags.
 STANDARD_PARAMETERS = {
     "SAVE_FIGS": "save_figs",
@@ -197,11 +201,13 @@ def _runOne(relpath, run_dir, params, kernel, timeout, executed_name=None):
     try:
         pm.execute_notebook(str(src), str(dst), parameters=params, cwd=str(src.parent),
                             kernel_name=kernel, execution_timeout=timeout,
-                            progress_bar=False, log_output=False)
+                            iopub_timeout=IOPUB_TIMEOUT, progress_bar=False, log_output=False)
         return "ok", "", time.time() - started
     except pm.PapermillExecutionError as err:
         return "FAILED", f"cell {err.cell_index}: {err.ename}: {err.evalue}"[:300], \
                time.time() - started
+    except Exception as err:    # a dead kernel, a timeout: the next notebook still runs
+        return "FAILED", f"{type(err).__name__}: {err}"[:300], time.time() - started
 
 
 def _argParser():

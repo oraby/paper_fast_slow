@@ -115,11 +115,12 @@ def _clear_caches():
     metrics_shards.clear_caches()
 
 
-def _build(tmp_path, *, num_evaluations=3, specs=_SPECS, subjects=None):
+def _build(tmp_path, *, num_evaluations=3, specs=_SPECS, subjects=None,
+           exclude=()):
     return build_workdir(_fits(), specs, _behavior(), tmp_path / "work",
                          cache_name="fig2g", num_evaluations=num_evaluations,
                          result_dir=str(tmp_path), subjects=subjects,
-                         verbose=False)
+                         exclude=exclude, verbose=False)
 
 
 def _run_all(work_dir, **kwargs):
@@ -162,6 +163,27 @@ def test_build_workdir_can_restrict_subjects(tmp_path, stub_sim):
 
     assert {i.subject for i in items} == {"S1"}
     assert manifest["num_items"] == len(_SPECS) * 1 * 2
+
+
+def test_build_workdir_leaves_out_excluded_subjects(tmp_path, stub_sim):
+    _build(tmp_path, num_evaluations=1, exclude=("S2", "not in the fits"))
+    assert {i.subject for i in read_worklist(tmp_path / "work")} == {"S1"}
+
+
+def test_prepare_leaves_out_the_imaging_only_subjects(tmp_path, monkeypatch):
+    """They are in the fits but have no trials in df_behavior, so their work
+    items could never succeed."""
+    seen = {}
+    monkeypatch.setattr(metrics_runner.compare, "prepare_behavior_df",
+                        lambda **kw: None)
+    monkeypatch.setattr(metrics_runner.compare, "discover_fits",
+                        lambda **kw: {"a": "fit"})
+    monkeypatch.setattr(metrics_runner.metrics_shards, "build_workdir",
+                        lambda *args, **kw: seen.update(kw))
+    metrics_runner.do_prepare(types.SimpleNamespace(
+        work_root=tmp_path, df_fp="", result_dir=tmp_path, figure=["fig2g"],
+        force=False, num_evaluations=1, n_psych_fits=1, only_subject=None))
+    assert tuple(seen["exclude"]) == aggregate.IMAGING_ONLY_SUBJECTS
 
 
 def test_build_workdir_rejects_unknown_subject(tmp_path, stub_sim):

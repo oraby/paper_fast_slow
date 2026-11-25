@@ -263,7 +263,7 @@ def _processSubject(subject_df, fixed_params_names, fixed_params_vals,
     # Crash early if we built the wrong path
     evolve_dump_FP_subject = _evolveFPSubject(evolve_dump_FP, subject)
     if not dry_run:
-        assert evolve_dump_FP_subject.parent.exists(), f"{evolve_dump_FP_subject.parent} does not exist"
+        _makeSubjectDir(evolve_dump_FP_subject)
 
     fixed_params_vals[0] = subject_df
     if fit_mode == "mle":
@@ -523,6 +523,11 @@ def _evolveFPSubject(evolveFP : pathlib.Path, subject):
     evolve_subj_FP = evolve_subj_FP.replace(".pkl", f"_{subject}.pkl")
     print("evolve_subj_FP:", evolve_subj_FP)
     return pathlib.Path(evolve_subj_FP)
+
+def _makeSubjectDir(evolve_subj_FP : pathlib.Path):
+    # A fresh checkout has no data/RLModel/subject/, so make that one folder.
+    # Its parent must already exist: a wrong path still crashes early.
+    evolve_subj_FP.parent.mkdir(exist_ok=True)
 
 def _weight_suffix(mle_mle_weight=1.0, mle_chi2_weight=0.0):
     """Filename suffix encoding the joint-loss weights.

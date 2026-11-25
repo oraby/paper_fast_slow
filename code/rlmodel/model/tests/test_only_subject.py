@@ -128,3 +128,37 @@ def test_merge_save_evolve_lost_update_regression(tmp_path):
     with open(fp, "rb") as f:
         merged = pickle.load(f)
     assert set(merged) == {"S1", "S2"}
+
+
+# ---------------------------------------------------------------------------
+# What a fit writes, from a fresh checkout
+# ---------------------------------------------------------------------------
+
+def test_the_subject_folder_is_made_under_an_existing_rlmodel_folder(tmp_path):
+    (tmp_path / "data" / "RLModel").mkdir(parents=True)
+    fp = fit._evolveFPSubject(tmp_path / "data/RLModel/fit.pkl", "S1")
+    assert not fp.parent.exists()
+    fit._makeSubjectDir(fp)
+    fit._makeSubjectDir(fp)     # a second fit finds it there
+    assert fp.parent.is_dir()
+
+
+def test_a_wrong_fit_path_still_crashes_early(tmp_path):
+    fp = fit._evolveFPSubject(tmp_path / "data/RLModel/fit.pkl", "S1")
+    with pytest.raises(FileNotFoundError):
+        fit._makeSubjectDir(fp)
+
+
+def test_the_fit_input_has_no_pandas_string_columns():
+    """A fit stores its trials, and the write guard refuses that dtype."""
+    from ...model_runner import _reduceDFSize
+    from ....util.portablepickle import findUnportable
+
+    df = pd.DataFrame({"Name": ["S1", "S2"], "DVstr": ["Easy", None],
+                       "Date": ["2020-01-01", "2020-01-02"],
+                       "DV": [0.5, -1.0], "notes": ["a", "b"]})
+    out = _reduceDFSize(df)
+    assert list(out.columns) == ["Name", "DVstr", "Date", "DV"]
+    assert list(out.Name) == ["S1", "S2"]
+    assert out.DVstr.isna().tolist() == [False, True]
+    assert findUnportable(out) == {}

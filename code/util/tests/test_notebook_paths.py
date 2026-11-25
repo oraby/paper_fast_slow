@@ -82,3 +82,11 @@ def test_no_home_path_in_sources_or_outputs(relpath):
     assert not hits, ("home-directory paths (clear the cell's outputs, or "
                       "print paths relative to the repository):\n"
                       + "\n".join(hits[:10]))
+
+
+@pytest.mark.parametrize("relpath", NOTEBOOKS)
+def test_no_notebook_reaches_os_through_pathlib(relpath):
+    """``pathlib.os`` is not public, and Python 3.13 does not have it."""
+    nb = json.loads((rn.CODE_DIR / relpath).read_text(encoding="utf-8"))
+    assert not [i for i, cell in enumerate(nb["cells"])
+                if "pathlib.os" in "".join(cell.get("source", ""))]

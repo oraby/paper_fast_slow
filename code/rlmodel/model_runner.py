@@ -674,12 +674,16 @@ def _reduceDFSize(df, debuug=False):
     multiprocessing as less data is being pickled/unpickled, as well as plotting.
     '''
     drop_cols = []
-    df["Name"] = df["Name"].astype("string")
-    df["DVstr"] = df["DVstr"].astype("string")
+    # Plain strings, not pandas "string": a file holding that dtype opens only
+    # under a pandas built the way the writer's was.
+    keep_cols = ("Name", "DVstr")
+    for col in keep_cols:
+        df[col] = df[col].astype(object)
     df["Date"] =  pd.to_datetime(df["Date"])
     for col in df.columns:
         if df[col].dtype == "object":
-            drop_cols.append(col)
+            if col not in keep_cols:
+                drop_cols.append(col)
         elif df[col].dtype == np.float64:
             df[col] = df[col].astype(np.float32)
         elif df[col].dtype != np.float32:

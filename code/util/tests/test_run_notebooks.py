@@ -323,3 +323,28 @@ def test_the_executed_copy_is_named_by_what_differs_from_the_defaults(params, ex
 
 def test_a_nested_notebook_keeps_its_directory():
     assert rn.executedName("rlmodel/x.ipynb", {"N": 3}, {"N": 1}) == "rlmodel/x_3.ipynb"
+
+
+# ---------------------------------------------------------------------------
+# Running one notebook
+# ---------------------------------------------------------------------------
+
+def test_a_crash_outside_a_cell_does_not_end_the_runner(tmp_path, monkeypatch):
+    import papermill
+
+    def crash(*args, **kwargs):
+        raise TimeoutError("no output from the kernel")
+    monkeypatch.setattr(papermill, "execute_notebook", crash)
+    status, detail, _ = rn._runOne("behavior.ipynb", tmp_path, {}, "python3", None)
+    assert status == "FAILED"
+    assert detail == "TimeoutError: no output from the kernel"
+
+
+def test_a_run_waits_longer_than_the_default_for_a_cells_output(tmp_path, monkeypatch):
+    import papermill
+
+    seen = {}
+    monkeypatch.setattr(papermill, "execute_notebook",
+                        lambda *args, **kwargs: seen.update(kwargs))
+    assert rn._runOne("behavior.ipynb", tmp_path, {}, "python3", None)[0] == "ok"
+    assert seen["iopub_timeout"] == rn.IOPUB_TIMEOUT >= 60

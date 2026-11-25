@@ -73,6 +73,7 @@ metrics_shards = importlib.import_module(
 _aggregate = importlib.import_module(f"{_RLMODEL_PKG}.model.aggregate")
 DRIFT_RR_SPECS = _aggregate.DRIFT_RR_SPECS
 FIG2G_SPECS = _aggregate.FIG2G_SPECS
+IMAGING_ONLY_SUBJECTS = _aggregate.IMAGING_ONLY_SUBJECTS
 MIN_NUM_TRIALS = _aggregate.MIN_NUM_TRIALS
 MLE_WEIGHT_SPECS = _aggregate.MLE_WEIGHT_SPECS
 N_PSYCH_FITS = _aggregate.N_PSYCH_FITS
@@ -176,7 +177,7 @@ def do_prepare(args):
             fits, FIGURES[name], df_behavior, work_dir, cache_name=name,
             num_evaluations=args.num_evaluations,
             n_psych_fits=args.n_psych_fits, result_dir=str(args.result_dir),
-            subjects=args.only_subject)
+            subjects=args.only_subject, exclude=IMAGING_ONLY_SUBJECTS)
         built[name] = work_dir
     return built
 
